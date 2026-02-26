@@ -80,26 +80,8 @@
               <label><input id="modeAT" type="checkbox" /> Web 串口 AT</label>
             </div>
 
-            <label>Android 设备序列号（可选）</label>
-            <div class="btn-row">
-              <select id="adbDeviceSelect" class="ui-input">
-                <option value="">自动发现中...</option>
-              </select>
-              <button id="refreshAdbBtn" class="ui-btn ui-btn-secondary" type="button">刷新ADB设备</button>
-            </div>
-            <input class="ui-input" id="adbDeviceId" type="text" placeholder="例如：emulator-5554 或 ZY22xxxx" />
-
-            <label>AT 串口（可选）</label>
-            <div class="btn-row">
-              <select id="atPortSelect" class="ui-input">
-                <option value="">自动发现中...</option>
-              </select>
-              <button id="refreshSerialBtn" class="ui-btn ui-btn-secondary" type="button">刷新串口</button>
-            </div>
-            <input class="ui-input" id="atPort" type="text" placeholder="例如：/dev/ttyUSB0 或 COM5" />
-
-            <label>AT 波特率（可选）</label>
-            <input class="ui-input" id="atBaud" type="number" value="115200" />
+            <label>产品通信背景与支持特性（勾选项将带入LLM测试需求/设计生成）</label>
+            <div id="productProfileGroups" class="feature-profile-groups"></div>
 
             <div class="btn-row">
               <button id="runBtn" class="ui-btn">生成测试需求 v1</button>
@@ -167,6 +149,31 @@
                 </div>
               </div>
               <div class="script-right">
+                <label>联机设备配置（可选）</label>
+                <div class="compact-device-grid">
+                  <div>
+                    <label class="mini-label">Android ADB设备</label>
+                    <div class="btn-row compact-row">
+                      <select id="adbDeviceSelect" class="ui-input">
+                        <option value="">自动发现中...</option>
+                      </select>
+                      <button id="refreshAdbBtn" class="ui-btn ui-btn-secondary" type="button">刷新</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="mini-label">AT 串口</label>
+                    <div class="btn-row compact-row">
+                      <select id="atPortSelect" class="ui-input">
+                        <option value="">自动发现中...</option>
+                      </select>
+                      <button id="refreshSerialBtn" class="ui-btn ui-btn-secondary" type="button">刷新</button>
+                    </div>
+                  </div>
+                  <div>
+                    <label class="mini-label">AT 波特率</label>
+                    <input class="ui-input" id="atBaud" type="number" value="115200" />
+                  </div>
+                </div>
                 <label>脚本调试/执行模式</label>
                 <select id="automationExecMode" class="ui-input">
                   <option value="auto">自动（按需求页勾选顺序）</option>

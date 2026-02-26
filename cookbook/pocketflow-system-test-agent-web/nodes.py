@@ -374,6 +374,7 @@ class IntakeNode(Node):
             "rag_context": shared.get("rag_context", ""),
             "review_feedback": shared.get("review_feedback", ""),
             "framework_capability_catalog": shared.get("framework_capability_catalog", ""),
+            "product_profile": shared.get("product_profile", {}),
             "action_vocabulary": shared.get("action_vocabulary") or DEFAULT_ACTION_VOCABULARY,
             "assertion_vocabulary": shared.get("assertion_vocabulary") or DEFAULT_ASSERTION_VOCABULARY,
             "capabilities": shared.get("capabilities") or DEFAULT_CAPABILITIES,
@@ -421,6 +422,7 @@ class IntakeNode(Node):
             "rag_context": prep_res["rag_context"].strip(),
             "review_feedback": prep_res["review_feedback"].strip(),
             "framework_capability_catalog": prep_res["framework_capability_catalog"].strip(),
+            "product_profile": prep_res.get("product_profile") or {},
             "action_vocabulary": prep_res["action_vocabulary"],
             "assertion_vocabulary": prep_res["assertion_vocabulary"],
             "capabilities": prep_res["capabilities"],
@@ -445,6 +447,7 @@ class ReqParseNode(Node):
             "seed_requirements": shared["seed_requirements"],
             "rag_context": shared.get("rag_context", ""),
             "review_feedback": shared.get("review_feedback", ""),
+            "product_profile": shared.get("product_profile", {}),
         }
 
     def exec(self, prep_res):
@@ -458,6 +461,7 @@ class ReqParseNode(Node):
                 "text_chunk": json.dumps(prep_res["seed_requirements"], ensure_ascii=False),
                 "rag_context": prep_res.get("rag_context", ""),
                 "review_feedback": prep_res.get("review_feedback", ""),
+                "product_profile_json": json.dumps(prep_res.get("product_profile", {}), ensure_ascii=False),
                 "output_schema": json.dumps(REQUIREMENT_LIST_SCHEMA, ensure_ascii=False),
             },
             schema=REQUIREMENT_LIST_SCHEMA,
@@ -598,6 +602,7 @@ class TestDesignNode(Node):
             "questions_to_ask": shared["requirement_spec"].get("questions_to_ask", []),
             "assumptions": shared["requirement_spec"].get("assumptions", []),
             "persona_reviews": shared.get("persona_reviews", {}),
+            "product_profile": shared.get("product_profile", {}),
             "supervisor_feedback": shared.get("design_supervisor_feedback", ""),
         }
 
@@ -621,6 +626,7 @@ class TestDesignNode(Node):
                         "questions_to_ask": prep_res.get("questions_to_ask", []),
                         "assumptions": prep_res.get("assumptions", []),
                         "persona_reviews": prep_res.get("persona_reviews", {}),
+                        "product_profile": prep_res.get("product_profile", {}),
                         "supervisor_feedback": prep_res.get("supervisor_feedback", ""),
                     },
                     ensure_ascii=False,

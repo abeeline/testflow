@@ -31,6 +31,7 @@ class GenerateRequest(BaseModel):
     requirements: List[str] = Field(..., min_length=1)
     rag_context: str = ""
     framework_capability_catalog: str = ""
+    product_profile: Optional[Dict[str, Any]] = None
     capabilities: Optional[Dict[str, Any]] = None
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
@@ -41,6 +42,10 @@ class PromptSettingsRequest(BaseModel):
 
 
 class ExportTestCasesRequest(BaseModel):
+    requirement_input: Optional[List[str]] = None
+    requirement_spec: Optional[Dict[str, Any]] = None
+    persona_reviews: Optional[Dict[str, Any]] = None
+    test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Dict[str, Any]
 
 
@@ -69,6 +74,7 @@ class RequirementRoundRequest(BaseModel):
     requirements: List[str] = Field(..., min_length=1)
     rag_context: str = ""
     framework_capability_catalog: str = ""
+    product_profile: Optional[Dict[str, Any]] = None
     round: int = 1
     previous_persona_reviews: Optional[Dict[str, Any]] = None
     open_question_answers: Optional[Dict[str, str]] = None
@@ -78,6 +84,7 @@ class RequirementHITLStartRequest(BaseModel):
     requirements: List[str] = Field(..., min_length=1)
     rag_context: str = ""
     framework_capability_catalog: str = ""
+    product_profile: Optional[Dict[str, Any]] = None
     automation_modes: Optional[List[str]] = None
     adb_device_id: str = ""
     at_port: str = ""
@@ -93,6 +100,7 @@ class StageGenerateRequest(BaseModel):
     persona_reviews: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Optional[Dict[str, Any]] = None
+    product_profile: Optional[Dict[str, Any]] = None
     capabilities: Optional[Dict[str, Any]] = None
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
@@ -450,6 +458,7 @@ async def generate(payload: GenerateRequest):
         "input_requirements": reqs,
         "rag_context": effective_rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog.strip(),
+        "product_profile": payload.product_profile or {},
         "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
@@ -552,6 +561,7 @@ async def _run_requirement_hitl_job(job_id: str):
     reqs: List[str] = job["requirements"]
     rag_context: str = job["rag_context"]
     framework_capability_catalog: str = job["framework_capability_catalog"]
+    product_profile: Dict[str, Any] = job.get("product_profile") or {}
 
     try:
         for round_no in range(1, 4):
@@ -560,6 +570,7 @@ async def _run_requirement_hitl_job(job_id: str):
                 "input_requirements": reqs,
                 "rag_context": effective_rag_context,
                 "framework_capability_catalog": framework_capability_catalog,
+                "product_profile": product_profile,
                 "capabilities": DEFAULT_CAPABILITIES,
                 "action_vocabulary": DEFAULT_ACTION_VOCABULARY,
                 "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
@@ -670,6 +681,7 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "requirements": reqs,
         "rag_context": payload.rag_context.strip(),
         "framework_capability_catalog": framework_capability_catalog,
+        "product_profile": payload.product_profile or {},
         "review_feedback": "",
         "pending_answers": {},
         "answer_event": answer_event,
@@ -761,6 +773,7 @@ async def _run_stage_job(job_id: str):
             shared = {
                 "requirement_spec": payload.requirement_spec,
                 "persona_reviews": payload.persona_reviews or {},
+                "product_profile": payload.product_profile or {},
                 "llm_client": LLMClient(),
                 "warnings": [],
                 "trace": [],
@@ -779,6 +792,7 @@ async def _run_stage_job(job_id: str):
             shared = {
                 "requirement_spec": payload.requirement_spec,
                 "test_design_spec": payload.test_design_spec,
+                "product_profile": payload.product_profile or {},
                 "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
                 "llm_client": LLMClient(),
                 "warnings": [],
@@ -797,6 +811,7 @@ async def _run_stage_job(job_id: str):
                 raise HTTPException(status_code=400, detail="缺少test_case_spec")
             shared = {
                 "test_case_spec": payload.test_case_spec,
+                "product_profile": payload.product_profile or {},
                 "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
                 "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
                 "llm_client": LLMClient(),
@@ -932,6 +947,7 @@ async def requirements_analyze(payload: RequirementRoundRequest):
         "input_requirements": reqs,
         "rag_context": effective_rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog.strip(),
+        "product_profile": payload.product_profile or {},
         "capabilities": DEFAULT_CAPABILITIES,
         "action_vocabulary": DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
@@ -975,6 +991,7 @@ async def design_generate(payload: StageGenerateRequest):
     shared = {
         "requirement_spec": payload.requirement_spec,
         "persona_reviews": payload.persona_reviews or {},
+        "product_profile": payload.product_profile or {},
         "llm_client": LLMClient(),
         "warnings": [],
         "trace": [],
@@ -1006,6 +1023,7 @@ async def testcases_generate(payload: StageGenerateRequest):
     shared = {
         "requirement_spec": payload.requirement_spec,
         "test_design_spec": payload.test_design_spec,
+        "product_profile": payload.product_profile or {},
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "llm_client": LLMClient(),
         "warnings": [],
@@ -1037,6 +1055,7 @@ async def scripts_generate(payload: StageGenerateRequest):
         raise HTTPException(status_code=400, detail="缺少test_case_spec")
     shared = {
         "test_case_spec": payload.test_case_spec,
+        "product_profile": payload.product_profile or {},
         "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
         "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
         "llm_client": LLMClient(),
@@ -1076,6 +1095,7 @@ async def generate_stream(payload: GenerateRequest):
         "input_requirements": reqs,
         "rag_context": effective_rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog.strip(),
+        "product_profile": payload.product_profile or {},
         "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
@@ -1240,11 +1260,104 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"缺少openpyxl依赖: {exc}")
 
-    testcases = payload.test_case_spec.get("testcases", [])
+    requirement_input = payload.requirement_input or []
+    requirement_spec = payload.requirement_spec or {}
+    persona_reviews = payload.persona_reviews or {}
+    test_design_spec = payload.test_design_spec or {}
+    test_case_spec = payload.test_case_spec or {}
+    testcases = test_case_spec.get("testcases", [])
+
+    def _list_to_text(v: Any) -> str:
+        if isinstance(v, list):
+            return "\n".join([str(x) for x in v])
+        if v is None:
+            return ""
+        return str(v)
+
+    def _safe_json(v: Any) -> str:
+        try:
+            return json.dumps(v, ensure_ascii=False)
+        except Exception:
+            return str(v)
+
     wb = Workbook()
-    ws = wb.active
-    ws.title = "TestCases"
-    ws.append(
+
+    ws_input = wb.active
+    ws_input.title = "需求输入"
+    ws_input.append(["index", "requirement_text"])
+    for i, txt in enumerate(requirement_input, start=1):
+        ws_input.append([i, txt])
+
+    ws_req = wb.create_sheet("测试需求稿")
+    ws_req.append(["req_id", "title", "priority", "rat_scope", "persona_sources", "pass_fail", "kpi"])
+    for r in requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else []:
+        if not isinstance(r, dict):
+            continue
+        ws_req.append(
+            [
+                r.get("req_id", ""),
+                r.get("title", ""),
+                r.get("priority", ""),
+                _list_to_text(r.get("rat_scope", [])),
+                _list_to_text(r.get("persona_sources", [])),
+                _list_to_text((r.get("acceptance") or {}).get("pass_fail", [])),
+                _list_to_text((r.get("acceptance") or {}).get("kpi", [])),
+            ]
+        )
+
+    ws_review = wb.create_sheet("三人评审")
+    ws_review.append(["persona", "req_id", "issues", "open_questions", "rewrite_suggestion", "scores_json"])
+    for persona_key in ["spec", "carrier", "ux"]:
+        revs = ((persona_reviews.get(persona_key) or {}).get("reviews", []) if isinstance(persona_reviews, dict) else [])
+        for item in revs:
+            if not isinstance(item, dict):
+                continue
+            ws_review.append(
+                [
+                    persona_key,
+                    item.get("req_id", ""),
+                    _list_to_text(item.get("issues", [])),
+                    _list_to_text(item.get("open_questions", [])),
+                    item.get("rewrite_suggestion", ""),
+                    _safe_json(item.get("scores", {})),
+                ]
+            )
+
+    ws_design_obj = wb.create_sheet("测试设计目标")
+    ws_design_obj.append(["objective_id", "linked_reqs", "goal", "success_criteria", "evidence", "priority", "risk_notes"])
+    for o in test_design_spec.get("objectives", []) if isinstance(test_design_spec, dict) else []:
+        if not isinstance(o, dict):
+            continue
+        ws_design_obj.append(
+            [
+                o.get("objective_id", ""),
+                _list_to_text(o.get("linked_reqs", [])),
+                o.get("goal", ""),
+                _list_to_text(o.get("success_criteria", [])),
+                _list_to_text(o.get("evidence", [])),
+                o.get("priority", ""),
+                o.get("risk_notes", ""),
+            ]
+        )
+
+    ws_design_matrix = wb.create_sheet("测试设计矩阵")
+    ws_design_matrix.append(["row_id", "req_id", "objective_id", "scenario", "key_configuration", "pass_criteria"])
+    for row in test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        ws_design_matrix.append(
+            [
+                row.get("row_id", ""),
+                row.get("req_id", ""),
+                row.get("objective_id", ""),
+                row.get("scenario", ""),
+                _safe_json(row.get("key_configuration", {})),
+                _list_to_text(row.get("pass_criteria", [])),
+            ]
+        )
+
+    ws_cases = wb.create_sheet("测试用例")
+    ws_cases.append(
         [
             "tc_id",
             "objective_id",
@@ -1258,26 +1371,39 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
         ]
     )
     for tc in testcases:
-        ws.append(
+        if not isinstance(tc, dict):
+            continue
+        ws_cases.append(
             [
                 tc.get("tc_id", ""),
                 tc.get("objective_id", ""),
                 tc.get("title", ""),
                 ", ".join(tc.get("tags", [])),
-                "\n".join(tc.get("preconditions", [])),
-                "\n".join(tc.get("expected", [])),
-                "\n".join(tc.get("pass_fail", [])),
+                _list_to_text(tc.get("preconditions", [])),
+                _list_to_text(tc.get("expected", [])),
+                _list_to_text(tc.get("pass_fail", [])),
                 len(tc.get("steps", [])),
-                ", ".join(tc.get("observability", {}).get("must_capture", [])),
+                ", ".join((tc.get("observability") or {}).get("must_capture", [])),
             ]
         )
 
-    ws2 = wb.create_sheet("Steps")
-    ws2.append(["tc_id", "step_index", "action", "params_json"])
+    ws_steps = wb.create_sheet("用例步骤")
+    ws_steps.append(["tc_id", "step_index", "action", "params_json"])
     for tc in testcases:
+        if not isinstance(tc, dict):
+            continue
         tc_id = tc.get("tc_id", "")
         for idx, step in enumerate(tc.get("steps", []), start=1):
-            ws2.append([tc_id, idx, step.get("action", ""), str(step.get("params", {}))])
+            if not isinstance(step, dict):
+                continue
+            ws_steps.append([tc_id, idx, step.get("action", ""), _safe_json(step.get("params", {}))])
+
+    ws_raw = wb.create_sheet("RawJSON")
+    ws_raw.append(["section", "json"])
+    ws_raw.append(["requirement_spec", _safe_json(requirement_spec)])
+    ws_raw.append(["persona_reviews", _safe_json(persona_reviews)])
+    ws_raw.append(["test_design_spec", _safe_json(test_design_spec)])
+    ws_raw.append(["test_case_spec", _safe_json(test_case_spec)])
 
     stream = BytesIO()
     wb.save(stream)

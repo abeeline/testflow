@@ -790,6 +790,63 @@ html[data-theme="light"] .theme-icon.sun {
   font-size: 13px;
 }
 
+.feature-profile-groups {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.feature-profile-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--muted) 25%, var(--card));
+}
+
+.feature-profile-group h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.feature-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.feature-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--muted) 20%, var(--card));
+}
+
+.compact-device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mini-label {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.compact-row {
+  margin-top: 0;
+  flex-wrap: nowrap;
+}
+
+.compact-row .ui-input {
+  min-width: 0;
+}
+
 .mbt-canvas {
   height: 420px;
 }

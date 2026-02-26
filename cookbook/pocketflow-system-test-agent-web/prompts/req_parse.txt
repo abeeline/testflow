@@ -14,4 +14,5 @@ source_doc: {doc_meta_json}
 requirement_text_chunk: {text_chunk}
 rag_context: {rag_context}
 review_feedback_from_previous_rounds: {review_feedback}
+product_profile: {product_profile_json}
 output_schema: {output_schema}

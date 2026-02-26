@@ -9,6 +9,7 @@ Hard requirements:
 3) Build an integrated coverage matrix table (like a reviewable design sheet), not just a dimension list.
 4) If requirement has acceptance.pass_fail or acceptance.kpi, at least one objective and one matrix row must reference them.
 5) Do not drop critical metric constraints (time window, threshold, latency, stability duration, recovery time).
+6) Respect product_profile from constraints: selected capabilities must be reflected in dimensions/scenarios; explicitly de-scope non-selected capabilities in de_scoped when relevant.
 
 [User]
 final_requirements: {final_requirements_json}

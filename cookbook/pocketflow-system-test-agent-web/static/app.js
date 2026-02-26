@@ -76,8 +76,7 @@ const actionVocabEl = document.getElementById("actionVocab");
 const assertVocabEl = document.getElementById("assertVocab");
 const modeAndroidEl = document.getElementById("modeAndroid");
 const modeATEl = document.getElementById("modeAT");
-const adbDeviceIdEl = document.getElementById("adbDeviceId");
-const atPortEl = document.getElementById("atPort");
+const productProfileGroupsEl = document.getElementById("productProfileGroups");
 const atBaudEl = document.getElementById("atBaud");
 const adbDeviceSelectEl = document.getElementById("adbDeviceSelect");
 const atPortSelectEl = document.getElementById("atPortSelect");
@@ -141,6 +140,44 @@ let stageState = {
   script_spec: null,
 };
 
+const PRODUCT_PROFILE_GROUPS = [
+  {
+    key: "network_core_protocols",
+    label: "1. 网络制式与核心协议 (Network & Core Protocols)",
+    options: ["5G NR", "4G LTE", "3G/2G", "NB-IoT / eMTC", "NTN", "IoT-NTN"],
+  },
+  {
+    key: "fiveg_specifics",
+    label: "2. 5G 专属组网与射频特性 (5G Specifics)",
+    options: ["SA", "NSA", "Sub-6GHz (FR1)", "毫米波 mmWave (FR2)", "RedCap", "网络切片", "载波聚合"],
+  },
+  {
+    key: "sim_standby_modes",
+    label: "3. 卡与多待机模式 (SIM & Standby Modes)",
+    options: ["单卡", "DSDS", "DSDA", "eSIM"],
+  },
+  {
+    key: "services_data",
+    label: "4. 核心业务与数据能力 (Services & Data)",
+    options: ["VoNR", "VoLTE", "CSFB", "SMS over NAS / IMS", "IPv4 单栈", "IPv6 单栈", "IPv4/IPv6 双栈 (Dual Stack)"],
+  },
+  {
+    key: "power_mobility",
+    label: "5. 功耗与移动性管理 (Power & Mobility)",
+    options: ["PSM", "eDRX", "C-DRX", "高铁模式 / 高速移动优化"],
+  },
+  {
+    key: "special_scenarios",
+    label: "6. 特殊场景与形态特性 (Special Scenarios & Form Factor)",
+    options: ["GNSS / LBS", "C-V2X", "Android架构", "Linux架构", "RTOS架构"],
+  },
+  {
+    key: "form_factor",
+    label: "7. 产品定位与形态 (Form Factor)",
+    options: ["智能手机", "功能手机", "穿戴产品", "通信模组", "车载模组"],
+  },
+];
+
 const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genScriptsBtn, debugScriptBtn, runOnlineBtn];
 
 function setStatus(text) {
@@ -180,10 +217,65 @@ function getAutomationProfile() {
   const selectedAtPort = (atPortSelectEl?.value || "").trim();
   return {
     modes: getSelectedAutomationModes(),
-    adb_device_id: (adbDeviceIdEl?.value || "").trim() || selectedAdb,
-    at_port: (atPortEl?.value || "").trim() || selectedAtPort,
+    adb_device_id: selectedAdb,
+    at_port: selectedAtPort,
     at_baud: Number(atBaudEl?.value || 115200) || 115200,
   };
+}
+
+function toProfileOptionId(groupKey, option) {
+  return `pp_${groupKey}_${String(option).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
+}
+
+function renderProductProfileOptions() {
+  if (!productProfileGroupsEl) return;
+  productProfileGroupsEl.innerHTML = PRODUCT_PROFILE_GROUPS.map((group) => {
+    const items = group.options
+      .map((opt) => {
+        const id = toProfileOptionId(group.key, opt);
+        return `<label class="feature-option"><input type="checkbox" id="${id}" data-profile-group="${group.key}" data-profile-option="${esc(opt)}" /> ${esc(opt)}</label>`;
+      })
+      .join("");
+    return `<div class="feature-profile-group"><h4>${esc(group.label)}</h4><div class="feature-option-grid">${items}</div></div>`;
+  }).join("");
+}
+
+function getSelectedProductProfile() {
+  const selected = {};
+  const selectedFlat = [];
+  PRODUCT_PROFILE_GROUPS.forEach((group) => {
+    const values = [];
+    group.options.forEach((opt) => {
+      const id = toProfileOptionId(group.key, opt);
+      const el = document.getElementById(id);
+      if (el?.checked) {
+        values.push(opt);
+        selectedFlat.push(opt);
+      }
+    });
+    if (values.length) selected[group.key] = values;
+  });
+  return {
+    selected,
+    selected_flat: selectedFlat,
+    selected_count: selectedFlat.length,
+    selected_groups: Object.keys(selected).length,
+    profile_display: PRODUCT_PROFILE_GROUPS.filter((g) => selected[g.key]?.length).map((g) => ({
+      group: g.label,
+      values: selected[g.key],
+    })),
+  };
+}
+
+function setSelectedProductProfile(selectedMap = {}) {
+  PRODUCT_PROFILE_GROUPS.forEach((group) => {
+    const values = Array.isArray(selectedMap[group.key]) ? selectedMap[group.key] : [];
+    group.options.forEach((opt) => {
+      const id = toProfileOptionId(group.key, opt);
+      const el = document.getElementById(id);
+      if (el) el.checked = values.includes(opt);
+    });
+  });
 }
 
 function setSelectOptions(selectEl, options, currentValue = "") {
@@ -209,13 +301,14 @@ async function fetchAdbDevices() {
     if (!resp.ok) throw new Error(await resp.text());
     const data = await resp.json();
     const devices = Array.isArray(data.devices) ? data.devices : [];
-    const opts = [{ value: "", label: "未选择（可手动输入）" }];
+    const opts = [{ value: "", label: "未选择" }];
     devices.forEach((d) => {
       const label = `${d.id}${d.model ? ` (${d.model})` : ""} [${d.state || "unknown"}]`;
       opts.push({ value: d.id, label });
     });
-    setSelectOptions(adbDeviceSelectEl, opts, adbDeviceIdEl?.value || "");
-    if (!adbDeviceIdEl?.value && devices.length) adbDeviceIdEl.value = devices[0].id || "";
+    const current = (adbDeviceSelectEl?.value || "").trim();
+    setSelectOptions(adbDeviceSelectEl, opts, current);
+    if (!current && devices.length && adbDeviceSelectEl) adbDeviceSelectEl.value = devices[0].id || "";
   } catch (e) {
     setStatus(`ADB设备发现失败: ${e.message || e}`);
   } finally {
@@ -231,13 +324,14 @@ async function fetchSerialPorts() {
     if (!resp.ok) throw new Error(await resp.text());
     const data = await resp.json();
     const ports = Array.isArray(data.ports) ? data.ports : [];
-    const opts = [{ value: "", label: "未选择（可手动输入）" }];
+    const opts = [{ value: "", label: "未选择" }];
     ports.forEach((p) => {
       const label = `${p.device}${p.description ? ` (${p.description})` : ""}`;
       opts.push({ value: p.device, label });
     });
-    setSelectOptions(atPortSelectEl, opts, atPortEl?.value || "");
-    if (!atPortEl?.value && ports.length) atPortEl.value = ports[0].device || "";
+    const current = (atPortSelectEl?.value || "").trim();
+    setSelectOptions(atPortSelectEl, opts, current);
+    if (!current && ports.length && atPortSelectEl) atPortSelectEl.value = ports[0].device || "";
   } catch (e) {
     setStatus(`串口发现失败: ${e.message || e}`);
   } finally {
@@ -255,11 +349,16 @@ function getExecutionMode() {
 function buildFrameworkCapabilityCatalog() {
   const base = (capabilityEl?.value || "").trim();
   const p = getAutomationProfile();
+  const productProfile = getSelectedProductProfile();
+  const productSummary = (productProfile.profile_display || [])
+    .map((x) => `${x.group}: ${x.values.join(", ")}`)
+    .join(" | ");
   const modeLabel = p.modes.map((m) => (m === "android_adb" ? "Android Web ADB" : "Web Serial AT")).join(", ");
   const extra = [
     `Automation Modes: ${modeLabel || "None"}`,
     p.adb_device_id ? `ADB Device: ${p.adb_device_id}` : "",
     p.at_port ? `AT Port: ${p.at_port} @ ${p.at_baud}` : "",
+    productSummary ? `Product Profile: ${productSummary}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -758,12 +857,11 @@ function restoreLastResultUI(snapshot) {
   assertVocabEl.value = snapshot.form?.assert_vocab || "";
   modeAndroidEl.checked = snapshot.form?.mode_android !== false;
   modeATEl.checked = !!snapshot.form?.mode_at;
-  adbDeviceIdEl.value = snapshot.form?.adb_device_id || "";
-  atPortEl.value = snapshot.form?.at_port || "";
   atBaudEl.value = snapshot.form?.at_baud || 115200;
   if (adbDeviceSelectEl) adbDeviceSelectEl.value = snapshot.form?.adb_device_id || "";
   if (atPortSelectEl) atPortSelectEl.value = snapshot.form?.at_port || "";
   if (automationExecModeEl) automationExecModeEl.value = snapshot.form?.exec_mode || "auto";
+  setSelectedProductProfile(snapshot.form?.product_profile_selected || {});
   statusEl.textContent = snapshot.status || "已恢复上次结果";
   outCode.textContent = snapshot.outputs?.test_code_reference || "";
   outDebug.textContent = snapshot.outputs?.debug_result || "";
@@ -831,10 +929,11 @@ function persistCurrentState(customStatus) {
       assert_vocab: assertVocabEl.value,
       mode_android: !!modeAndroidEl?.checked,
       mode_at: !!modeATEl?.checked,
-      adb_device_id: adbDeviceIdEl?.value || "",
-      at_port: atPortEl?.value || "",
+      adb_device_id: adbDeviceSelectEl?.value || "",
+      at_port: atPortSelectEl?.value || "",
       at_baud: atBaudEl?.value || "",
       exec_mode: automationExecModeEl?.value || "auto",
+      product_profile_selected: getSelectedProductProfile().selected,
     },
   });
 }
@@ -1459,6 +1558,7 @@ async function generateRequirementsRound(round) {
   const requirements = parseRequirements(requirementsEl.value);
   if (!requirements.length) throw new Error("请至少输入一条需求");
   const profile = getAutomationProfile();
+  const productProfile = getSelectedProductProfile();
   if (!profile.modes.length) throw new Error("请至少选择一种自动化测试方式（Android Web ADB 或 Web 串口 AT）");
   pushSystemBotMessage(`任务开始：测试需求评审 v${round}。`);
   let data = null;
@@ -1467,6 +1567,7 @@ async function generateRequirementsRound(round) {
       requirements,
       rag_context: ragEl.value,
       framework_capability_catalog: buildFrameworkCapabilityCatalog(),
+      product_profile: productProfile,
       automation_modes: profile.modes,
       adb_device_id: profile.adb_device_id,
       at_port: profile.at_port,
@@ -1503,9 +1604,11 @@ async function generateRequirementsRound(round) {
 
 async function generateDesign() {
   if (!stageState.requirement_spec) throw new Error("请先完成测试需求评审（至少v1）");
+  const productProfile = getSelectedProductProfile();
   const data = await startStageJobAndWait("design", {
     requirement_spec: stageState.requirement_spec,
     persona_reviews: stageState.persona_reviews,
+    product_profile: productProfile,
   });
   stageState.test_design_spec = data.test_design_spec;
   latestStructured = latestStructured || {};
@@ -1517,11 +1620,13 @@ async function generateDesign() {
 
 async function generateCases() {
   if (!stageState.test_design_spec) throw new Error("请先生成测试设计稿");
+  const productProfile = getSelectedProductProfile();
   const actionVocab = parseCSVLine(actionVocabEl.value);
   const data = await startStageJobAndWait("testcases", {
     requirement_spec: stageState.requirement_spec,
     test_design_spec: stageState.test_design_spec,
     action_vocabulary: actionVocab,
+    product_profile: productProfile,
   });
   stageState.test_case_spec = data.test_case_spec;
   latestStructured = latestStructured || {};
@@ -1533,6 +1638,7 @@ async function generateCases() {
 
 async function generateScripts() {
   if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
+  const productProfile = getSelectedProductProfile();
   let capabilities = null;
   if (capabilitiesJsonEl.value.trim()) {
     capabilities = JSON.parse(capabilitiesJsonEl.value);
@@ -1545,6 +1651,7 @@ async function generateScripts() {
     test_case_spec: stageState.test_case_spec,
     capabilities,
     assertion_vocabulary: assertVocab,
+    product_profile: productProfile,
   });
   latestStructured = latestStructured || {};
   latestStructured.script_spec = data.script_spec;
@@ -1866,7 +1973,13 @@ async function downloadExcel() {
   const resp = await fetch("/api/export/testcases.xlsx", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ test_case_spec: latestStructured.test_case_spec }),
+    body: JSON.stringify({
+      requirement_input: parseRequirements(requirementsEl?.value || ""),
+      requirement_spec: stageState.requirement_spec || latestStructured?.requirement_spec || {},
+      persona_reviews: stageState.persona_reviews || latestStructured?.persona_reviews || {},
+      test_design_spec: stageState.test_design_spec || latestStructured?.test_design_spec || {},
+      test_case_spec: latestStructured.test_case_spec,
+    }),
   });
   if (!resp.ok) throw new Error(await resp.text());
   const blob = await resp.blob();
@@ -2298,14 +2411,6 @@ refreshSerialBtn?.addEventListener("click", () => {
   fetchSerialPorts().catch((e) => setStatus(`串口发现失败: ${e.message || e}`));
 });
 
-adbDeviceSelectEl?.addEventListener("change", () => {
-  if (adbDeviceSelectEl.value) adbDeviceIdEl.value = adbDeviceSelectEl.value;
-});
-
-atPortSelectEl?.addEventListener("change", () => {
-  if (atPortSelectEl.value) atPortEl.value = atPortSelectEl.value;
-});
-
 modeAndroidEl?.addEventListener("change", () => {
   if (modeAndroidEl.checked) fetchAdbDevices().catch(() => {});
 });
@@ -2405,6 +2510,7 @@ async function sendBotMessage() {
 // init
 initTheme();
 initTabs();
+renderProductProfileOptions();
 restoreLastResultUI(loadLastResult());
 renderAgenticScriptMessages();
 fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`));
