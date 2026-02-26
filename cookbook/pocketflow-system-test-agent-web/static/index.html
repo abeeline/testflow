@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>System Test Agent (PocketFlow)</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-dot"></div>
+          <div>
+            <h1>System Test Agent</h1>
+            <p>PocketFlow + LLM</p>
+          </div>
+        </div>
+
+        <div class="status-panel ui-card sidebar-status">
+          <h2>运行状态</h2>
+          <pre id="status" class="ui-pre">等待执行</pre>
+        </div>
+
+        <nav class="sheet-tabs" id="sheetTabs">
+          <button class="sheet-tab ui-btn ui-btn-ghost active" data-sheet="sheet1">需求准备</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet2">测试需求处理</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet3">测试设计</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet4">测试用例</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet5">测试脚本</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet7">AT测试Agent</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet6">流程可视化</button>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <button id="settingsBtn" class="ui-btn ui-btn-secondary w-full">Prompt Settings</button>
+          <label class="theme-switch ui-switch" title="切换暗黑/浅色">
+            <svg class="theme-icon sun" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4V2M12 22v-2M4.93 4.93 3.51 3.51M20.49 20.49l-1.42-1.42M20 12h2M2 12h2M19.07 4.93l1.42-1.42M4.93 19.07l-1.42 1.42M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"></path>
+            </svg>
+            <input id="themeToggle" type="checkbox" />
+            <span class="switch-slider"></span>
+            <svg class="theme-icon moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3c0 .33-.01.66.02.99A7 7 0 0 0 20.01 12c.33.03.66.02.99.02Z"></path>
+            </svg>
+          </label>
+        </div>
+      </aside>
+
+      <section class="main-content">
+        <section class="sheet active" id="sheet1">
+          <div class="card ui-card">
+            <h3>需求准备</h3>
+            <label>需求描述（单次填写一个完整需求，可粘贴该需求的全部说明）</label>
+            <textarea class="ui-input" id="requirements" placeholder="例如：请完整描述该需求的业务目标、约束、指标阈值、边界场景、验收口径、失败处理策略等。"></textarea>
+
+            <label>RAG文档上下文（可选）</label>
+            <textarea class="ui-input" id="rag" placeholder="例如：3GPP条款、运营商验收口径、历史缺陷知识"></textarea>
+            <div class="btn-row">
+              <input id="ragFile" class="ui-input" type="file" multiple />
+              <button id="uploadRagBtn" class="ui-btn ui-btn-secondary" type="button">上传文档入RAG</button>
+            </div>
+            <div id="ragDocs" class="visual"></div>
+
+            <label>测试脚本框架能力清单（可选，占位）</label>
+            <textarea class="ui-input" id="capability" placeholder="例如：pytest+allure，支持串口日志采集，支持AT命令注入"></textarea>
+
+            <label>Capabilities JSON（可选）</label>
+            <textarea class="ui-input" id="capabilitiesJson" placeholder='{"harnesses":["ANDROID_UIA","PY_AT"],"actions_supported":{"SET_DEVICE_STATE":["adb"]}}'></textarea>
+
+            <label>Action Vocabulary（可选，逗号分隔）</label>
+            <input class="ui-input" id="actionVocab" type="text" placeholder="SET_DEVICE_STATE,TRIGGER_REGISTRATION,WAIT,CHECK,COLLECT_LOG" />
+
+            <label>Assertion Vocabulary（可选，逗号分隔）</label>
+            <input class="ui-input" id="assertVocab" type="text" placeholder="ASSERT_IMS_REGISTERED,ASSERT_ATTACH_SUCCESS" />
+
+            <label>自动化测试方式（需求阶段选择）</label>
+            <div class="mode-grid">
+              <label><input id="modeAndroid" type="checkbox" checked /> Android Web ADB</label>
+              <label><input id="modeAT" type="checkbox" /> Web 串口 AT</label>
+            </div>
+
+            <label>Android 设备序列号（可选）</label>
+            <div class="btn-row">
+              <select id="adbDeviceSelect" class="ui-input">
+                <option value="">自动发现中...</option>
+              </select>
+              <button id="refreshAdbBtn" class="ui-btn ui-btn-secondary" type="button">刷新ADB设备</button>
+            </div>
+            <input class="ui-input" id="adbDeviceId" type="text" placeholder="例如：emulator-5554 或 ZY22xxxx" />
+
+            <label>AT 串口（可选）</label>
+            <div class="btn-row">
+              <select id="atPortSelect" class="ui-input">
+                <option value="">自动发现中...</option>
+              </select>
+              <button id="refreshSerialBtn" class="ui-btn ui-btn-secondary" type="button">刷新串口</button>
+            </div>
+            <input class="ui-input" id="atPort" type="text" placeholder="例如：/dev/ttyUSB0 或 COM5" />
+
+            <label>AT 波特率（可选）</label>
+            <input class="ui-input" id="atBaud" type="number" value="115200" />
+
+            <div class="btn-row">
+              <button id="runBtn" class="ui-btn">生成测试需求 v1</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet2">
+          <div class="card ui-card">
+            <h3>测试需求稿</h3>
+            <pre id="outReq" class="ui-pre"></pre>
+            <div id="viewReq" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <h3>三人评审过程记录</h3>
+            <pre id="outReview" class="ui-pre"></pre>
+            <div id="viewReview" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <h3>Open Questions（人工补充）</h3>
+            <div id="openQuestionsPanel" class="visual"></div>
+            <div class="btn-row">
+              <button id="regenReqBtn" class="ui-btn ui-btn-secondary">再次生成（下一轮）</button>
+              <button id="genDesignBtn" class="ui-btn ui-btn-secondary">生成测试设计稿</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet3">
+          <div class="card ui-card">
+            <h3>测试设计稿</h3>
+            <pre id="outDesign" class="ui-pre"></pre>
+            <div id="viewDesign" class="visual"></div>
+            <div class="btn-row">
+              <button id="genCasesBtn" class="ui-btn ui-btn-secondary">生成测试用例稿</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet4">
+          <div class="card ui-card">
+            <div class="row-head">
+              <h3>测试用例稿</h3>
+              <button id="downloadExcelBtn" class="ui-btn ui-btn-secondary">下载Excel</button>
+            </div>
+            <pre id="outCases" class="ui-pre"></pre>
+            <div id="viewCases" class="visual"></div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet5">
+          <div class="card ui-card">
+            <h3>测试脚本</h3>
+            <div class="script-split">
+              <div class="script-left">
+                <h4>Agentic Coding 对话</h4>
+                <div id="agenticScriptMessages" class="agentic-thread"></div>
+                <div class="btn-row">
+                  <button id="agenticScriptApplyBtn" class="ui-btn ui-btn-secondary" type="button">应用最新代码到脚本参考</button>
+                  <button id="agenticScriptClearBtn" class="ui-btn ui-btn-secondary" type="button">清空对话</button>
+                </div>
+                <textarea id="agenticScriptInput" class="ui-input" placeholder="描述你的修改目标，或让AI根据右侧联机调试结果定位并修复问题..."></textarea>
+                <div class="btn-row">
+                  <button id="agenticScriptSendBtn" class="ui-btn" type="button">发送给Agent</button>
+                </div>
+              </div>
+              <div class="script-right">
+                <label>脚本调试/执行模式</label>
+                <select id="automationExecMode" class="ui-input">
+                  <option value="auto">自动（按需求页勾选顺序）</option>
+                  <option value="android_adb">Android Web ADB</option>
+                  <option value="at_serial">Web 串口 AT</option>
+                </select>
+                <div class="btn-row">
+                  <button id="genScriptsBtn" class="ui-btn ui-btn-secondary">a. 自动化脚本生成</button>
+                  <button id="debugScriptBtn" class="ui-btn ui-btn-secondary">b. 联机调试</button>
+                  <button id="runOnlineBtn" class="ui-btn ui-btn-secondary">c. 在线自动化测试</button>
+                </div>
+                <h4>脚本参考</h4>
+                <pre id="outCode" class="ui-pre"></pre>
+                <h4>联机调试结果</h4>
+                <pre id="outDebug" class="ui-pre"></pre>
+                <h4>在线执行结果</h4>
+                <pre id="outRun" class="ui-pre"></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet6">
+          <div class="card ui-card">
+            <div class="row-head">
+              <h3>流程可视化（节点关系 + Prompt 角色）</h3>
+              <button id="refreshFlowVizBtn" class="ui-btn ui-btn-secondary">刷新流程可视化</button>
+            </div>
+            <div id="flowVizCanvas" class="flow-viz-canvas"></div>
+            <label>Mermaid</label>
+            <pre id="flowMermaid" class="ui-pre flow-mermaid"></pre>
+            <label>Prompt 角色映射</label>
+            <div id="flowPromptRoles" class="visual"></div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet7">
+          <div class="card ui-card">
+            <div class="row-head">
+              <h3>ATSpec / Profile / EFSM 管理</h3>
+              <div class="btn-row">
+                <button id="loadAtAssetsBtn" class="ui-btn ui-btn-secondary">加载基线</button>
+                <button id="saveAtAssetsBtn" class="ui-btn ui-btn-secondary">保存修改</button>
+                <button id="renderAtMbtGraphBtn" class="ui-btn ui-btn-secondary">绘制MBT模型图</button>
+              </div>
+            </div>
+            <label>ATSpec (3GPP 27.007 + 27.005)</label>
+            <div class="split-editor">
+              <div>
+                <textarea id="atSpecEditor" class="ui-input editor" readonly></textarea>
+              </div>
+              <div class="structured-panel">
+                <label>AT指令勾选（默认全选，取消勾选=不测）</label>
+                <div id="atCommandSelector" class="visual" style="max-height: 340px; overflow: auto;"></div>
+                <div id="atCommandSelectionSummary" class="visual"></div>
+                <div class="btn-row">
+                  <button id="atApplyCommandSelectionBtn" class="ui-btn ui-btn-secondary" type="button">应用到Manifest禁用命令</button>
+                </div>
+              </div>
+            </div>
+            <label>Profile 映射 (generic_3gpp)</label>
+            <textarea id="atProfileEditor" class="ui-input editor"></textarea>
+            <label>配置需求（自然语言）</label>
+            <textarea id="atConfigRequest" class="ui-input" placeholder="例如：这次不测短信；新增厂商扩展 atspec.vendor.quectel@1.0，加入 QCFG 锁 band 指令；env.apn=cmnet。"></textarea>
+            <div class="btn-row">
+              <button id="atConfigCompileBtn" class="ui-btn">LLM 生成并应用配置（Manifest + Extension）</button>
+            </div>
+
+            <label>ChangeSpec（LLM中间结果）</label>
+            <pre id="atChangeSpecView" class="ui-pre"></pre>
+            <label>Manifest Patch（JSON Patch）</label>
+            <pre id="atManifestPatchView" class="ui-pre"></pre>
+            <label>Extension Patch / Mode</label>
+            <pre id="atExtensionPatchView" class="ui-pre"></pre>
+
+            <label>Manifest（当前生效配置）</label>
+            <textarea id="atManifestEditor" class="ui-input editor"></textarea>
+            <label>Extension ATSpec（当前生效配置）</label>
+            <textarea id="atExtensionEditor" class="ui-input editor"></textarea>
+            <label>EFSM / MBT 模型</label>
+            <textarea id="atEfsmEditor" class="ui-input editor"></textarea>
+            <label>MBT模型图（AltWalker风格）</label>
+            <div id="atMbtGraphCanvas" class="flow-viz-canvas mbt-canvas"></div>
+            <div class="btn-row">
+              <label><input id="atCompileUseLlm" type="checkbox" checked /> 编译时启用LLM建议</label>
+              <button id="compileAtBtn" class="ui-btn">编译 Active EFSM/MBT</button>
+            </div>
+            <label>编译报告</label>
+            <pre id="atCompileReport" class="ui-pre"></pre>
+            <label>Active EFSM（编译产物）</label>
+            <pre id="atActiveEfsmView" class="ui-pre"></pre>
+            <label>Effective ATSpec（编译产物）</label>
+            <pre id="atEffectiveAtspecView" class="ui-pre"></pre>
+            <label>Effective Profile（编译产物）</label>
+            <pre id="atEffectiveProfileView" class="ui-pre"></pre>
+          </div>
+
+          <div class="card ui-card">
+            <h3>MBT 覆盖测试</h3>
+            <div class="btn-row">
+              <label class="w-full">执行模式
+                <select id="atMbtMode" class="ui-input">
+                  <option value="at_serial">AT 串口</option>
+                  <option value="android_adb">Android ADB (实验)</option>
+                </select>
+              </label>
+              <label class="w-full">最大步数
+                <input id="atMbtMaxSteps" class="ui-input" type="number" value="20" min="1" max="200" />
+              </label>
+            </div>
+            <div class="btn-row">
+              <button id="runAtMbtBtn" class="ui-btn">执行MBT覆盖测试</button>
+            </div>
+            <pre id="atMbtResult" class="ui-pre"></pre>
+          </div>
+        </section>
+
+      </section>
+    </main>
+
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-card ui-card">
+        <div class="modal-head">
+          <h3>Prompt Settings</h3>
+          <button id="closeSettingsBtn" class="ui-btn ui-btn-secondary icon-btn">×</button>
+        </div>
+        <label>选择模板</label>
+        <select class="ui-input" id="promptSelect"></select>
+        <label>模板内容</label>
+        <textarea id="promptEditor" class="ui-input editor"></textarea>
+        <div class="btn-row">
+          <button id="savePromptBtn" class="ui-btn">保存当前模板</button>
+          <button id="reloadPromptsBtn" class="ui-btn ui-btn-secondary">重新加载</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="botFab" class="bot-fab" type="button" aria-label="Open AI Bot">
+      <span class="bot-halo"></span>
+      <span id="botUnreadBadge" class="bot-unread hidden">0</span>
+      <img src="/static/bot.png" alt="AI Bot" />
+    </button>
+
+    <section id="botPanel" class="bot-panel hidden" aria-label="AI Bot Panel">
+      <header class="bot-head">
+        <div class="bot-title"><span class="bot-dot"></span>PocketFlow Website Chatbot</div>
+        <div class="bot-head-actions">
+          <button id="botRefreshBtn" class="ui-btn ui-btn-secondary bot-head-btn" type="button" title="新对话">↻</button>
+          <button id="botCloseBtn" class="ui-btn ui-btn-secondary bot-head-btn" type="button">×</button>
+        </div>
+      </header>
+      <div class="bot-body">
+        <div class="bot-chip">This chatbot is open source</div>
+        <div id="botMessages" class="bot-messages">
+          <div class="bot-msg bot-msg-assistant">Welcome! I can help explain this test-agent workflow and output artifacts. What would you like to know?</div>
+          <div class="bot-note">New conversation started!</div>
+        </div>
+      </div>
+      <footer class="bot-input-row">
+        <input id="botInput" class="ui-input bot-input" type="text" placeholder="Ask a question..." />
+        <button id="botSendBtn" class="ui-btn ui-btn-secondary bot-send" type="button">➤</button>
+      </footer>
+    </section>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

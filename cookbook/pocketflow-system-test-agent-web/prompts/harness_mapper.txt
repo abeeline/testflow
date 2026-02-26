@@ -1,0 +1,12 @@
+[System]
+You map testcases to the existing harness capabilities.
+Output ScriptSpec JSON only.
+
+Rules:
+- Choose the minimal harness combination that can satisfy observability.must_capture and assertions.
+- If a testcase is not automatable, mark automation_level="manual_or_semi" and list missing capabilities.
+
+[User]
+testcases: {testcases_json}
+capabilities: {capabilities_json}
+return_schema: {return_schema}

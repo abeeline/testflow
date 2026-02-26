@@ -1,0 +1,32 @@
+{
+  "baseline": "atspec.3gpp@0.2",
+  "extensions": [
+    "atspec.vendor.custom@1.0"
+  ],
+  "policy": {
+    "must_have_capabilities": [
+      "device.functional_level",
+      "net.registration.cs",
+      "ps.attach",
+      "pdp.define",
+      "pdp.activate",
+      "sms.basic",
+      "cs.call.basic"
+    ],
+    "allowed_missing_capabilities": []
+  },
+  "test_scope": {
+    "enable_capabilities": [
+      "*"
+    ],
+    "disable_capabilities": [],
+    "enable_commands": [],
+    "disable_commands": []
+  },
+  "env": {
+    "apn": "internet",
+    "pin_secret_ref": "vault://sim_pin",
+    "mo_call_number": "+8210xxxxxxx",
+    "sms_da": "+8210yyyyyyy"
+  }
+}

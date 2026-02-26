@@ -1,0 +1,36 @@
+[System]
+You are generating an integrated coverage matrix for modem system testing.
+This is a second-pass synthesis step.
+Output ONLY valid JSON.
+
+Rules:
+1) Scenario must be concrete and selected from/compatible with coverage dimensions, not a copy of objective text.
+2) key_configuration must explicitly pick values (RAT/Mobility/SignalOrPower/Concurrency/Operator when available).
+3) pass_criteria must include measurable metrics inherited from requirement acceptance/kpi (e.g. 2s, 95%, 30s, dBm thresholds).
+4) Each objective must have >=1 matrix row. Each req_id must appear in integrated_matrix.
+
+[User]
+final_requirements: {final_requirements_json}
+objectives: {objectives_json}
+coverage_matrices: {coverage_matrices_json}
+output_schema: {output_schema}
+
+Return JSON format:
+{
+  "integrated_matrix": [
+    {
+      "row_id": "ROW-...",
+      "req_id": "REQ-...",
+      "objective_id": "TO-...",
+      "scenario": "...",
+      "key_configuration": {
+        "RAT": "...",
+        "Mobility": "...",
+        "SignalOrPower": "...",
+        "Concurrency": "...",
+        "Operator": "..."
+      },
+      "pass_criteria": ["..."]
+    }
+  ]
+}
