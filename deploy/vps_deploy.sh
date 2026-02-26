@@ -53,9 +53,15 @@ if [[ ! -f "${PROJECT_DIR}/main.py" ]]; then
 fi
 
 echo "[3/8] Creating virtualenv and installing Python deps..."
+rm -rf "${PROJECT_DIR}/.venv"
 python3 -m venv "${PROJECT_DIR}/.venv"
-"${PROJECT_DIR}/.venv/bin/pip" install -U pip
-"${PROJECT_DIR}/.venv/bin/pip" install -r "${PROJECT_DIR}/requirements.txt"
+VENV_PY="${PROJECT_DIR}/.venv/bin/python"
+if [[ ! -x "${VENV_PY}" ]]; then
+  echo "ERROR: venv python not found at ${VENV_PY}"
+  exit 1
+fi
+"${VENV_PY}" -m pip install -U pip
+"${VENV_PY}" -m pip install -r "${PROJECT_DIR}/requirements.txt"
 
 echo "[4/8] Ensuring .env exists..."
 if [[ ! -f "${PROJECT_DIR}/.env" ]]; then
