@@ -1,0 +1,1157 @@
+{
+  "schema": "ATSpec-EFSM/1.0",
+  "name": "3GPP_Baseline_Moderm_AT_EFSM",
+  "version": "1.0.0",
+  "scope": {
+    "goal": "用于覆盖率驱动探索的最小但闭环的3GPP基准EFSM：SIM/PIN、CFUN射频开关、网络注册(CREG/CGREG/CEREG)、PS附着/去附着(CGATT)、PDP定义/激活/去激活(CGDCONT/CGACT)、CS语音呼叫(ATD/ATA/CHUP/ATH)、短信基础(27.005 CSMS/CPMS/CMGF/CNMI/CMGS/CMGR)。",
+    "assumptions": [
+      "串口链路为V.250/AT命令状态；CRLF为行结束；存在OK/ERROR/+CME ERROR/+CMS ERROR等终止结果码。",
+      "测试执行器可解析URC并异步更新变量；可进行轮询(wait/poll)步骤。",
+      "如目标模块不支持某些可选命令，执行器可将其标记为CAP_MISSING并走降级分支（不阻塞主流程）。"
+    ],
+    "sources": [
+      {
+        "doc": "3GPP TS 27.007",
+        "ref": "ts_127007v180600p.pdf"
+      },
+      {
+        "doc": "3GPP TS 27.005",
+        "ref": "ts_127005v180000p.pdf"
+      }
+    ]
+  },
+  "semantics": {
+    "from_star": "from='*' 表示全局转移：在任意状态都可尝试（典型用于恢复/重置/CFUN切换）。",
+    "cmd_step": {
+      "send": "要发送的AT字符串（不含末尾CRLF由执行器追加）",
+      "expect": "期望匹配的正则（匹配到即认为该step成功；若不提供则默认匹配OK/ERROR类终止码）",
+      "timeout_ms": "等待该step完成的超时",
+      "extract": "可选：从响应中提取变量（regex + group->var）",
+      "on_fail": "失败处理策略：'abort'|'soft_fail'|'cap_missing'|'goto:<state_id>'"
+    },
+    "oracle": {
+      "ok_patterns": [
+        "^OK\\s*$"
+      ],
+      "err_patterns": [
+        "^ERROR\\s*$",
+        "^\\+CME ERROR:.*$",
+        "^\\+CMS ERROR:.*$"
+      ]
+    },
+    "coverage": {
+      "note": "coverage_points用于覆盖率驱动选择（CGE）：执行器记录已覆盖点，调度器偏好未覆盖的转移。"
+    }
+  },
+  "vars": {
+    "sim.state": "UNKNOWN",
+    "rf.state": "UNKNOWN",
+    "reg.cs": 0,
+    "reg.ps": 0,
+    "reg.eps": 0,
+    "op.mode": "UNKNOWN",
+    "ps.attached": false,
+    "pdp.1.defined": false,
+    "pdp.1.active": false,
+    "sms.configured": false,
+    "call.state": "IDLE",
+    "last.error": ""
+  },
+  "states": [
+    {
+      "id": "S_BOOT",
+      "type": "initial",
+      "desc": "上电/串口刚建立，未知状态"
+    },
+    {
+      "id": "S_AT_READY",
+      "type": "stable",
+      "desc": "已确认AT可交互，基本配置完成(回显/CMEE/URC开关等)"
+    },
+    {
+      "id": "S_SIM_PIN_REQUIRED",
+      "type": "stable",
+      "desc": "需要SIM PIN/PUK/PH-SIM等"
+    },
+    {
+      "id": "S_SIM_READY",
+      "type": "stable",
+      "desc": "SIM READY，可进行CFUN/注册等"
+    },
+    {
+      "id": "S_RF_OFF",
+      "type": "stable",
+      "desc": "射频关闭/最低功能（通过CFUN=0进入，或模块处于飞行/断网态）"
+    },
+    {
+      "id": "S_RF_ON",
+      "type": "stable",
+      "desc": "射频开启（CFUN=1），尚未保证注册成功"
+    },
+    {
+      "id": "S_NET_SEARCH",
+      "type": "stable",
+      "desc": "已请求自动选网（COPS=0），等待注册"
+    },
+    {
+      "id": "S_CS_REGISTERED",
+      "type": "stable",
+      "desc": "电路域注册成功（CREG stat in {1,5}等），可进行CS语音与短信（取决于网络）"
+    },
+    {
+      "id": "S_PS_ATTACHED",
+      "type": "stable",
+      "desc": "PS已附着（CGATT=1）"
+    },
+    {
+      "id": "S_PDP_DEFINED",
+      "type": "stable",
+      "desc": "已定义PDP Context（CGDCONT），未激活"
+    },
+    {
+      "id": "S_PDP_ACTIVE",
+      "type": "stable",
+      "desc": "PDP已激活（CGACT=1,<cid>）"
+    },
+    {
+      "id": "S_SMS_READY",
+      "type": "stable",
+      "desc": "短信能力已配置（27.005），可收发（不保证网络服务一定可用）"
+    },
+    {
+      "id": "S_VOICE_DIALING",
+      "type": "transient",
+      "desc": "发起MO语音呼叫中"
+    },
+    {
+      "id": "S_VOICE_INCOMING",
+      "type": "transient",
+      "desc": "来电振铃中"
+    },
+    {
+      "id": "S_VOICE_ACTIVE",
+      "type": "stable",
+      "desc": "语音通话已建立"
+    }
+  ],
+  "events": [
+    {
+      "id": "E_CPIN",
+      "match": "^\\+CPIN:\\s*(.+)\\s*$",
+      "extract": [
+        {
+          "group": 1,
+          "var": "sim.state",
+          "map": {
+            "READY": "READY",
+            "SIM PIN": "PIN_REQUIRED",
+            "SIM PUK": "PUK_REQUIRED",
+            "PH-SIM PIN": "PH_SIM_REQUIRED"
+          }
+        }
+      ]
+    },
+    {
+      "id": "E_CREG_URC",
+      "match": "^\\+CREG:\\s*([0-9]+)(?:,.*)?\\s*$",
+      "extract": [
+        {
+          "group": 1,
+          "var": "reg.cs",
+          "cast": "int"
+        }
+      ]
+    },
+    {
+      "id": "E_CGREG_URC",
+      "match": "^\\+CGREG:\\s*([0-9]+)(?:,.*)?\\s*$",
+      "extract": [
+        {
+          "group": 1,
+          "var": "reg.ps",
+          "cast": "int"
+        }
+      ]
+    },
+    {
+      "id": "E_CEREG_URC",
+      "match": "^\\+CEREG:\\s*([0-9]+)(?:,.*)?\\s*$",
+      "extract": [
+        {
+          "group": 1,
+          "var": "reg.eps",
+          "cast": "int"
+        }
+      ]
+    },
+    {
+      "id": "E_RING",
+      "match": "^(RING|\\+CRING:.*)\\s*$",
+      "set": [
+        {
+          "var": "call.state",
+          "value": "RINGING"
+        }
+      ]
+    },
+    {
+      "id": "E_NO_CARRIER",
+      "match": "^NO CARRIER\\s*$",
+      "set": [
+        {
+          "var": "call.state",
+          "value": "IDLE"
+        },
+        {
+          "var": "pdp.1.active",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "E_CONNECT",
+      "match": "^CONNECT.*$",
+      "set": [
+        {
+          "var": "call.state",
+          "value": "ACTIVE"
+        }
+      ]
+    },
+    {
+      "id": "E_CGEV_DETACH",
+      "match": "^\\+CGEV:\\s*(NW DETACH|ME DETACH).*$",
+      "set": [
+        {
+          "var": "ps.attached",
+          "value": false
+        },
+        {
+          "var": "pdp.1.active",
+          "value": false
+        }
+      ]
+    },
+    {
+      "id": "E_CMTI",
+      "match": "^\\+CMTI:.*$",
+      "set": [
+        {
+          "var": "sms.inbox.pending",
+          "value": true
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "T_RESET_ATZ",
+      "from": "*",
+      "to": "S_AT_READY",
+      "trigger": "manual",
+      "desc": "软复位到可交互状态（尽量不依赖厂商私有复位命令）",
+      "coverage_points": [
+        "recovery.atz"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "ATZ",
+            "timeout_ms": 8000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "ATE0",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "ATV1",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CMEE=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CREG=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CGREG=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CEREG=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CGEREP=1,0",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_CFUN_OFF_GLOBAL",
+      "from": "*",
+      "to": "S_RF_OFF",
+      "trigger": "manual",
+      "desc": "通过+CFUN=0关闭射频/协议栈，作为“强恢复点”与闭环入口",
+      "coverage_points": [
+        "rf.cfun.off"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CFUN=0",
+            "timeout_ms": 20000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CFUN?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^\\+CFUN:.*$"
+          }
+        ],
+        "set": [
+          {
+            "var": "rf.state",
+            "value": "OFF"
+          },
+          {
+            "var": "call.state",
+            "value": "IDLE"
+          },
+          {
+            "var": "ps.attached",
+            "value": false
+          },
+          {
+            "var": "pdp.1.active",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_CFUN_ON_FROM_RF_OFF",
+      "from": "S_RF_OFF",
+      "to": "S_RF_ON",
+      "trigger": "manual",
+      "desc": "通过+CFUN=1开启射频/协议栈",
+      "coverage_points": [
+        "rf.cfun.on"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CFUN=1",
+            "timeout_ms": 30000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CFUN?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^\\+CFUN:.*$"
+          }
+        ],
+        "set": [
+          {
+            "var": "rf.state",
+            "value": "ON"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_BOOT_SYNC",
+      "from": "S_BOOT",
+      "to": "S_AT_READY",
+      "trigger": "auto",
+      "desc": "握手确认AT链路可用并做基础配置（回显、错误码、URC）",
+      "coverage_points": [
+        "boot.sync",
+        "cfg.echo_off",
+        "cfg.cmee",
+        "cfg.urc.reg"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT",
+            "timeout_ms": 3000,
+            "on_fail": "abort",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "ATE0",
+            "timeout_ms": 3000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "ATV1",
+            "timeout_ms": 3000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CMEE=2",
+            "timeout_ms": 3000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CREG=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CGREG=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          },
+          {
+            "send": "AT+CEREG=2",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|ERROR|\\+CME ERROR:.*)$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_SIM_QUERY_READY",
+      "from": "S_AT_READY",
+      "to": "S_SIM_READY",
+      "trigger": "auto",
+      "desc": "查询+CPIN? 分支：SIM已就绪",
+      "coverage_points": [
+        "sim.cpin.ready"
+      ],
+      "guard": "resp_of('AT+CPIN?') contains '+CPIN: READY'",
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CPIN?",
+            "timeout_ms": 5000,
+            "on_fail": "abort",
+            "expect": "^(\\+CPIN:.*|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "sim.state",
+            "value": "READY"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_SIM_QUERY_PIN_REQUIRED",
+      "from": "S_AT_READY",
+      "to": "S_SIM_PIN_REQUIRED",
+      "trigger": "auto",
+      "desc": "查询+CPIN? 分支：需要PIN/PUK/PH-SIM等",
+      "coverage_points": [
+        "sim.cpin.need_pin"
+      ],
+      "guard": "resp_of('AT+CPIN?') contains '+CPIN:' and not contains 'READY'",
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CPIN?",
+            "timeout_ms": 5000,
+            "on_fail": "abort",
+            "expect": "^(\\+CPIN:.*|\\+CME ERROR:.*|ERROR)$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_SIM_UNLOCK_PIN",
+      "from": "S_SIM_PIN_REQUIRED",
+      "to": "S_SIM_READY",
+      "trigger": "manual",
+      "params": {
+        "pin": "string"
+      },
+      "desc": "输入PIN解锁（+CPIN=\"<pin>\"），成功后进入SIM_READY",
+      "coverage_points": [
+        "sim.cpin.unlock"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CPIN=\"{{pin}}\"",
+            "timeout_ms": 15000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CPIN?",
+            "timeout_ms": 5000,
+            "on_fail": "abort",
+            "expect": "^(\\+CPIN:.*|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "post_check": "last_resp_contains('+CPIN: READY')",
+        "set": [
+          {
+            "var": "sim.state",
+            "value": "READY"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_BASELINE_RF_OFF",
+      "from": "S_SIM_READY",
+      "to": "S_RF_OFF",
+      "trigger": "auto",
+      "desc": "可选：将SIM_READY下的未知射频状态拉到RF_OFF作为统一起点（减少上次配置残留）",
+      "coverage_points": [
+        "baseline.rf_off"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CFUN=0",
+            "timeout_ms": 20000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "rf.state",
+            "value": "OFF"
+          },
+          {
+            "var": "call.state",
+            "value": "IDLE"
+          },
+          {
+            "var": "ps.attached",
+            "value": false
+          },
+          {
+            "var": "pdp.1.active",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_COPS_AUTO",
+      "from": "S_RF_ON",
+      "to": "S_NET_SEARCH",
+      "trigger": "auto",
+      "desc": "请求自动选网/注册（+COPS=0,0），进入等待注册状态",
+      "coverage_points": [
+        "net.cops.auto"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+COPS=0,0",
+            "timeout_ms": 60000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "op.mode",
+            "value": "AUTO"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_WAIT_CS_REG",
+      "from": "S_NET_SEARCH",
+      "to": "S_CS_REGISTERED",
+      "trigger": "auto",
+      "desc": "通过URC或轮询等待+CREG注册成功（stat=1/5等）",
+      "coverage_points": [
+        "net.creg.registered"
+      ],
+      "action": {
+        "steps": [
+          {
+            "type": "poll",
+            "cmd": {
+              "send": "AT+CREG?",
+              "expect": "^\\+CREG:.*$",
+              "timeout_ms": 5000
+            },
+            "interval_ms": 2000,
+            "timeout_ms": 180000,
+            "until": "parse_creg_stat(resp) in [1,5,6,7,9,10,11]",
+            "on_timeout": "abort",
+            "parse": {
+              "regex": "^\\+CREG:\\s*([0-9]+),([0-9]+).*$",
+              "groups": {
+                "n": 1,
+                "stat": 2
+              }
+            }
+          }
+        ],
+        "set": [
+          {
+            "var": "reg.cs",
+            "value": "{{last.parse.stat}}",
+            "cast": "int"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_UPDATE_PS_REG",
+      "from": "S_CS_REGISTERED",
+      "to": "S_CS_REGISTERED",
+      "trigger": "auto",
+      "desc": "更新PS/EPS注册状态（+CGREG?/+CEREG?），不改变主状态",
+      "coverage_points": [
+        "net.cgreg.read",
+        "net.cereg.read"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGREG?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CGREG:.*|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CEREG?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CEREG:.*|\\+CME ERROR:.*|ERROR)$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_PS_ATTACH",
+      "from": "S_CS_REGISTERED",
+      "to": "S_PS_ATTACHED",
+      "trigger": "manual",
+      "desc": "PS附着（+CGATT=1），成功则进入PS_ATTACHED",
+      "coverage_points": [
+        "ps.cgatt.attach"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGATT=1",
+            "timeout_ms": 30000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CGATT?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^\\+CGATT:.*$"
+          }
+        ],
+        "post_check": "last_resp_contains('+CGATT: 1')",
+        "set": [
+          {
+            "var": "ps.attached",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_PS_DETACH",
+      "from": "S_PS_ATTACHED",
+      "to": "S_CS_REGISTERED",
+      "trigger": "manual",
+      "desc": "PS去附着（+CGATT=0），回到CS_REGISTERED",
+      "coverage_points": [
+        "ps.cgatt.detach"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGATT=0",
+            "timeout_ms": 30000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CGATT?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^\\+CGATT:.*$"
+          }
+        ],
+        "set": [
+          {
+            "var": "ps.attached",
+            "value": false
+          },
+          {
+            "var": "pdp.1.active",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_PDP_DEFINE_CID1",
+      "from": "S_PS_ATTACHED",
+      "to": "S_PDP_DEFINED",
+      "trigger": "manual",
+      "params": {
+        "apn": "string",
+        "pdp_type": "string"
+      },
+      "desc": "定义PDP Context（+CGDCONT=1,\"<PDP_type>\",\"<apn>\"），进入PDP_DEFINED",
+      "coverage_points": [
+        "pdp.cgdcont.define"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGDCONT=1,\"{{pdp_type}}\",\"{{apn}}\"",
+            "timeout_ms": 5000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CGDCONT?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CGDCONT:.*|OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "pdp.1.defined",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_PDP_ACTIVATE_CID1",
+      "from": "S_PDP_DEFINED",
+      "to": "S_PDP_ACTIVE",
+      "trigger": "manual",
+      "desc": "激活PDP（+CGACT=1,1），进入PDP_ACTIVE",
+      "coverage_points": [
+        "pdp.cgact.activate"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGACT=1,1",
+            "timeout_ms": 60000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CGACT?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CGACT:.*|OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "pdp.1.active",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_PDP_DEACTIVATE_CID1",
+      "from": "S_PDP_ACTIVE",
+      "to": "S_PDP_DEFINED",
+      "trigger": "manual",
+      "desc": "去激活PDP（+CGACT=0,1），回到PDP_DEFINED",
+      "coverage_points": [
+        "pdp.cgact.deactivate"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGACT=0,1",
+            "timeout_ms": 60000,
+            "on_fail": "abort",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          },
+          {
+            "send": "AT+CGACT?",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CGACT:.*|OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "pdp.1.active",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_PDP_QUERY_IP",
+      "from": "S_PDP_ACTIVE",
+      "to": "S_PDP_ACTIVE",
+      "trigger": "auto",
+      "desc": "查询PDP地址（例如+CGPADDR=1），用于验证激活后的可观测输出（可选）",
+      "coverage_points": [
+        "pdp.query.ip"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CGPADDR=1",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CGPADDR:.*|OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_SMS_SETUP",
+      "from": "S_CS_REGISTERED",
+      "to": "S_SMS_READY",
+      "trigger": "manual",
+      "desc": "短信能力初始化：CSMS/CPMS/CMGF=1/CNMI（最小可用配置）",
+      "coverage_points": [
+        "sms.csms",
+        "sms.cpms",
+        "sms.cmgf.text",
+        "sms.cnmi"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CSMS=0",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|\\+CMS ERROR:.*)$"
+          },
+          {
+            "send": "AT+CPMS=\"ME\",\"ME\",\"ME\"",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CPMS:.*|OK|\\+CME ERROR:.*|ERROR|\\+CMS ERROR:.*)$"
+          },
+          {
+            "send": "AT+CMGF=1",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|\\+CMS ERROR:.*)$"
+          },
+          {
+            "send": "AT+CNMI=2,1,0,0,0",
+            "timeout_ms": 5000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|\\+CMS ERROR:.*)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "sms.configured",
+            "value": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_SMS_SEND_TEXT",
+      "from": "S_SMS_READY",
+      "to": "S_SMS_READY",
+      "trigger": "manual",
+      "params": {
+        "da": "string",
+        "text": "string"
+      },
+      "desc": "发送文本短信：+CMGS=\"<da>\" 等待 '>' 提示，发送内容并以CTRL+Z结束",
+      "coverage_points": [
+        "sms.cmgs.send_text"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CMGS=\"{{da}}\"",
+            "timeout_ms": 10000,
+            "on_fail": "abort",
+            "expect": "^>\\s*$"
+          },
+          {
+            "type": "payload",
+            "send": "{{text}}<CTRLZ>",
+            "timeout_ms": 60000,
+            "expect": "^(\\+CMGS:.*\\s*)?(OK|\\+CMS ERROR:.*|ERROR)\\s*$",
+            "on_fail": "abort"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_SMS_READ_INDEX",
+      "from": "S_SMS_READY",
+      "to": "S_SMS_READY",
+      "trigger": "manual",
+      "params": {
+        "index": "int"
+      },
+      "desc": "读取短信：+CMGR=<index>（用于来信校验）",
+      "coverage_points": [
+        "sms.cmgr.read"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CMGR={{index}}",
+            "timeout_ms": 10000,
+            "on_fail": "soft_fail",
+            "expect": "^(\\+CMGR:.*|OK|\\+CMS ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "sms.inbox.pending",
+            "value": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_VOICE_DIAL_MO",
+      "from": "S_CS_REGISTERED",
+      "to": "S_VOICE_DIALING",
+      "trigger": "manual",
+      "params": {
+        "number": "string"
+      },
+      "desc": "MO语音拨号：ATD<number>; （分号表示语音/telephony）",
+      "coverage_points": [
+        "cs.call.mo.dial"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "ATD{{number}};",
+            "timeout_ms": 30000,
+            "on_fail": "abort",
+            "expect": "^(OK|CONNECT.*|NO CARRIER|BUSY|NO DIALTONE|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "call.state",
+            "value": "DIALING"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_VOICE_WAIT_ACTIVE",
+      "from": "S_VOICE_DIALING",
+      "to": "S_VOICE_ACTIVE",
+      "trigger": "auto",
+      "desc": "等待通话建立：优先根据CONNECT/URC；若支持+CLCC则轮询确认有active call",
+      "coverage_points": [
+        "cs.call.active"
+      ],
+      "action": {
+        "steps": [
+          {
+            "type": "poll",
+            "cmd": {
+              "send": "AT+CLCC",
+              "expect": "^(\\+CLCC:.*|OK|\\+CME ERROR:.*|ERROR)$",
+              "timeout_ms": 5000
+            },
+            "interval_ms": 2000,
+            "timeout_ms": 120000,
+            "until": "resp_contains('+CLCC:') and any_call_status(resp) in ['active','held','alerting','incoming']",
+            "on_timeout": "soft_fail",
+            "parse": {
+              "note": "执行器可按27.007解析+CLCC字段；若+CLCC不支持，on_timeout走soft_fail并依赖URC/CONNECT事件"
+            }
+          }
+        ],
+        "set": [
+          {
+            "var": "call.state",
+            "value": "ACTIVE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_VOICE_HANGUP",
+      "from": "S_VOICE_ACTIVE",
+      "to": "S_CS_REGISTERED",
+      "trigger": "manual",
+      "desc": "挂断通话：优先+CHUP，其次ATH；回到CS_REGISTERED",
+      "coverage_points": [
+        "cs.call.hangup"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CHUP",
+            "timeout_ms": 10000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|NO CARRIER)$"
+          },
+          {
+            "send": "ATH",
+            "timeout_ms": 10000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|NO CARRIER)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "call.state",
+            "value": "IDLE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_VOICE_INCOMING_URC",
+      "from": "S_CS_REGISTERED",
+      "to": "S_VOICE_INCOMING",
+      "trigger": "event:E_RING",
+      "desc": "收到RING/+CRING来电提示后进入来电状态",
+      "coverage_points": [
+        "cs.call.mt.ring"
+      ],
+      "action": {
+        "steps": []
+      }
+    },
+    {
+      "id": "T_VOICE_ANSWER",
+      "from": "S_VOICE_INCOMING",
+      "to": "S_VOICE_ACTIVE",
+      "trigger": "manual",
+      "desc": "接听来电：ATA",
+      "coverage_points": [
+        "cs.call.mt.answer"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "ATA",
+            "timeout_ms": 30000,
+            "on_fail": "abort",
+            "expect": "^(OK|CONNECT.*|NO CARRIER|\\+CME ERROR:.*|ERROR)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "call.state",
+            "value": "ACTIVE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_VOICE_REJECT",
+      "from": "S_VOICE_INCOMING",
+      "to": "S_CS_REGISTERED",
+      "trigger": "manual",
+      "desc": "拒接/挂断来电：+CHUP/ATH",
+      "coverage_points": [
+        "cs.call.mt.reject"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+CHUP",
+            "timeout_ms": 10000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|NO CARRIER)$"
+          },
+          {
+            "send": "ATH",
+            "timeout_ms": 10000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR|NO CARRIER)$"
+          }
+        ],
+        "set": [
+          {
+            "var": "call.state",
+            "value": "IDLE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "T_CS_REG_LOST",
+      "from": "S_CS_REGISTERED",
+      "to": "S_RF_ON",
+      "trigger": "event:E_CREG_URC",
+      "guard": "reg.cs in [0,2,3,4]",
+      "desc": "注册丢失/拒绝/未知时回退到RF_ON（可重新COPS/等待注册）",
+      "coverage_points": [
+        "net.creg.lost"
+      ],
+      "action": {
+        "steps": []
+      }
+    },
+    {
+      "id": "T_RFON_TO_NET_SEARCH",
+      "from": "S_RF_ON",
+      "to": "S_NET_SEARCH",
+      "trigger": "manual",
+      "desc": "手动重新进入选网/等待注册（覆盖异常场景：RF_ON但未走COPS）",
+      "coverage_points": [
+        "net.search.enter"
+      ],
+      "action": {
+        "steps": [
+          {
+            "send": "AT+COPS=0,0",
+            "timeout_ms": 60000,
+            "on_fail": "soft_fail",
+            "expect": "^(OK|\\+CME ERROR:.*|ERROR)$"
+          }
+        ]
+      }
+    }
+  ]
+}

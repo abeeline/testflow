@@ -1,0 +1,129 @@
+{
+  "meta": {
+    "id": "profile.generic_3gpp",
+    "version": "0.1.0"
+  },
+  "transport": {
+    "baudrate": 115200,
+    "data_bits": 8,
+    "parity": "N",
+    "stop_bits": 1,
+    "read_encoding": "latin-1",
+    "line_ending_tx": "\r"
+  },
+  "defaults": {
+    "init_sequence": [
+      {
+        "cmd_id": "v250.ate",
+        "params": {
+          "val": 0
+        }
+      },
+      {
+        "cmd_id": "v250.atv",
+        "params": {
+          "val": 1
+        }
+      },
+      {
+        "cmd_id": "cmd.cmee",
+        "params": {
+          "n": 2
+        }
+      }
+    ],
+    "timeouts": {
+      "default_sec": 3,
+      "network_register_sec": 180,
+      "pdp_activate_sec": 60,
+      "sms_send_sec": 60
+    }
+  },
+  "bindings": [
+    {
+      "capability": "device.identity",
+      "impl": [
+        {
+          "cmd_id": "cmd.cgmi"
+        },
+        {
+          "cmd_id": "cmd.cgmm"
+        },
+        {
+          "cmd_id": "cmd.cgmr"
+        },
+        {
+          "cmd_id": "cmd.cgsn"
+        }
+      ]
+    },
+    {
+      "capability": "sim.pin",
+      "impl": [
+        {
+          "cmd_id": "cmd.cpin"
+        }
+      ]
+    },
+    {
+      "capability": "phone.functionality",
+      "impl": [
+        {
+          "cmd_id": "cmd.cfun"
+        }
+      ]
+    },
+    {
+      "capability": "net.registration.cs",
+      "impl": [
+        {
+          "cmd_id": "cmd.creg"
+        }
+      ]
+    },
+    {
+      "capability": "ps.attach",
+      "impl": [
+        {
+          "cmd_id": "cmd.cgatt"
+        }
+      ]
+    },
+    {
+      "capability": "pdp.define",
+      "impl": [
+        {
+          "cmd_id": "cmd.cgdcont"
+        }
+      ]
+    },
+    {
+      "capability": "pdp.activate",
+      "impl": [
+        {
+          "cmd_id": "cmd.cgact"
+        }
+      ]
+    },
+    {
+      "capability": "sms.core",
+      "impl": [
+        {
+          "cmd_id": "sms.cmgf"
+        },
+        {
+          "cmd_id": "sms.cnmi"
+        },
+        {
+          "cmd_id": "sms.cmgs"
+        }
+      ]
+    }
+  ],
+  "vendor_overrides": {
+    "example_quectel": {
+      "add_cmds": [],
+      "replace_bindings": []
+    }
+  }
+}

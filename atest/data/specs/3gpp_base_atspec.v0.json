@@ -1,0 +1,1095 @@
+{
+  "meta": {
+    "id": "3gpp.base",
+    "version": "0.2.0",
+    "sources": [
+      "3GPP TS 27.007",
+      "3GPP TS 27.005"
+    ]
+  },
+  "result_codes": {
+    "final_ok": [
+      "OK"
+    ],
+    "final_error": [
+      "ERROR"
+    ],
+    "final_cme_error_prefix": "+CME ERROR:",
+    "final_cms_error_prefix": "+CMS ERROR:"
+  },
+  "interaction": {
+    "line_ending_tx": "\\r",
+    "line_split_rx": [
+      "\\r\\n",
+      "\\n"
+    ],
+    "prompt": {
+      "chars": [
+        ">"
+      ],
+      "sms_end_ctrlz": 26,
+      "sms_cancel_esc": 27
+    }
+  },
+  "capabilities": [
+    {
+      "id": "te_ta.formatting",
+      "desc": "E/V/CMEE",
+      "depends": [],
+      "signals": []
+    },
+    {
+      "id": "device.identity",
+      "desc": "CGMI/CGMM/CGMR/CGSN",
+      "depends": [
+        "te_ta.formatting"
+      ],
+      "signals": []
+    },
+    {
+      "id": "sim.pin",
+      "desc": "CPIN",
+      "depends": [
+        "te_ta.formatting"
+      ],
+      "signals": []
+    },
+    {
+      "id": "phone.functionality",
+      "desc": "CFUN",
+      "depends": [
+        "sim.pin"
+      ],
+      "signals": []
+    },
+    {
+      "id": "net.registration.cs",
+      "desc": "CREG",
+      "depends": [
+        "phone.functionality"
+      ],
+      "signals": [
+        "+CREG:"
+      ]
+    },
+    {
+      "id": "ps.attach",
+      "desc": "CGATT",
+      "depends": [
+        "phone.functionality"
+      ],
+      "signals": []
+    },
+    {
+      "id": "pdp.define",
+      "desc": "CGDCONT",
+      "depends": [
+        "ps.attach"
+      ],
+      "signals": []
+    },
+    {
+      "id": "pdp.activate",
+      "desc": "CGACT",
+      "depends": [
+        "pdp.define"
+      ],
+      "signals": []
+    },
+    {
+      "id": "sms.core",
+      "desc": "SMS core",
+      "depends": [
+        "te_ta.formatting",
+        "sim.pin"
+      ],
+      "signals": [
+        "+CMTI:",
+        "+CMT:",
+        "+CDS:"
+      ]
+    },
+    {
+      "id": "device.functional_level",
+      "desc": "added by v0.2 merge",
+      "depends": [],
+      "signals": []
+    },
+    {
+      "id": "net.registration.ps",
+      "desc": "added by v0.2 merge",
+      "depends": [],
+      "signals": []
+    },
+    {
+      "id": "net.registration.eps",
+      "desc": "added by v0.2 merge",
+      "depends": [],
+      "signals": []
+    },
+    {
+      "id": "net.operator.select",
+      "desc": "added by v0.2 merge",
+      "depends": [],
+      "signals": []
+    },
+    {
+      "id": "cs.call.basic",
+      "desc": "added by v0.2 merge",
+      "depends": [],
+      "signals": []
+    },
+    {
+      "id": "sms.basic",
+      "desc": "added by v0.2 merge",
+      "depends": [],
+      "signals": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "v250.ate",
+      "capability": "te_ta.formatting",
+      "at": "ATE{val}",
+      "ops": [
+        "set"
+      ]
+    },
+    {
+      "id": "v250.atv",
+      "capability": "te_ta.formatting",
+      "at": "ATV{val}",
+      "ops": [
+        "set"
+      ]
+    },
+    {
+      "id": "cmd.cmee",
+      "capability": "te_ta.formatting",
+      "at": "AT+CMEE={n}",
+      "ops": [
+        "set",
+        "read",
+        "test"
+      ]
+    },
+    {
+      "id": "cmd.cgmi",
+      "capability": "device.identity",
+      "at": "AT+CGMI",
+      "ops": [
+        "action"
+      ]
+    },
+    {
+      "id": "cmd.cgmm",
+      "capability": "device.identity",
+      "at": "AT+CGMM",
+      "ops": [
+        "action"
+      ]
+    },
+    {
+      "id": "cmd.cgmr",
+      "capability": "device.identity",
+      "at": "AT+CGMR",
+      "ops": [
+        "action"
+      ]
+    },
+    {
+      "id": "cmd.cgsn",
+      "capability": "device.identity",
+      "at": "AT+CGSN",
+      "ops": [
+        "action"
+      ]
+    },
+    {
+      "id": "cmd.cpin",
+      "capability": "sim.pin",
+      "at": "AT+CPIN{arg}",
+      "ops": [
+        "read",
+        "set"
+      ]
+    },
+    {
+      "id": "cmd.cfun",
+      "capability": "phone.functionality",
+      "at": "AT+CFUN={fun}",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "cmd.creg",
+      "capability": "net.registration.cs",
+      "at": "AT+CREG={n}",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "cmd.cgatt",
+      "capability": "ps.attach",
+      "at": "AT+CGATT={state}",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "cmd.cgdcont",
+      "capability": "pdp.define",
+      "at": "AT+CGDCONT={cid},\"{pdp_type}\",\"{apn}\"",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "cmd.cgact",
+      "capability": "pdp.activate",
+      "at": "AT+CGACT={state},{cid}",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "sms.cmgf",
+      "capability": "sms.core",
+      "at": "AT+CMGF={mode}",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "sms.cnmi",
+      "capability": "sms.core",
+      "at": "AT+CNMI={mode},{mt},{bm},{ds},{bfr}",
+      "ops": [
+        "set",
+        "read"
+      ]
+    },
+    {
+      "id": "sms.cmgs",
+      "capability": "sms.core",
+      "at": "AT+CMGS={da}",
+      "ops": [
+        "action"
+      ],
+      "expect": {
+        "prompt": ">"
+      }
+    },
+    {
+      "id": "CMEE",
+      "capability": "core.error_reporting",
+      "forms": {
+        "set": "AT+CMEE={n}",
+        "read": "AT+CMEE?",
+        "test": "AT+CMEE=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "notes": "建议默认 +CMEE=2 以利日志/LLM判读（verbose err）。"
+    },
+    {
+      "id": "COPS",
+      "capability": "net.operator.select",
+      "forms": {
+        "set": "AT+COPS={mode},{format},{oper},{AcT}",
+        "read": "AT+COPS?",
+        "test": "AT+COPS=?"
+      },
+      "params": {
+        "mode": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "format": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ]
+        },
+        "oper": {
+          "type": "string",
+          "optional": true
+        },
+        "AcT": {
+          "type": "int",
+          "optional": true
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+COPS:{mode},{format},{oper},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      }
+    },
+    {
+      "id": "CFUN",
+      "capability": "device.functional_level",
+      "forms": {
+        "set": "AT+CFUN={fun},{rst}",
+        "read": "AT+CFUN?",
+        "test": "AT+CFUN=?"
+      },
+      "params": {
+        "fun": {
+          "type": "int",
+          "range": [
+            0,
+            1
+          ],
+          "default": 1
+        },
+        "rst": {
+          "type": "int",
+          "range": [
+            0,
+            1
+          ],
+          "optional": true
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "side_effects": [
+        "may_drop_registration",
+        "may_reset_stack_or_reboot"
+      ],
+      "notes": "不同厂商 fun/rst 取值范围会扩展；放在 Profile 里覆盖。"
+    },
+    {
+      "id": "CREG",
+      "capability": "net.registration.cs",
+      "forms": {
+        "set": "AT+CREG={n}",
+        "read": "AT+CREG?",
+        "test": "AT+CREG=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CREG:{n},{stat},{lac},{ci},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CREG:{stat},{lac},{ci},{AcT}",
+          "meaning": "CS registration state changed"
+        }
+      ]
+    },
+    {
+      "id": "CGREG",
+      "capability": "net.registration.ps",
+      "forms": {
+        "set": "AT+CGREG={n}",
+        "read": "AT+CGREG?",
+        "test": "AT+CGREG=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CGREG:{n},{stat},{lac},{ci},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CGREG:{stat},{lac},{ci},{AcT}",
+          "meaning": "PS registration state changed"
+        }
+      ]
+    },
+    {
+      "id": "CEREG",
+      "capability": "net.registration.eps",
+      "forms": {
+        "set": "AT+CEREG={n}",
+        "read": "AT+CEREG?",
+        "test": "AT+CEREG=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CEREG:{n},{stat},{tac},{ci},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CEREG:{stat},{tac},{ci},{AcT}",
+          "meaning": "EPS registration state changed"
+        }
+      ]
+    },
+    {
+      "id": "DIAL",
+      "capability": "cs.call.basic",
+      "forms": {
+        "exec": "ATD{number};"
+      },
+      "params": {
+        "number": {
+          "type": "string"
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "CONNECT"
+        ],
+        "err": [
+          "NO CARRIER",
+          "BUSY",
+          "NO DIALTONE",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "notes": "语音拨号通常以分号结尾；具体返回码差异放 Profile。"
+    },
+    {
+      "id": "CHUP",
+      "capability": "cs.call.basic",
+      "forms": {
+        "exec": "AT+CHUP"
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      }
+    },
+    {
+      "id": "CLCC",
+      "capability": "cs.call.basic",
+      "forms": {
+        "exec": "AT+CLCC"
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CLCC:{idx},{dir},{stat},{mode},{mpty},{number},{type}"
+        ],
+        "err": [
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "parsing": {
+        "multi_line_prefix": "+CLCC:",
+        "fields": [
+          "idx",
+          "dir",
+          "stat",
+          "mode",
+          "mpty",
+          "number",
+          "type"
+        ]
+      }
+    },
+    {
+      "id": "CMGF",
+      "capability": "sms.basic",
+      "forms": {
+        "set": "AT+CMGF={mode}",
+        "read": "AT+CMGF?",
+        "test": "AT+CMGF=?"
+      },
+      "params": {
+        "mode": {
+          "type": "enum",
+          "values": [
+            0,
+            1
+          ],
+          "default": 1
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "+CMS ERROR:{err}",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      }
+    },
+    {
+      "id": "CNMI",
+      "capability": "sms.basic",
+      "forms": {
+        "set": "AT+CNMI={mode},{mt},{bm},{ds},{bfr}",
+        "read": "AT+CNMI?",
+        "test": "AT+CNMI=?"
+      },
+      "params": {
+        "mode": {
+          "type": "int"
+        },
+        "mt": {
+          "type": "int"
+        },
+        "bm": {
+          "type": "int"
+        },
+        "ds": {
+          "type": "int"
+        },
+        "bfr": {
+          "type": "int"
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "+CMS ERROR:{err}",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CMTI:{mem},{index}",
+          "meaning": "New SMS stored indication (common)"
+        }
+      ]
+    },
+    {
+      "id": "CMGS",
+      "capability": "sms.basic",
+      "forms": {
+        "exec_interactive": "AT+CMGS={da}"
+      },
+      "interactive": {
+        "prompt_regex": ">$",
+        "submit_ctrlz": true
+      },
+      "params": {
+        "da": {
+          "type": "string"
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CMGS:{mr}"
+        ],
+        "err": [
+          "+CMS ERROR:{err}",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      }
+    }
+  ],
+  "atspec_id": "3gpp.baseline",
+  "version": "0.2",
+  "capabilities_added": [
+    "device.functional_level",
+    "net.registration.cs",
+    "net.registration.ps",
+    "net.registration.eps",
+    "net.operator.select",
+    "cs.call.basic",
+    "sms.basic"
+  ],
+  "commands_added": [
+    {
+      "id": "CMEE",
+      "capability": "core.error_reporting",
+      "forms": {
+        "set": "AT+CMEE={n}",
+        "read": "AT+CMEE?",
+        "test": "AT+CMEE=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "notes": "建议默认 +CMEE=2 以利日志/LLM判读（verbose err）。"
+    },
+    {
+      "id": "COPS",
+      "capability": "net.operator.select",
+      "forms": {
+        "set": "AT+COPS={mode},{format},{oper},{AcT}",
+        "read": "AT+COPS?",
+        "test": "AT+COPS=?"
+      },
+      "params": {
+        "mode": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "format": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ]
+        },
+        "oper": {
+          "type": "string",
+          "optional": true
+        },
+        "AcT": {
+          "type": "int",
+          "optional": true
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+COPS:{mode},{format},{oper},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      }
+    },
+    {
+      "id": "CFUN",
+      "capability": "device.functional_level",
+      "forms": {
+        "set": "AT+CFUN={fun},{rst}",
+        "read": "AT+CFUN?",
+        "test": "AT+CFUN=?"
+      },
+      "params": {
+        "fun": {
+          "type": "int",
+          "range": [
+            0,
+            1
+          ],
+          "default": 1
+        },
+        "rst": {
+          "type": "int",
+          "range": [
+            0,
+            1
+          ],
+          "optional": true
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "side_effects": [
+        "may_drop_registration",
+        "may_reset_stack_or_reboot"
+      ],
+      "notes": "不同厂商 fun/rst 取值范围会扩展；放在 Profile 里覆盖。"
+    },
+    {
+      "id": "CREG",
+      "capability": "net.registration.cs",
+      "forms": {
+        "set": "AT+CREG={n}",
+        "read": "AT+CREG?",
+        "test": "AT+CREG=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CREG:{n},{stat},{lac},{ci},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CREG:{stat},{lac},{ci},{AcT}",
+          "meaning": "CS registration state changed"
+        }
+      ]
+    },
+    {
+      "id": "CGREG",
+      "capability": "net.registration.ps",
+      "forms": {
+        "set": "AT+CGREG={n}",
+        "read": "AT+CGREG?",
+        "test": "AT+CGREG=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CGREG:{n},{stat},{lac},{ci},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CGREG:{stat},{lac},{ci},{AcT}",
+          "meaning": "PS registration state changed"
+        }
+      ]
+    },
+    {
+      "id": "CEREG",
+      "capability": "net.registration.eps",
+      "forms": {
+        "set": "AT+CEREG={n}",
+        "read": "AT+CEREG?",
+        "test": "AT+CEREG=?"
+      },
+      "params": {
+        "n": {
+          "type": "enum",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "default": 0
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CEREG:{n},{stat},{tac},{ci},{AcT}"
+        ],
+        "err": [
+          "+CME ERROR:{err}",
+          "ERROR"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CEREG:{stat},{tac},{ci},{AcT}",
+          "meaning": "EPS registration state changed"
+        }
+      ]
+    },
+    {
+      "id": "DIAL",
+      "capability": "cs.call.basic",
+      "forms": {
+        "exec": "ATD{number};"
+      },
+      "params": {
+        "number": {
+          "type": "string"
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "CONNECT"
+        ],
+        "err": [
+          "NO CARRIER",
+          "BUSY",
+          "NO DIALTONE",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "notes": "语音拨号通常以分号结尾；具体返回码差异放 Profile。"
+    },
+    {
+      "id": "CHUP",
+      "capability": "cs.call.basic",
+      "forms": {
+        "exec": "AT+CHUP"
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      }
+    },
+    {
+      "id": "CLCC",
+      "capability": "cs.call.basic",
+      "forms": {
+        "exec": "AT+CLCC"
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CLCC:{idx},{dir},{stat},{mode},{mpty},{number},{type}"
+        ],
+        "err": [
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "parsing": {
+        "multi_line_prefix": "+CLCC:",
+        "fields": [
+          "idx",
+          "dir",
+          "stat",
+          "mode",
+          "mpty",
+          "number",
+          "type"
+        ]
+      }
+    },
+    {
+      "id": "CMGF",
+      "capability": "sms.basic",
+      "forms": {
+        "set": "AT+CMGF={mode}",
+        "read": "AT+CMGF?",
+        "test": "AT+CMGF=?"
+      },
+      "params": {
+        "mode": {
+          "type": "enum",
+          "values": [
+            0,
+            1
+          ],
+          "default": 1
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "+CMS ERROR:{err}",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      }
+    },
+    {
+      "id": "CNMI",
+      "capability": "sms.basic",
+      "forms": {
+        "set": "AT+CNMI={mode},{mt},{bm},{ds},{bfr}",
+        "read": "AT+CNMI?",
+        "test": "AT+CNMI=?"
+      },
+      "params": {
+        "mode": {
+          "type": "int"
+        },
+        "mt": {
+          "type": "int"
+        },
+        "bm": {
+          "type": "int"
+        },
+        "ds": {
+          "type": "int"
+        },
+        "bfr": {
+          "type": "int"
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK"
+        ],
+        "err": [
+          "+CMS ERROR:{err}",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      },
+      "urc": [
+        {
+          "pattern": "+CMTI:{mem},{index}",
+          "meaning": "New SMS stored indication (common)"
+        }
+      ]
+    },
+    {
+      "id": "CMGS",
+      "capability": "sms.basic",
+      "forms": {
+        "exec_interactive": "AT+CMGS={da}"
+      },
+      "interactive": {
+        "prompt_regex": ">$",
+        "submit_ctrlz": true
+      },
+      "params": {
+        "da": {
+          "type": "string"
+        }
+      },
+      "responses": {
+        "ok": [
+          "OK",
+          "+CMGS:{mr}"
+        ],
+        "err": [
+          "+CMS ERROR:{err}",
+          "ERROR",
+          "+CME ERROR:{err}"
+        ]
+      }
+    }
+  ]
+}

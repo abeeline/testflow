@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ATest Agent</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header>
+        <h1>AT测试Agent（独立版）</h1>
+        <p>ATSpec / Profile / Manifest / Extension / EFSM / MBT</p>
+      </header>
+
+      <section class="card actions">
+        <button id="loadBtn">加载基线</button>
+        <button id="saveBtn">保存修改</button>
+        <button id="compileBtn">编译 Active EFSM/MBT</button>
+        <button id="resetBtn">重置 Manifest/Extension</button>
+      </section>
+
+      <section class="grid2">
+        <section class="card">
+          <h3>ATSpec</h3>
+          <textarea id="spec"></textarea>
+        </section>
+        <section class="card">
+          <h3>Profile</h3>
+          <textarea id="profile"></textarea>
+        </section>
+      </section>
+
+      <section class="grid2">
+        <section class="card">
+          <h3>Manifest</h3>
+          <textarea id="manifest"></textarea>
+        </section>
+        <section class="card">
+          <h3>Extension ATSpec</h3>
+          <textarea id="extension"></textarea>
+        </section>
+      </section>
+
+      <section class="card">
+        <h3>EFSM</h3>
+        <textarea id="efsm"></textarea>
+      </section>
+
+      <section class="card">
+        <h3>配置需求（LLM）</h3>
+        <textarea id="configReq" class="small" placeholder="例如：不测SMS，不测CS语音相关AT；新增厂商AT扩展...\n"></textarea>
+        <div class="actions">
+          <label><input id="useLlmCfg" type="checkbox" checked /> 使用LLM</label>
+          <button id="configCompileBtn">生成并应用配置</button>
+        </div>
+        <pre id="configOut"></pre>
+      </section>
+
+      <section class="card">
+        <h3>编译产物</h3>
+        <pre id="report"></pre>
+        <details>
+          <summary>Active EFSM</summary>
+          <pre id="activeEfsm"></pre>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>MBT执行</h3>
+        <div class="actions">
+          <select id="mode">
+            <option value="at_serial">AT串口</option>
+            <option value="android_adb">Android ADB</option>
+          </select>
+          <input id="deviceId" placeholder="ADB device id (可选)" />
+          <input id="atPort" placeholder="AT端口，如 /dev/ttyUSB0" />
+          <input id="baud" type="number" value="115200" />
+          <input id="maxSteps" type="number" value="20" min="1" max="200" />
+          <button id="runMbtBtn">运行MBT</button>
+        </div>
+        <pre id="mbtOut"></pre>
+      </section>
+
+      <section class="card">
+        <h3>MBT模型图</h3>
+        <div id="graph"></div>
+      </section>
+
+      <section class="card">
+        <h3>状态</h3>
+        <pre id="status">等待操作</pre>
+      </section>
+    </main>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
