@@ -10,6 +10,7 @@ Hard requirements:
 4) If requirement has acceptance.pass_fail or acceptance.kpi, at least one objective and one matrix row must reference them.
 5) Do not drop critical metric constraints (time window, threshold, latency, stability duration, recovery time).
 6) Respect product_profile from constraints: selected capabilities must be reflected in dimensions/scenarios; explicitly de-scope non-selected capabilities in de_scoped when relevant.
+7) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, objective_id/req_id, matrix_id/row_id, dimension names, and other structured field names unchanged. 最终以“简体中文”输出。
 
 [User]
 final_requirements: {final_requirements_json}

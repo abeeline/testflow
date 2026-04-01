@@ -6,6 +6,7 @@ import uuid
 import time
 import subprocess
 import re
+import html
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -96,6 +97,7 @@ class RequirementHITLNextRequest(BaseModel):
 
 
 class StageGenerateRequest(BaseModel):
+    requirement_input: Optional[List[str]] = None
     requirement_spec: Dict[str, Any]
     persona_reviews: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
@@ -104,6 +106,7 @@ class StageGenerateRequest(BaseModel):
     capabilities: Optional[Dict[str, Any]] = None
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
+    history_record_id: str = ""
 
 
 class AutomationRequest(BaseModel):
@@ -153,6 +156,7 @@ at_effective_atspec_path = at_build_dir / "effective_atspec.json"
 at_effective_profile_path = at_build_dir / "effective_profile.json"
 at_active_efsm_path = at_build_dir / "active_efsm.json"
 at_compile_report_path = at_build_dir / "compile_report.json"
+design_history_dir = Path(base_dir) / "history" / "designs"
 rag_store = SimpleRAGStore(Path(base_dir) / "rag_data")
 requirement_hitl_jobs: Dict[str, Dict[str, Any]] = {}
 stage_jobs: Dict[str, Dict[str, Any]] = {}
@@ -321,11 +325,391 @@ def _ensure_at_agent_assets():
 
 
 _ensure_at_agent_assets()
+design_history_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _valid_history_record_id(record_id: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{6,64}", record_id or ""))
+
+
+def _history_record_dir(record_id: str) -> Path:
+    if not _valid_history_record_id(record_id):
+        raise HTTPException(status_code=404, detail="history记录不存在")
+    return design_history_dir / record_id
+
+
+def _history_record_json_path(record_id: str) -> Path:
+    return _history_record_dir(record_id) / "record.json"
+
+
+def _history_document_path(record_id: str) -> Path:
+    return _history_record_dir(record_id) / "design_document.html"
+
+
+def _history_document_url(record_id: str) -> str:
+    return f"/api/design-history/{record_id}/document"
+
+
+def _safe_json_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(value)
+
+
+def _history_title(requirement_input: List[str], requirement_spec: Dict[str, Any]) -> str:
+    reqs = requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else []
+    if isinstance(reqs, list):
+        for item in reqs:
+            if isinstance(item, dict) and str(item.get("title", "")).strip():
+                return str(item.get("title")).strip()
+    for raw in requirement_input or []:
+        text = str(raw or "").strip()
+        if text:
+            return text[:80]
+    return "未命名测试设计"
+
+
+def _history_meta_counts(record: Dict[str, Any]) -> Dict[str, int]:
+    requirement_spec = record.get("requirement_spec", {}) if isinstance(record, dict) else {}
+    test_design_spec = record.get("test_design_spec", {}) if isinstance(record, dict) else {}
+    test_case_spec = record.get("test_case_spec", {}) if isinstance(record, dict) else {}
+    return {
+        "requirements": len(requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else []),
+        "objectives": len(test_design_spec.get("objectives", []) if isinstance(test_design_spec, dict) else []),
+        "matrix_rows": len(test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []),
+        "testcases": len(test_case_spec.get("testcases", []) if isinstance(test_case_spec, dict) else []),
+    }
+
+
+def _history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
+    counts = _history_meta_counts(record)
+    record_id = str(record.get("record_id", ""))
+    return {
+        "record_id": record_id,
+        "title": record.get("title", "未命名测试设计"),
+        "status": record.get("status", "design_completed"),
+        "created_at": record.get("created_at", ""),
+        "updated_at": record.get("updated_at", ""),
+        "requirement_count": counts["requirements"],
+        "objective_count": counts["objectives"],
+        "matrix_row_count": counts["matrix_rows"],
+        "testcase_count": counts["testcases"],
+        "has_testcases": counts["testcases"] > 0,
+        "document_url": _history_document_url(record_id),
+    }
+
+
+def _render_html_list(items: Any) -> str:
+    arr = [str(x).strip() for x in (items or []) if str(x).strip()]
+    if not arr:
+        return "<p>无</p>"
+    return "<ul>" + "".join(f"<li>{html.escape(x)}</li>" for x in arr) + "</ul>"
+
+
+def _render_html_kv_table(rows: List[List[str]]) -> str:
+    if not rows:
+        return "<p>无</p>"
+    body = "".join(
+        f"<tr><th>{html.escape(str(k))}</th><td>{html.escape(str(v))}</td></tr>"
+        for k, v in rows
+    )
+    return f"<table><tbody>{body}</tbody></table>"
+
+
+def _render_history_review_table(items: List[Dict[str, Any]]) -> str:
+    if not items:
+        return "<p>无</p>"
+    rows = []
+    for it in items:
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(it.get('req_id', '')))}</td>"
+            f"<td>{html.escape('；'.join(str(x) for x in it.get('issues', []) or []))}</td>"
+            f"<td>{html.escape('；'.join(str(x) for x in it.get('open_questions', []) or []))}</td>"
+            f"<td>{html.escape(str(it.get('rewrite_suggestion', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>需求ID</th><th>问题项</th><th>待确认问题</th><th>改写建议</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def _render_design_document_html(record: Dict[str, Any]) -> str:
+    requirement_input = record.get("requirement_input", []) or []
+    product_profile = record.get("product_profile", {}) if isinstance(record.get("product_profile"), dict) else {}
+    requirement_spec = record.get("requirement_spec", {}) if isinstance(record.get("requirement_spec"), dict) else {}
+    persona_reviews = record.get("persona_reviews", {}) if isinstance(record.get("persona_reviews"), dict) else {}
+    test_design_spec = record.get("test_design_spec", {}) if isinstance(record.get("test_design_spec"), dict) else {}
+    reqs = requirement_spec.get("final_requirements", []) if isinstance(requirement_spec.get("final_requirements"), list) else []
+    objectives = test_design_spec.get("objectives", []) if isinstance(test_design_spec.get("objectives"), list) else []
+    matrices = test_design_spec.get("coverage_matrices", []) if isinstance(test_design_spec.get("coverage_matrices"), list) else []
+    integrated = test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec.get("integrated_matrix"), list) else []
+    title = record.get("title") or _history_title(requirement_input, requirement_spec)
+    updated_at = record.get("updated_at", "")
+
+    req_rows = []
+    for item in reqs:
+        req_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('req_id', '')))}</td>"
+            f"<td>{html.escape(str(item.get('title', '')))}</td>"
+            f"<td>{html.escape(str(item.get('priority', '')))}</td>"
+            f"<td>{html.escape('、'.join(str(x) for x in item.get('rat_scope', []) or []))}</td>"
+            f"<td>{html.escape(' / '.join(str(x) for x in ((item.get('acceptance') or {}).get('pass_fail', []) or [])))}</td>"
+            "</tr>"
+        )
+    req_table = (
+        "<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th><th>RAT范围</th><th>通过标准</th></tr></thead>"
+        f"<tbody>{''.join(req_rows)}</tbody></table>"
+        if req_rows
+        else "<p>无</p>"
+    )
+
+    review_sections = []
+    for label, key in [("规范评审", "spec"), ("运营商评审", "carrier"), ("现网体验评审", "ux")]:
+        reviews = (persona_reviews.get(key) or {}).get("reviews", []) if isinstance(persona_reviews.get(key), dict) else []
+        review_sections.append(f"<section><h3>{html.escape(label)}</h3>{_render_history_review_table(reviews)}</section>")
+
+    obj_rows = []
+    for item in objectives:
+        obj_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('objective_id', '')))}</td>"
+            f"<td>{html.escape('、'.join(str(x) for x in item.get('linked_reqs', []) or []))}</td>"
+            f"<td>{html.escape(str(item.get('goal', '')))}</td>"
+            f"<td>{html.escape(' / '.join(str(x) for x in item.get('success_criteria', []) or []))}</td>"
+            f"<td>{html.escape(' / '.join(str(x) for x in item.get('evidence', []) or []))}</td>"
+            f"<td>{html.escape(str(item.get('priority', '')))}</td>"
+            "</tr>"
+        )
+    objective_table = (
+        "<table><thead><tr><th>目标ID</th><th>关联需求</th><th>目标</th><th>成功标准</th><th>证据</th><th>优先级</th></tr></thead>"
+        f"<tbody>{''.join(obj_rows)}</tbody></table>"
+        if obj_rows
+        else "<p>无</p>"
+    )
+
+    matrix_cards = []
+    for matrix in matrices:
+        dims = matrix.get("dimensions", []) if isinstance(matrix, dict) else []
+        dim_html = "<br/>".join(
+            f"{html.escape(str(d.get('name', '')))}: {html.escape('、'.join(str(x) for x in (d.get('values', []) or [])))}"
+            for d in dims if isinstance(d, dict)
+        )
+        sampling = matrix.get("sampling_strategy", {}) if isinstance(matrix, dict) else {}
+        matrix_cards.append(
+            "<article class='matrix-card'>"
+            f"<h4>{html.escape(str(matrix.get('matrix_id', '覆盖矩阵')))}</h4>"
+            f"<div>{dim_html or '无'}</div>"
+            f"<p><strong>采样策略：</strong>{html.escape(str(sampling.get('type', '')))}</p>"
+            f"<p><strong>必选组合：</strong>{html.escape(_safe_json_text(sampling.get('must_include', [])))}</p>"
+            f"<p><strong>排除组合：</strong>{html.escape(_safe_json_text(sampling.get('exclude', [])))}</p>"
+            "</article>"
+        )
+    matrix_html = "".join(matrix_cards) if matrix_cards else "<p>无</p>"
+
+    integrated_rows = []
+    for idx, row in enumerate(integrated, start=1):
+        cfg = row.get("key_configuration", {}) if isinstance(row, dict) and isinstance(row.get("key_configuration"), dict) else {}
+        cfg_text = " / ".join(f"{k}: {v}" for k, v in cfg.items())
+        integrated_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('row_id', f'ROW-{idx:03d}')))}</td>"
+            f"<td>{html.escape(str(row.get('req_id', '')))}</td>"
+            f"<td>{html.escape(str(row.get('objective_id', '')))}</td>"
+            f"<td>{html.escape(str(row.get('scenario', '')))}</td>"
+            f"<td>{html.escape(cfg_text)}</td>"
+            f"<td>{html.escape(' / '.join(str(x) for x in row.get('pass_criteria', []) or []))}</td>"
+            "</tr>"
+        )
+    integrated_table = (
+        "<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th></tr></thead>"
+        f"<tbody>{''.join(integrated_rows)}</tbody></table>"
+        if integrated_rows
+        else "<p>无</p>"
+    )
+
+    profile_lines = []
+    for item in product_profile.get("profile_display", []) if isinstance(product_profile.get("profile_display"), list) else []:
+        if isinstance(item, dict):
+            group = str(item.get("group", "")).strip()
+            values = item.get("values", []) or []
+            if group and values:
+                profile_lines.append(f"{group}: {'、'.join(str(x) for x in values)}")
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{html.escape(str(title))} - 测试设计文档</title>
+    <style>
+      body {{ margin: 0; padding: 32px; font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f4efe5; color: #1f2937; }}
+      .page {{ max-width: 1180px; margin: 0 auto; background: #fffdf8; border: 1px solid #e5dccd; border-radius: 18px; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08); overflow: hidden; }}
+      .hero {{ padding: 28px 32px 24px; background: linear-gradient(135deg, #f6efe3 0%, #fffaf1 58%, #eef6f7 100%); border-bottom: 1px solid #e9ddcb; }}
+      .hero h1 {{ margin: 0; font-size: 30px; }}
+      .hero p {{ margin: 8px 0 0; color: #5b6472; }}
+      .section {{ padding: 24px 32px; border-top: 1px solid #efe6d8; }}
+      .section:first-of-type {{ border-top: none; }}
+      h2 {{ margin: 0 0 14px; font-size: 20px; }}
+      h3 {{ margin: 0 0 10px; font-size: 16px; }}
+      h4 {{ margin: 0 0 8px; font-size: 14px; }}
+      table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+      th, td {{ border: 1px solid #e5dccd; padding: 9px 10px; text-align: left; vertical-align: top; }}
+      th {{ background: #f8f1e7; }}
+      ul {{ margin: 8px 0 0 18px; }}
+      p {{ line-height: 1.7; margin: 8px 0; }}
+      .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
+      .matrix-card {{ border: 1px solid #e7ddcf; border-radius: 12px; padding: 14px; background: #fff; margin-bottom: 12px; }}
+      @media (max-width: 900px) {{ body {{ padding: 12px; }} .section, .hero {{ padding: 18px; }} .grid {{ grid-template-columns: 1fr; }} }}
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero">
+        <h1>标准测试设计文档</h1>
+        <p>{html.escape(str(title))}</p>
+      </section>
+      <section class="section">
+        <h2>一、文档信息</h2>
+        {_render_html_kv_table([["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
+      </section>
+      <section class="section">
+        <h2>二、需求输入与产品背景</h2>
+        <div class="grid">
+          <div><h3>原始需求输入</h3>{_render_html_list(requirement_input)}</div>
+          <div><h3>产品通信背景与支持特性</h3>{_render_html_list(profile_lines)}</div>
+        </div>
+      </section>
+      <section class="section"><h2>三、测试需求解读稿</h2>{req_table}</section>
+      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}</section>
+      <section class="section"><h2>五、测试目标</h2>{objective_table}</section>
+      <section class="section"><h2>六、覆盖矩阵</h2>{matrix_html}</section>
+      <section class="section"><h2>七、整合覆盖矩阵</h2>{integrated_table}</section>
+      <section class="section"><h2>八、设计说明</h2>{_render_html_list(test_design_spec.get("design_notes", []))}</section>
+      <section class="section">
+        <h2>九、范围裁剪与待跟进项</h2>
+        <div class="grid">
+          <div><h3>去范围项</h3>{_render_html_list(test_design_spec.get("de_scoped", []))}</div>
+          <div><h3>待确认问题</h3>{_render_html_list(requirement_spec.get("questions_to_ask", []))}</div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>"""
+
+
+def _write_design_history_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    record_id = str(record.get("record_id") or uuid.uuid4().hex[:12])
+    now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    record["record_id"] = record_id
+    record["title"] = _history_title(record.get("requirement_input", []) or [], record.get("requirement_spec", {}) or {})
+    record["created_at"] = record.get("created_at") or now
+    record["updated_at"] = now
+    record.setdefault("status", "design_completed")
+    record_dir = _history_record_dir(record_id)
+    record_dir.mkdir(parents=True, exist_ok=True)
+    _history_record_json_path(record_id).write_text(_safe_json_text(record), encoding="utf-8")
+    _history_document_path(record_id).write_text(_render_design_document_html(record), encoding="utf-8")
+    return record
+
+
+def _load_design_history_record(record_id: str) -> Dict[str, Any]:
+    path = _history_record_json_path(record_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="history记录不存在")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"history记录损坏: {exc}")
+
+
+def _upsert_design_history_record(
+    *,
+    record_id: str = "",
+    requirement_input: Optional[List[str]] = None,
+    requirement_spec: Optional[Dict[str, Any]] = None,
+    persona_reviews: Optional[Dict[str, Any]] = None,
+    test_design_spec: Optional[Dict[str, Any]] = None,
+    product_profile: Optional[Dict[str, Any]] = None,
+    test_case_spec: Optional[Dict[str, Any]] = None,
+    warnings: Optional[Dict[str, Any]] = None,
+    trace: Optional[Dict[str, Any]] = None,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    record: Dict[str, Any] = {}
+    if record_id:
+        try:
+            record = _load_design_history_record(record_id)
+        except HTTPException:
+            record = {"record_id": record_id}
+    record["requirement_input"] = requirement_input or record.get("requirement_input", []) or []
+    record["requirement_spec"] = requirement_spec or record.get("requirement_spec", {}) or {}
+    record["persona_reviews"] = persona_reviews or record.get("persona_reviews", {}) or {}
+    record["test_design_spec"] = test_design_spec or record.get("test_design_spec", {}) or {}
+    record["product_profile"] = product_profile or record.get("product_profile", {}) or {}
+    if test_case_spec is not None:
+        record["test_case_spec"] = test_case_spec
+    else:
+        record.setdefault("test_case_spec", {})
+    if warnings:
+        merged = record.get("warnings", {}) if isinstance(record.get("warnings"), dict) else {}
+        merged.update(warnings)
+        record["warnings"] = merged
+    else:
+        record.setdefault("warnings", {})
+    if trace:
+        merged = record.get("trace", {}) if isinstance(record.get("trace"), dict) else {}
+        merged.update(trace)
+        record["trace"] = merged
+    else:
+        record.setdefault("trace", {})
+    if status:
+        record["status"] = status
+    return _write_design_history_record(record)
+
+
+def _list_design_history_records() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for path in sorted(design_history_dir.glob("*/record.json"), reverse=True):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            items.append(_history_summary(record))
+        except Exception:
+            continue
+    items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return items
 
 
 @app.get("/")
 def index():
     return FileResponse(os.path.join(static_dir, "index.html"))
+
+
+@app.get("/api/design-history")
+def list_design_history():
+    return {"items": _list_design_history_records()}
+
+
+@app.get("/api/design-history/{record_id}")
+def get_design_history(record_id: str):
+    record = _load_design_history_record(record_id)
+    return {
+        **record,
+        "summary": _history_summary(record),
+        "document_url": _history_document_url(record_id),
+    }
+
+
+@app.get("/api/design-history/{record_id}/document")
+def get_design_history_document(record_id: str):
+    record = _load_design_history_record(record_id)
+    html_path = _history_document_path(record_id)
+    if not html_path.exists():
+        html_path.write_text(_render_design_document_html(record), encoding="utf-8")
+    return FileResponse(html_path, media_type="text/html", filename=f"{record.get('title', record_id)}-测试设计文档.html")
 
 
 def _build_effective_rag_context(requirements: List[str], manual_rag_context: str) -> tuple[str, List[Dict[str, Any]]]:
@@ -771,6 +1155,7 @@ async def _run_stage_job(job_id: str):
     try:
         if stage == "design":
             shared = {
+                "input_requirements": payload.requirement_input or [],
                 "requirement_spec": payload.requirement_spec,
                 "persona_reviews": payload.persona_reviews or {},
                 "product_profile": payload.product_profile or {},
@@ -781,15 +1166,28 @@ async def _run_stage_job(job_id: str):
             }
             flow = create_test_design_flow()
             await flow.run_async(shared)
+            history_record = _upsert_design_history_record(
+                record_id=payload.history_record_id or "",
+                requirement_input=payload.requirement_input or [],
+                requirement_spec=payload.requirement_spec or {},
+                persona_reviews=payload.persona_reviews or {},
+                test_design_spec=shared.get("test_design_spec", {}),
+                product_profile=payload.product_profile or {},
+                warnings={"design": shared.get("warnings", [])},
+                trace={"design": shared.get("trace", [])},
+                status="design_completed",
+            )
             result = {
                 "test_design_spec": shared.get("test_design_spec", {}),
                 "warnings": shared.get("warnings", []),
                 "trace": shared.get("trace", []),
+                "design_history": _history_summary(history_record),
             }
         elif stage == "testcases":
             if not payload.test_design_spec:
                 raise HTTPException(status_code=400, detail="缺少test_design_spec")
             shared = {
+                "input_requirements": payload.requirement_input or [],
                 "requirement_spec": payload.requirement_spec,
                 "test_design_spec": payload.test_design_spec,
                 "product_profile": payload.product_profile or {},
@@ -801,10 +1199,23 @@ async def _run_stage_job(job_id: str):
             }
             flow = create_test_case_flow()
             await flow.run_async(shared)
+            history_record = _upsert_design_history_record(
+                record_id=payload.history_record_id or "",
+                requirement_input=payload.requirement_input or [],
+                requirement_spec=payload.requirement_spec or {},
+                persona_reviews=payload.persona_reviews or {},
+                test_design_spec=payload.test_design_spec or {},
+                product_profile=payload.product_profile or {},
+                test_case_spec=shared.get("test_case_spec", {}),
+                warnings={"testcases": shared.get("warnings", [])},
+                trace={"testcases": shared.get("trace", [])},
+                status="testcases_completed",
+            )
             result = {
                 "test_case_spec": shared.get("test_case_spec", {}),
                 "warnings": shared.get("warnings", []),
                 "trace": shared.get("trace", []),
+                "design_history": _history_summary(history_record),
             }
         elif stage == "scripts":
             if not payload.test_case_spec:
@@ -989,6 +1400,7 @@ async def requirements_analyze(payload: RequirementRoundRequest):
 @app.post("/api/design/generate")
 async def design_generate(payload: StageGenerateRequest):
     shared = {
+        "input_requirements": payload.requirement_input or [],
         "requirement_spec": payload.requirement_spec,
         "persona_reviews": payload.persona_reviews or {},
         "product_profile": payload.product_profile or {},
@@ -1009,10 +1421,22 @@ async def design_generate(payload: StageGenerateRequest):
                 "warnings": shared.get("warnings", []),
             },
         )
+    history_record = _upsert_design_history_record(
+        record_id=payload.history_record_id or "",
+        requirement_input=payload.requirement_input or [],
+        requirement_spec=payload.requirement_spec or {},
+        persona_reviews=payload.persona_reviews or {},
+        test_design_spec=shared.get("test_design_spec", {}),
+        product_profile=payload.product_profile or {},
+        warnings={"design": shared.get("warnings", [])},
+        trace={"design": shared.get("trace", [])},
+        status="design_completed",
+    )
     return {
         "test_design_spec": shared.get("test_design_spec", {}),
         "warnings": shared.get("warnings", []),
         "trace": shared.get("trace", []),
+        "design_history": _history_summary(history_record),
     }
 
 
@@ -1021,6 +1445,7 @@ async def testcases_generate(payload: StageGenerateRequest):
     if not payload.test_design_spec:
         raise HTTPException(status_code=400, detail="缺少test_design_spec")
     shared = {
+        "input_requirements": payload.requirement_input or [],
         "requirement_spec": payload.requirement_spec,
         "test_design_spec": payload.test_design_spec,
         "product_profile": payload.product_profile or {},
@@ -1042,10 +1467,23 @@ async def testcases_generate(payload: StageGenerateRequest):
                 "warnings": shared.get("warnings", []),
             },
         )
+    history_record = _upsert_design_history_record(
+        record_id=payload.history_record_id or "",
+        requirement_input=payload.requirement_input or [],
+        requirement_spec=payload.requirement_spec or {},
+        persona_reviews=payload.persona_reviews or {},
+        test_design_spec=payload.test_design_spec or {},
+        product_profile=payload.product_profile or {},
+        test_case_spec=shared.get("test_case_spec", {}),
+        warnings={"testcases": shared.get("warnings", [])},
+        trace={"testcases": shared.get("trace", [])},
+        status="testcases_completed",
+    )
     return {
         "test_case_spec": shared.get("test_case_spec", {}),
         "warnings": shared.get("warnings", []),
         "trace": shared.get("trace", []),
+        "design_history": _history_summary(history_record),
     }
 
 

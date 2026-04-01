@@ -5,6 +5,7 @@ Return code ONLY (no explanation). The code must:
 - execute steps with retries/timeouts
 - collect artifacts
 - output run_result.json with pass/fail and key evidence pointers
+- If you add human-readable comments, log strings, or docstrings, prefer Simplified Chinese. Keep code identifiers and API contracts unchanged. 最终以“简体中文”输出。
 
 [User]
 script_spec: {script_spec_json}

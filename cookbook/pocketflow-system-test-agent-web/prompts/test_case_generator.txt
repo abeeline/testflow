@@ -9,6 +9,7 @@ Hard constraints:
 4) Preserve numeric thresholds and KPI values exactly in pass_fail (e.g. 2s, 95%, -115dBm, 30s). Do not weaken or paraphrase away numbers.
 5) Steps must use ONLY actions from action_vocabulary.
 6) Include trace to req_id and row_id for each testcase.
+7) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, tc_id/objective_id, action names, trace field names, and action_vocabulary tokens unchanged. 最终以“简体中文”输出。
 
 Output format:
 {

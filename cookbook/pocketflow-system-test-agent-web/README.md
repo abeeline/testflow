@@ -7,6 +7,12 @@
 3. 用例生成（TestCaseSpec）
 4. 执行准备（ScriptSpec + 测试代码参考）
 
+当前页面形态还包含：
+
+- 测试设计历史目录
+- 固定 URL 标准测试设计文档（HTML）
+- 从历史记录继续生成测试用例
+
 ## 流水线
 
 - Requirement Intake
@@ -47,6 +53,25 @@ JSON 类型 agent 统一通过 `run_json_agent_with_retry` 执行：
 
 - `/Users/geminipro/Documents/PocketFlow-main/cookbook/pocketflow-system-test-agent-web/utils/agent_runner.py`
 - `/Users/geminipro/Documents/PocketFlow-main/cookbook/pocketflow-system-test-agent-web/utils/schema_validation.py`
+
+## 测试设计历史与固定 URL 文档
+
+- 每次完成“测试设计稿”后，系统会自动写入历史记录目录
+- 历史记录同时生成一份标准 HTML 测试设计文档
+- 页面左侧新增 `测试设计历史` 菜单，可查看：
+  - 历史记录列表
+  - 历史详情
+  - 固定 URL 文档
+  - 是否已生成测试用例
+- 如果之前只完成测试设计，尚未点击生成测试用例，可直接在历史页继续生成
+
+相关接口：
+
+```bash
+GET /api/design-history
+GET /api/design-history/{record_id}
+GET /api/design-history/{record_id}/document
+```
 
 ## 启动
 

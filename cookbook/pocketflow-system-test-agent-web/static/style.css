@@ -847,6 +847,99 @@ html[data-theme="light"] .theme-icon.sun {
   min-width: 0;
 }
 
+.design-history-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.design-history-list-panel,
+.design-history-detail-panel {
+  min-width: 0;
+}
+
+.design-history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.design-history-item {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+
+.design-history-item:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.design-history-item.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+}
+
+.design-history-item h4 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.design-history-item p {
+  margin: 0 0 8px;
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+.design-history-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.design-history-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+  font-size: 12px;
+}
+
+.design-history-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.design-history-meta-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--card) 90%, transparent);
+}
+
+.design-history-meta-card strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+@media (max-width: 1080px) {
+  .design-history-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .design-history-meta-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .mbt-canvas {
   height: 420px;
 }

@@ -7,6 +7,7 @@ Rules:
 - If acceptance criteria is missing, propose measurable pass/fail as assumptions and add open_questions.
 - If evidence is missing, populate observability.must_capture and add open_questions if uncertain.
 - Do NOT invent spec citations. If evidence text is not provided, keep source.evidence_refs empty.
+- All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, IDs, enum values, and structured field names unchanged. 最终以“简体中文”输出。
 
 [User]
 glossary: {glossary_json}

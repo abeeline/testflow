@@ -29,6 +29,9 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 - 需求到设计的可追踪映射（REQ → Objective → Matrix → TC）
 - 设计质量审查节点（Supervisor）自动回流
 - 用例生成支持批量并发与稳定产出
+- 测试设计完成后自动归档到“测试设计历史”
+- 自动生成标准测试设计文档（HTML），支持固定 URL 查看与分享
+- 可从历史记录重新载入当前会话，或继续生成测试用例
 
 ### 3) 测试脚本与联机调试
 
@@ -53,6 +56,21 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
   - 测试用例/步骤
   - RawJSON
 
+### 6) 测试设计历史目录
+
+- 左侧菜单提供“测试设计历史”
+- 每次完成“测试设计稿”都会自动生成一条历史记录
+- 历史记录包含：
+  - 原始需求输入
+  - 产品通信背景与支持特性
+  - 测试需求稿
+  - 三人评审
+  - 测试设计稿
+  - 已生成的测试用例（如果后续执行过）
+- 支持固定 URL 文档：
+  - `/api/design-history/{record_id}/document`
+- 支持从历史记录继续生成测试用例，无需重新跑前置设计
+
 ---
 
 ## 目录说明
@@ -74,6 +92,8 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8010
 ```
 
 访问：`http://127.0.0.1:8010`
+
+生成测试设计后，可在左侧 `测试设计历史` 中查看归档记录与固定 URL 设计文档。
 
 ---
 
@@ -144,6 +164,19 @@ sudo journalctl -u testflow-web -f
 sudo systemctl restart testflow-web
 ```
 
+## 关键接口
+
+```bash
+# 历史测试设计列表
+GET /api/design-history
+
+# 历史测试设计详情
+GET /api/design-history/{record_id}
+
+# 固定 URL 测试设计文档
+GET /api/design-history/{record_id}/document
+```
+
 ---
 
 ## 常见问题
@@ -169,4 +202,3 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8010
 - 强制刷新浏览器（Cmd/Ctrl + Shift + R）
 - 确认服务已重启
 - 确认 `git pull` 已拿到最新提交
-

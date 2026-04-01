@@ -115,6 +115,17 @@ const viewDesign = document.getElementById("viewDesign");
 const viewCases = document.getElementById("viewCases");
 const openQuestionsPanel = document.getElementById("openQuestionsPanel");
 const downloadExcelBtn = document.getElementById("downloadExcelBtn");
+const designDocActions = document.getElementById("designDocActions");
+const designDocLink = document.getElementById("designDocLink");
+const refreshDesignHistoryBtn = document.getElementById("refreshDesignHistoryBtn");
+const designHistoryList = document.getElementById("designHistoryList");
+const designHistoryDetailTitle = document.getElementById("designHistoryDetailTitle");
+const designHistoryMeta = document.getElementById("designHistoryMeta");
+const designHistoryVisual = document.getElementById("designHistoryVisual");
+const designHistoryJson = document.getElementById("designHistoryJson");
+const designHistoryDocLink = document.getElementById("designHistoryDocLink");
+const designHistoryLoadBtn = document.getElementById("designHistoryLoadBtn");
+const designHistoryCasesBtn = document.getElementById("designHistoryCasesBtn");
 
 const LAST_RESULT_KEY = "pocketflow_last_result_v2";
 const THEME_KEY = "pocketflow_theme";
@@ -124,12 +135,17 @@ let botHistory = [];
 let botUnread = 0;
 let flowVizLoaded = false;
 let atAssetsLoaded = false;
+let designHistoryLoaded = false;
 let hitlStream = null;
 let hitlStreamJobId = "";
 let activeStageStream = null;
 let activeStageJobId = "";
 let agenticScriptHistory = [];
 let latestAgenticCode = "";
+let latestDesignDocUrl = "";
+let designHistoryItems = [];
+let selectedDesignHistoryId = "";
+let selectedDesignHistoryRecord = null;
 let stageState = {
   requirement_spec: null,
   persona_reviews: null,
@@ -138,6 +154,8 @@ let stageState = {
   round: 0,
   hitl_job_id: "",
   script_spec: null,
+  design_history_record_id: "",
+  design_history_doc_url: "",
 };
 
 const PRODUCT_PROFILE_GROUPS = [
@@ -724,14 +742,14 @@ function renderRequirements(spec) {
   const rows = reqs
     .map((r) => `<tr><td>${esc(r.req_id)}</td><td>${esc(r.title)}</td><td>${esc(r.priority)}</td><td>${esc((r.rat_scope || []).join(", "))}</td><td>${esc((r.persona_sources || []).join(", "))}</td><td>${esc((r.acceptance?.pass_fail || []).join(" / "))}</td></tr>`)
     .join("");
-  viewReq.innerHTML = `<table><thead><tr><th>REQ ID</th><th>标题</th><th>优先级</th><th>RAT范围</th><th>persona_sources</th><th>通过标准</th></tr></thead><tbody>${rows}</tbody></table>`;
+  viewReq.innerHTML = `<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th><th>RAT范围</th><th>评审来源</th><th>通过标准</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderReviewProcess(reviews) {
   const personas = [
-    { key: "spec", label: "Spec Lawyer" },
-    { key: "carrier", label: "Carrier Reviewer" },
-    { key: "ux", label: "UX Advocate" },
+    { key: "spec", label: "规范评审" },
+    { key: "carrier", label: "运营商评审" },
+    { key: "ux", label: "现网体验评审" },
   ];
   let html = "";
   personas.forEach((p) => {
@@ -740,7 +758,7 @@ function renderReviewProcess(reviews) {
     const rows = items
       .map((it) => `<tr><td>${esc(it.req_id)}</td><td>${esc((it.issues || []).join("；"))}</td><td>${esc((it.open_questions || []).join("；"))}</td></tr>`)
       .join("");
-    html += `<h4>${p.label}</h4><table><thead><tr><th>req_id</th><th>issues</th><th>open_questions</th></tr></thead><tbody>${rows}</tbody></table>`;
+    html += `<h4>${p.label}</h4><table><thead><tr><th>需求ID</th><th>问题项</th><th>待确认问题</th></tr></thead><tbody>${rows}</tbody></table>`;
   });
   viewReview.innerHTML = html || "<em>暂无评审过程记录</em>";
 }
@@ -768,6 +786,239 @@ function collectOpenQuestionAnswers() {
   return answers;
 }
 
+function revokeDesignDocUrl() {
+  if (latestDesignDocUrl) {
+    URL.revokeObjectURL(latestDesignDocUrl);
+    latestDesignDocUrl = "";
+  }
+}
+
+function renderDocList(items = []) {
+  const arr = Array.isArray(items) ? items.filter((x) => `${x || ""}`.trim()) : [];
+  if (!arr.length) return "<p>无</p>";
+  return `<ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+}
+
+function renderDocKeyValueTable(rows = []) {
+  const arr = Array.isArray(rows) ? rows.filter((x) => Array.isArray(x) && x.length >= 2) : [];
+  if (!arr.length) return "<p>无</p>";
+  return `<table><tbody>${arr.map((x) => `<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function buildDesignDocumentHtml() {
+  const design = stageState.test_design_spec || {};
+  const requirementSpec = stageState.requirement_spec || {};
+  const personaReviews = stageState.persona_reviews || {};
+  const requirementInputs = parseRequirements(requirementsEl?.value || "");
+  const productProfile = getSelectedProductProfile();
+  const nowText = new Date().toLocaleString("zh-CN", { hour12: false });
+  const reqs = Array.isArray(requirementSpec.final_requirements) ? requirementSpec.final_requirements : [];
+  const objectives = Array.isArray(design.objectives) ? design.objectives : [];
+  const matrices = Array.isArray(design.coverage_matrices) ? design.coverage_matrices : [];
+  const integrated = Array.isArray(design.integrated_matrix) ? design.integrated_matrix : [];
+  const title = reqs[0]?.title || requirementInputs[0] || "测试设计文档";
+
+  const reqTable = reqs.length
+    ? `<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th><th>RAT范围</th><th>通过标准</th></tr></thead><tbody>${reqs
+        .map(
+          (r) =>
+            `<tr><td>${esc(r.req_id || "")}</td><td>${esc(r.title || "")}</td><td>${esc(r.priority || "")}</td><td>${esc(
+              (r.rat_scope || []).join("、")
+            )}</td><td>${esc(((r.acceptance || {}).pass_fail || []).join(" / "))}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : "<p>无</p>";
+
+  const reviewSections = [
+    ["规范评审", (personaReviews.spec || {}).reviews || []],
+    ["运营商评审", (personaReviews.carrier || {}).reviews || []],
+    ["现网体验评审", (personaReviews.ux || {}).reviews || []],
+  ]
+    .map(([label, items]) => {
+      const list = Array.isArray(items) ? items : [];
+      const body = list.length
+        ? `<table><thead><tr><th>需求ID</th><th>问题项</th><th>待确认问题</th><th>改写建议</th></tr></thead><tbody>${list
+            .map(
+              (it) =>
+                `<tr><td>${esc(it.req_id || "")}</td><td>${esc((it.issues || []).join("；"))}</td><td>${esc(
+                  (it.open_questions || []).join("；")
+                )}</td><td>${esc(it.rewrite_suggestion || "")}</td></tr>`
+            )
+            .join("")}</tbody></table>`
+        : "<p>无</p>";
+      return `<section><h3>${esc(label)}</h3>${body}</section>`;
+    })
+    .join("");
+
+  const objectiveTable = objectives.length
+    ? `<table><thead><tr><th>目标ID</th><th>关联需求</th><th>目标</th><th>成功标准</th><th>证据</th><th>优先级</th></tr></thead><tbody>${objectives
+        .map(
+          (o) =>
+            `<tr><td>${esc(o.objective_id || "")}</td><td>${esc((o.linked_reqs || []).join("、"))}</td><td>${esc(
+              o.goal || ""
+            )}</td><td>${esc((o.success_criteria || []).join(" / "))}</td><td>${esc((o.evidence || []).join(" / "))}</td><td>${esc(
+              o.priority || ""
+            )}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : "<p>无</p>";
+
+  const matrixText = matrices.length
+    ? matrices
+        .map((m) => {
+          const dims = Array.isArray(m.dimensions)
+            ? m.dimensions.map((d) => `${d.name || ""}: ${Array.isArray(d.values) ? d.values.join("、") : `${d.values || ""}`}`).join("<br/>")
+            : "";
+          const sampling = m.sampling_strategy || {};
+          return `<article class="matrix-card"><h4>${esc(m.matrix_id || "覆盖矩阵")}</h4><div>${dims}</div><p><strong>采样策略：</strong>${esc(
+            sampling.type || ""
+          )}</p><p><strong>必选组合：</strong>${esc(JSON.stringify(sampling.must_include || [], null, 0))}</p><p><strong>排除组合：</strong>${esc(
+            JSON.stringify(sampling.exclude || [], null, 0)
+          )}</p></article>`;
+        })
+        .join("")
+    : "<p>无</p>";
+
+  const integratedTable = integrated.length
+    ? `<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th></tr></thead><tbody>${integrated
+        .map((r, idx) => {
+          const cfg = r.key_configuration || {};
+          const cfgText = Object.keys(cfg)
+            .map((k) => `${k}: ${cfg[k]}`)
+            .join(" / ");
+          return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(
+            r.objective_id || ""
+          )}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgText)}</td><td>${esc(
+            (r.pass_criteria || []).join(" / ")
+          )}</td></tr>`;
+        })
+        .join("")}</tbody></table>`
+    : "<p>无</p>";
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${esc(title)} - 测试设计文档</title>
+    <style>
+      :root { color-scheme: light; }
+      body { margin: 0; padding: 32px; font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f4efe5; color: #1f2937; }
+      .page { max-width: 1180px; margin: 0 auto; background: #fffdf8; border: 1px solid #e5dccd; border-radius: 18px; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08); overflow: hidden; }
+      .hero { padding: 28px 32px 24px; background: linear-gradient(135deg, #f6efe3 0%, #fffaf1 58%, #eef6f7 100%); border-bottom: 1px solid #e9ddcb; }
+      .hero h1 { margin: 0; font-size: 30px; }
+      .hero p { margin: 8px 0 0; color: #5b6472; }
+      .section { padding: 24px 32px; border-top: 1px solid #efe6d8; }
+      .section:first-of-type { border-top: none; }
+      h2 { margin: 0 0 14px; font-size: 20px; }
+      h3 { margin: 0 0 10px; font-size: 16px; }
+      h4 { margin: 0 0 8px; font-size: 14px; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { border: 1px solid #e5dccd; padding: 9px 10px; text-align: left; vertical-align: top; }
+      th { background: #f8f1e7; width: auto; }
+      ul { margin: 8px 0 0 18px; }
+      p { line-height: 1.7; margin: 8px 0; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .matrix-card { border: 1px solid #e7ddcf; border-radius: 12px; padding: 14px; background: #fff; margin-bottom: 12px; }
+      .meta td:first-child, .meta th:first-child { width: 180px; }
+      @media (max-width: 900px) { body { padding: 12px; } .section, .hero { padding: 18px; } .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero">
+        <h1>标准测试设计文档</h1>
+        <p>${esc(title)}</p>
+      </section>
+      <section class="section">
+        <h2>一、文档信息</h2>
+        ${renderDocKeyValueTable([
+          ["生成时间", nowText],
+          ["需求条目数", `${reqs.length}`],
+          ["测试目标数", `${objectives.length}`],
+          ["整合矩阵条目数", `${integrated.length}`],
+        ])}
+      </section>
+      <section class="section">
+        <h2>二、需求输入与产品背景</h2>
+        <div class="grid">
+          <div>
+            <h3>原始需求输入</h3>
+            ${renderDocList(requirementInputs)}
+          </div>
+          <div>
+            <h3>产品通信背景与支持特性</h3>
+            ${renderDocList((productProfile.profile_display || []).map((x) => `${x.group}: ${x.values.join("、")}`))}
+          </div>
+        </div>
+      </section>
+      <section class="section">
+        <h2>三、测试需求解读稿</h2>
+        ${reqTable}
+      </section>
+      <section class="section">
+        <h2>四、三人评审记录</h2>
+        ${reviewSections}
+      </section>
+      <section class="section">
+        <h2>五、测试目标</h2>
+        ${objectiveTable}
+      </section>
+      <section class="section">
+        <h2>六、覆盖矩阵</h2>
+        ${matrixText}
+      </section>
+      <section class="section">
+        <h2>七、整合覆盖矩阵</h2>
+        ${integratedTable}
+      </section>
+      <section class="section">
+        <h2>八、设计说明</h2>
+        ${renderDocList(design.design_notes || [])}
+      </section>
+      <section class="section">
+        <h2>九、范围裁剪与待跟进项</h2>
+        <div class="grid">
+          <div>
+            <h3>去范围项</h3>
+            ${renderDocList(design.de_scoped || [])}
+          </div>
+          <div>
+            <h3>待确认问题</h3>
+            ${renderDocList(requirementSpec.questions_to_ask || [])}
+          </div>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>`;
+}
+
+function refreshDesignDocumentLink() {
+  revokeDesignDocUrl();
+  if (!stageState.test_design_spec) {
+    designDocActions?.classList.add("hidden");
+    if (designDocLink) designDocLink.removeAttribute("href");
+    return;
+  }
+  if (stageState.design_history_doc_url) {
+    if (designDocLink) {
+      designDocLink.href = stageState.design_history_doc_url;
+      designDocLink.title = "测试设计文档（固定URL）";
+    }
+    designDocActions?.classList.remove("hidden");
+    return;
+  }
+  const title = (stageState.requirement_spec?.final_requirements || [])[0]?.title || "测试设计文档";
+  const html = buildDesignDocumentHtml();
+  latestDesignDocUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+  if (designDocLink) {
+    designDocLink.href = latestDesignDocUrl;
+    designDocLink.title = `${title} - 测试设计文档`;
+  }
+  designDocActions?.classList.remove("hidden");
+}
+
 function renderDesign(design) {
   const objs = design?.objectives || [];
   const mats = design?.coverage_matrices || [];
@@ -776,7 +1027,7 @@ function renderDesign(design) {
 
   if (objs.length) {
     const rows = objs.map((o) => `<tr><td>${esc(o.objective_id)}</td><td>${esc((o.linked_reqs || []).join(", "))}</td><td>${esc(o.goal)}</td><td>${esc((o.success_criteria || []).join(" / "))}</td><td>${esc(o.priority)}</td></tr>`).join("");
-    html += `<h4>测试目标</h4><table><thead><tr><th>Objective</th><th>关联需求</th><th>目标</th><th>成功标准</th><th>优先级</th></tr></thead><tbody>${rows}</tbody></table>`;
+    html += `<h4>测试目标</h4><table><thead><tr><th>目标ID</th><th>关联需求</th><th>目标</th><th>成功标准</th><th>优先级</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   if (mats.length) {
@@ -798,7 +1049,7 @@ function renderDesign(design) {
         return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(r.objective_id || "")}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgStr)}</td><td>${esc(pass)}</td></tr>`;
       })
       .join("");
-    html += `<h4>整合覆盖矩阵</h4><table><thead><tr><th>ID</th><th>REQ</th><th>关联目标</th><th>具体测试场景</th><th>矩阵组合选取</th><th>通过标准</th></tr></thead><tbody>${rows}</tbody></table>`;
+    html += `<h4>整合覆盖矩阵</h4><table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>具体测试场景</th><th>矩阵组合选取</th><th>通过标准</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   if ((design?.design_notes || []).length) {
@@ -806,7 +1057,11 @@ function renderDesign(design) {
   }
 
   if (design?.generation_meta) {
-    html += `<h4>生成元信息</h4><div>design_generated_by_llm: ${esc(String(design.generation_meta.design_generated_by_llm))}<br/>integrated_matrix_generated_by_llm: ${esc(String(design.generation_meta.integrated_matrix_generated_by_llm))}<br/>design_prompt: ${esc(design.generation_meta.design_prompt || "")}<br/>integrated_prompt: ${esc(design.generation_meta.integrated_prompt || "")}</div>`;
+    html += `<h4>生成元信息</h4><div>测试设计由LLM生成：${esc(String(design.generation_meta.design_generated_by_llm))}<br/>整合覆盖矩阵由LLM生成：${esc(
+      String(design.generation_meta.integrated_matrix_generated_by_llm)
+    )}<br/>测试设计提示词：${esc(design.generation_meta.design_prompt || "")}<br/>整合矩阵提示词：${esc(
+      design.generation_meta.integrated_prompt || ""
+    )}</div>`;
   }
 
   viewDesign.innerHTML = html || "<em>暂无结构化设计</em>";
@@ -825,7 +1080,160 @@ function renderCases(spec) {
       return `<tr><td>${esc(tc.tc_id)}</td><td>${esc(tc.objective_id)}</td><td>${esc(tc.title)}</td><td>${esc(tags.join(", "))}</td><td>${esc(passFail.join(" / "))}</td><td>${esc((tc.steps || []).length)}</td></tr>`;
     })
     .join("");
-  viewCases.innerHTML = `<table><thead><tr><th>TC ID</th><th>Objective</th><th>标题</th><th>标签</th><th>通过标准</th><th>步骤数</th></tr></thead><tbody>${rows}</tbody></table>`;
+  viewCases.innerHTML = `<table><thead><tr><th>用例ID</th><th>目标ID</th><th>标题</th><th>标签</th><th>通过标准</th><th>步骤数</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderDesignHistoryList() {
+  if (!designHistoryList) return;
+  if (!designHistoryItems.length) {
+    designHistoryList.innerHTML = "<em>暂无历史测试设计记录。</em>";
+    return;
+  }
+  designHistoryList.innerHTML = `<div class="design-history-list">${designHistoryItems
+    .map((item) => {
+      const active = item.record_id === selectedDesignHistoryId ? "active" : "";
+      const status = item.has_testcases ? "已生成测试用例" : "仅完成测试设计";
+      return `<button class="design-history-item ${active}" data-record-id="${esc(item.record_id)}" type="button">
+        <h4>${esc(item.title || item.record_id)}</h4>
+        <p>更新时间：${esc(item.updated_at || "")}</p>
+        <div class="design-history-chips">
+          <span class="design-history-chip">${esc(status)}</span>
+          <span class="design-history-chip">需求 ${esc(item.requirement_count || 0)}</span>
+          <span class="design-history-chip">目标 ${esc(item.objective_count || 0)}</span>
+          <span class="design-history-chip">矩阵 ${esc(item.matrix_row_count || 0)}</span>
+          <span class="design-history-chip">用例 ${esc(item.testcase_count || 0)}</span>
+        </div>
+      </button>`;
+    })
+    .join("")}</div>`;
+}
+
+function renderDesignHistoryDetail(record) {
+  selectedDesignHistoryRecord = record || null;
+  if (!record) {
+    if (designHistoryDetailTitle) designHistoryDetailTitle.textContent = "选择一条历史记录";
+    if (designHistoryMeta) designHistoryMeta.innerHTML = "<em>选择左侧记录后，可查看固定URL文档、载入当前会话，或继续生成测试用例。</em>";
+    if (designHistoryVisual) designHistoryVisual.innerHTML = "";
+    if (designHistoryJson) designHistoryJson.textContent = "";
+    if (designHistoryDocLink) {
+      designHistoryDocLink.classList.add("hidden");
+      designHistoryDocLink.removeAttribute("href");
+    }
+    if (designHistoryLoadBtn) designHistoryLoadBtn.disabled = true;
+    if (designHistoryCasesBtn) designHistoryCasesBtn.disabled = true;
+    return;
+  }
+  const summary = record.summary || {};
+  if (designHistoryDetailTitle) designHistoryDetailTitle.textContent = record.title || record.record_id || "历史记录";
+  if (designHistoryDocLink) {
+    designHistoryDocLink.href = record.document_url || summary.document_url || "#";
+    designHistoryDocLink.classList.remove("hidden");
+  }
+  if (designHistoryLoadBtn) designHistoryLoadBtn.disabled = false;
+  if (designHistoryCasesBtn) {
+    designHistoryCasesBtn.disabled = !record.test_design_spec;
+    designHistoryCasesBtn.textContent = summary.has_testcases ? "重新生成测试用例" : "继续生成测试用例";
+  }
+  if (designHistoryMeta) {
+    designHistoryMeta.innerHTML = `
+      <div class="design-history-meta-grid">
+        <div class="design-history-meta-card"><strong>记录ID</strong><span>${esc(record.record_id || "")}</span></div>
+        <div class="design-history-meta-card"><strong>最近更新时间</strong><span>${esc(record.updated_at || "")}</span></div>
+        <div class="design-history-meta-card"><strong>当前状态</strong><span>${esc(record.status || "")}</span></div>
+        <div class="design-history-meta-card"><strong>固定URL文档</strong><span>${esc(record.document_url || summary.document_url || "")}</span></div>
+      </div>
+    `;
+  }
+  const reqs = Array.isArray(record.requirement_spec?.final_requirements) ? record.requirement_spec.final_requirements : [];
+  const objectives = Array.isArray(record.test_design_spec?.objectives) ? record.test_design_spec.objectives : [];
+  const integrated = Array.isArray(record.test_design_spec?.integrated_matrix) ? record.test_design_spec.integrated_matrix : [];
+  const tcCount = Array.isArray(record.test_case_spec?.testcases) ? record.test_case_spec.testcases.length : 0;
+  if (designHistoryVisual) {
+    const reqRows = reqs.length
+      ? `<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th></tr></thead><tbody>${reqs
+          .map((r) => `<tr><td>${esc(r.req_id || "")}</td><td>${esc(r.title || "")}</td><td>${esc(r.priority || "")}</td></tr>`)
+          .join("")}</tbody></table>`
+      : "<p>无需求条目</p>";
+    const objectiveRows = objectives.length
+      ? `<table><thead><tr><th>目标ID</th><th>目标</th><th>优先级</th></tr></thead><tbody>${objectives
+          .map((o) => `<tr><td>${esc(o.objective_id || "")}</td><td>${esc(o.goal || "")}</td><td>${esc(o.priority || "")}</td></tr>`)
+          .join("")}</tbody></table>`
+      : "<p>无测试目标</p>";
+    designHistoryVisual.innerHTML = `
+      <h4>记录概览</h4>
+      <div class="design-history-chips">
+        <span class="design-history-chip">需求 ${esc(reqs.length)}</span>
+        <span class="design-history-chip">目标 ${esc(objectives.length)}</span>
+        <span class="design-history-chip">整合矩阵 ${esc(integrated.length)}</span>
+        <span class="design-history-chip">测试用例 ${esc(tcCount)}</span>
+      </div>
+      <h4>需求摘要</h4>
+      ${reqRows}
+      <h4>测试目标摘要</h4>
+      ${objectiveRows}
+    `;
+  }
+  if (designHistoryJson) {
+    designHistoryJson.textContent = JSON.stringify(record, null, 2);
+  }
+}
+
+async function loadDesignHistory(preferredId = "") {
+  const resp = await fetch("/api/design-history");
+  if (!resp.ok) throw new Error(await resp.text() || "加载历史目录失败");
+  const data = await resp.json();
+  designHistoryItems = Array.isArray(data.items) ? data.items : [];
+  renderDesignHistoryList();
+  const targetId =
+    preferredId ||
+    selectedDesignHistoryId ||
+    stageState.design_history_record_id ||
+    (designHistoryItems[0] ? designHistoryItems[0].record_id : "");
+  if (targetId) {
+    await openDesignHistory(targetId);
+  } else {
+    renderDesignHistoryDetail(null);
+  }
+}
+
+async function openDesignHistory(recordId) {
+  if (!recordId) return;
+  const resp = await fetch(`/api/design-history/${encodeURIComponent(recordId)}`);
+  if (!resp.ok) throw new Error(await resp.text() || "加载历史记录失败");
+  const record = await resp.json();
+  selectedDesignHistoryId = record.record_id || recordId;
+  renderDesignHistoryList();
+  renderDesignHistoryDetail(record);
+}
+
+function applyHistoryRecordToCurrentSession(record) {
+  if (!record) return;
+  const reqInput = Array.isArray(record.requirement_input) ? record.requirement_input : [];
+  if (requirementsEl) requirementsEl.value = reqInput[0] || "";
+  if (record.product_profile?.selected) {
+    setSelectedProductProfile(record.product_profile.selected);
+  }
+  stageState.requirement_spec = record.requirement_spec || null;
+  stageState.persona_reviews = record.persona_reviews || null;
+  stageState.test_design_spec = record.test_design_spec || null;
+  stageState.test_case_spec = record.test_case_spec || null;
+  stageState.design_history_record_id = record.record_id || "";
+  stageState.design_history_doc_url = record.document_url || record.summary?.document_url || "";
+  latestStructured = latestStructured || {};
+  latestStructured.requirement_spec = record.requirement_spec || null;
+  latestStructured.persona_reviews = record.persona_reviews || null;
+  latestStructured.test_design_spec = record.test_design_spec || null;
+  latestStructured.test_case_spec = record.test_case_spec || null;
+  applyStageOutputs();
+  persistCurrentState("已载入历史测试设计记录");
+}
+
+async function continueGenerateCasesFromHistory(recordId) {
+  await openDesignHistory(recordId);
+  if (!selectedDesignHistoryRecord) throw new Error("未找到历史记录");
+  applyHistoryRecordToCurrentSession(selectedDesignHistoryRecord);
+  await generateCases();
+  await loadDesignHistory(recordId);
 }
 
 function applyStageOutputs() {
@@ -845,6 +1253,7 @@ function applyStageOutputs() {
     outCases.textContent = JSON.stringify(stageState.test_case_spec, null, 2);
     renderCases(stageState.test_case_spec);
   }
+  refreshDesignDocumentLink();
 }
 
 function restoreLastResultUI(snapshot) {
@@ -889,6 +1298,8 @@ function restoreLastResultUI(snapshot) {
   stageState.test_design_spec = snapshot.stage_state?.test_design_spec || latestStructured?.test_design_spec || null;
   stageState.test_case_spec = snapshot.stage_state?.test_case_spec || latestStructured?.test_case_spec || null;
   stageState.script_spec = snapshot.stage_state?.script_spec || latestStructured?.script_spec || null;
+  stageState.design_history_record_id = snapshot.stage_state?.design_history_record_id || "";
+  stageState.design_history_doc_url = snapshot.stage_state?.design_history_doc_url || "";
   ensureHitlStream(stageState.hitl_job_id);
   applyStageOutputs();
 }
@@ -1590,7 +2001,7 @@ async function generateRequirementsRound(round) {
   applyStageOutputs();
   renderOpenQuestions(data.open_questions || []);
   if ((data.open_questions || []).length) {
-    pushSystemBotMessage(`测试需求评审 v${data.round} 已完成，存在 ${data.open_questions.length} 个 Open Questions，等待人工补充后再进入下一轮。`, { actionNeeded: true });
+    pushSystemBotMessage(`测试需求评审 v${data.round} 已完成，当前有 ${data.open_questions.length} 个待确认问题，补充后可进入下一轮。`, { actionNeeded: true });
   } else {
     pushSystemBotMessage(`测试需求评审 v${data.round} 已完成。`);
   }
@@ -1606,15 +2017,22 @@ async function generateDesign() {
   if (!stageState.requirement_spec) throw new Error("请先完成测试需求评审（至少v1）");
   const productProfile = getSelectedProductProfile();
   const data = await startStageJobAndWait("design", {
+    requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
     persona_reviews: stageState.persona_reviews,
     product_profile: productProfile,
+    history_record_id: stageState.design_history_record_id || "",
   });
   stageState.test_design_spec = data.test_design_spec;
+  stageState.design_history_record_id = data.design_history?.record_id || stageState.design_history_record_id || "";
+  stageState.design_history_doc_url = data.design_history?.document_url || stageState.design_history_doc_url || "";
   latestStructured = latestStructured || {};
   latestStructured.test_design_spec = data.test_design_spec;
   applyStageOutputs();
-  setStatus("测试设计稿已生成（LLM严格模式）。");
+  if (stageState.design_history_record_id) {
+    await loadDesignHistory(stageState.design_history_record_id).catch(() => {});
+  }
+  setStatus("测试设计稿已生成，并已归档到历史目录。");
   persistCurrentState();
 }
 
@@ -1623,15 +2041,23 @@ async function generateCases() {
   const productProfile = getSelectedProductProfile();
   const actionVocab = parseCSVLine(actionVocabEl.value);
   const data = await startStageJobAndWait("testcases", {
+    requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
+    persona_reviews: stageState.persona_reviews,
     test_design_spec: stageState.test_design_spec,
     action_vocabulary: actionVocab,
     product_profile: productProfile,
+    history_record_id: stageState.design_history_record_id || "",
   });
   stageState.test_case_spec = data.test_case_spec;
+  stageState.design_history_record_id = data.design_history?.record_id || stageState.design_history_record_id || "";
+  stageState.design_history_doc_url = data.design_history?.document_url || stageState.design_history_doc_url || "";
   latestStructured = latestStructured || {};
   latestStructured.test_case_spec = data.test_case_spec;
   applyStageOutputs();
+  if (stageState.design_history_record_id) {
+    await loadDesignHistory(stageState.design_history_record_id).catch(() => {});
+  }
   setStatus("测试用例稿已生成。\n注：基于 integrated_matrix 分批生成。");
   persistCurrentState();
 }
@@ -2030,6 +2456,11 @@ function switchSheetById(id) {
       .then(() => { atAssetsLoaded = true; })
       .catch((e) => setStatus(`AT资产加载失败: ${e.message}`));
   }
+  if (id === "sheet8" && !designHistoryLoaded) {
+    loadDesignHistory()
+      .then(() => { designHistoryLoaded = true; })
+      .catch((e) => setStatus(`测试设计历史加载失败: ${e.message}`));
+  }
 }
 
 // bind events
@@ -2359,6 +2790,55 @@ downloadExcelBtn.addEventListener("click", async () => {
   }
 });
 
+refreshDesignHistoryBtn?.addEventListener("click", async () => {
+  try {
+    setSingleButtonBusy(refreshDesignHistoryBtn, true, "刷新中...");
+    await loadDesignHistory(selectedDesignHistoryId || stageState.design_history_record_id || "");
+    designHistoryLoaded = true;
+    setStatus("测试设计历史目录已刷新。");
+  } catch (e) {
+    setStatus(`测试设计历史刷新失败: ${e.message}`);
+  } finally {
+    setSingleButtonBusy(refreshDesignHistoryBtn, false);
+  }
+});
+
+designHistoryList?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-record-id]");
+  if (!btn) return;
+  const recordId = btn.getAttribute("data-record-id");
+  openDesignHistory(recordId).catch((e) => setStatus(`历史记录加载失败: ${e.message}`));
+});
+
+designHistoryLoadBtn?.addEventListener("click", () => {
+  if (!selectedDesignHistoryRecord) {
+    setStatus("请先选择一条历史记录。");
+    return;
+  }
+  applyHistoryRecordToCurrentSession(selectedDesignHistoryRecord);
+  setStatus("已载入历史测试设计记录到当前会话。");
+  switchSheetById(selectedDesignHistoryRecord.test_case_spec?.testcases?.length ? "sheet4" : "sheet3");
+});
+
+designHistoryCasesBtn?.addEventListener("click", async () => {
+  if (!selectedDesignHistoryId) {
+    setStatus("请先选择一条历史记录。");
+    return;
+  }
+  try {
+    setSingleButtonBusy(designHistoryCasesBtn, true, "生成中...");
+    stageButtons.forEach((b) => b && (b.disabled = true));
+    setStatus("正在基于历史测试设计生成测试用例稿 ...");
+    await continueGenerateCasesFromHistory(selectedDesignHistoryId);
+    switchSheetById("sheet4");
+  } catch (e) {
+    setStatus(`历史记录生成测试用例失败: ${e.message}`);
+  } finally {
+    setSingleButtonBusy(designHistoryCasesBtn, false);
+    stageButtons.forEach((b) => b && (b.disabled = false));
+  }
+});
+
 settingsBtn.addEventListener("click", async () => {
   try {
     await loadPrompts();
@@ -2511,6 +2991,7 @@ async function sendBotMessage() {
 initTheme();
 initTabs();
 renderProductProfileOptions();
+renderDesignHistoryDetail(null);
 restoreLastResultUI(loadLastResult());
 renderAgenticScriptMessages();
 fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`));
@@ -2518,6 +2999,7 @@ fetchAdbDevices().catch(() => {});
 fetchSerialPorts().catch(() => {});
 
 window.addEventListener("beforeunload", () => {
+  revokeDesignDocUrl();
   closeHitlStream();
   closeStageStream();
 });

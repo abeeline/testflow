@@ -26,6 +26,7 @@
           <button class="sheet-tab ui-btn ui-btn-ghost active" data-sheet="sheet1">需求准备</button>
           <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet2">测试需求处理</button>
           <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet3">测试设计</button>
+          <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet8">测试设计历史</button>
           <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet4">测试用例</button>
           <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet5">测试脚本</button>
           <button class="sheet-tab ui-btn ui-btn-ghost" data-sheet="sheet7">AT测试Agent</button>
@@ -112,7 +113,12 @@
 
         <section class="sheet" id="sheet3">
           <div class="card ui-card">
-            <h3>测试设计稿</h3>
+            <div class="row-head">
+              <h3>测试设计稿</h3>
+              <div id="designDocActions" class="btn-row compact-row hidden">
+                <a id="designDocLink" class="ui-btn ui-btn-secondary" href="#" target="_blank" rel="noopener noreferrer">查看测试设计文档</a>
+              </div>
+            </div>
             <pre id="outDesign" class="ui-pre"></pre>
             <div id="viewDesign" class="visual"></div>
             <div class="btn-row">
@@ -129,6 +135,33 @@
             </div>
             <pre id="outCases" class="ui-pre"></pre>
             <div id="viewCases" class="visual"></div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet8">
+          <div class="card ui-card">
+            <div class="row-head">
+              <h3>历史完成的测试设计</h3>
+              <button id="refreshDesignHistoryBtn" class="ui-btn ui-btn-secondary">刷新历史目录</button>
+            </div>
+            <div class="design-history-layout">
+              <div class="design-history-list-panel">
+                <div id="designHistoryList" class="visual"></div>
+              </div>
+              <div class="design-history-detail-panel">
+                <div class="row-head">
+                  <h4 id="designHistoryDetailTitle">选择一条历史记录</h4>
+                  <div class="btn-row compact-row">
+                    <a id="designHistoryDocLink" class="ui-btn ui-btn-secondary hidden" href="#" target="_blank" rel="noopener noreferrer">查看固定URL文档</a>
+                    <button id="designHistoryLoadBtn" class="ui-btn ui-btn-secondary" type="button" disabled>载入当前会话</button>
+                    <button id="designHistoryCasesBtn" class="ui-btn ui-btn-secondary" type="button" disabled>继续生成测试用例</button>
+                  </div>
+                </div>
+                <div id="designHistoryMeta" class="visual"></div>
+                <div id="designHistoryVisual" class="visual"></div>
+                <pre id="designHistoryJson" class="ui-pre"></pre>
+              </div>
+            </div>
           </div>
         </section>
 

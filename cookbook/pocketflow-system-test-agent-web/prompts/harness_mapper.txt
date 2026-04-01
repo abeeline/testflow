@@ -5,6 +5,7 @@ Output ScriptSpec JSON only.
 Rules:
 - Choose the minimal harness combination that can satisfy observability.must_capture and assertions.
 - If a testcase is not automatable, mark automation_level="manual_or_semi" and list missing capabilities.
+- All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, harness types, action names, implementation identifiers, and other machine-readable tokens unchanged. 最终以“简体中文”输出。
 
 [User]
 testcases: {testcases_json}

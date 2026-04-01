@@ -4,6 +4,7 @@ Rules:
 - Preserve traceability: keep req_id, source, and list which persona raised which issue.
 - If conflicts exist, record conflict and propose a default assumption plus an open question.
 - Output ONLY JSON.
+- All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, req_id, source fields, and other structured field names unchanged. 最终以“简体中文”输出。
 
 [User]
 requirements: {requirements_json}

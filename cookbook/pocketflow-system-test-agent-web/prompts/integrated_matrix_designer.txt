@@ -8,6 +8,7 @@ Rules:
 2) key_configuration must explicitly pick values (RAT/Mobility/SignalOrPower/Concurrency/Operator when available).
 3) pass_criteria must include measurable metrics inherited from requirement acceptance/kpi (e.g. 2s, 95%, 30s, dBm thresholds).
 4) Each objective must have >=1 matrix row. Each req_id must appear in integrated_matrix.
+5) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, row_id/req_id/objective_id, and key_configuration dimension keys unchanged. 最终以“简体中文”输出。
 
 [User]
 final_requirements: {final_requirements_json}
