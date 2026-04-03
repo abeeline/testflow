@@ -94,6 +94,7 @@ TESTCASE_REQUIRED_KEYS = [
     "steps",
     "expected",
     "pass_fail",
+    "test_environment",
     "observability",
     "trace",
 ]
@@ -135,6 +136,27 @@ DEFAULT_CAPABILITIES = {
         "TRIGGER_REGISTRATION": ["at", "adb"],
         "CHECK": ["logcat_parser", "ims_api"],
         "COLLECT_LOG": ["diag", "qxdm"],
+    },
+}
+
+TEST_ENVIRONMENT_CATALOG = {
+    "REAL_NETWORK": {
+        "id": "REAL_NETWORK",
+        "label": "实网环境",
+        "priority": 1,
+        "description": "使用运营商SIM和真实网络，进行真实用户操作层面的测试。",
+    },
+    "AMARISOFT": {
+        "id": "AMARISOFT",
+        "label": "Amarisoft模拟基站",
+        "priority": 2,
+        "description": "使用Amarisoft模拟基站，进行部分基础PHY/协议L3仿真测试。",
+    },
+    "PROTOCOL_ANALYZER": {
+        "id": "PROTOCOL_ANALYZER",
+        "label": "协议分析仪表",
+        "priority": 3,
+        "description": "使用Keysight/Anritsu等协议分析仪表，进行IE配置、协议流程构建和异常注入测试。",
     },
 }
 
@@ -218,7 +240,7 @@ INTEGRATED_MATRIX_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["req_id", "objective_id", "scenario", "key_configuration", "pass_criteria"],
+                "required": ["req_id", "objective_id", "scenario", "key_configuration", "pass_criteria", "test_environment"],
                 "properties": {
                     "row_id": {"type": "string"},
                     "req_id": {"type": "string"},
@@ -226,6 +248,7 @@ INTEGRATED_MATRIX_SCHEMA = {
                     "scenario": {"type": "string"},
                     "key_configuration": {"type": "object"},
                     "pass_criteria": {"type": "array", "items": {"type": "string"}},
+                    "test_environment": {"type": "object"},
                 },
             },
         }

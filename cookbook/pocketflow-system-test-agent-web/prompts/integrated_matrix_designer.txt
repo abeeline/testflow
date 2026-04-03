@@ -8,12 +8,16 @@ Rules:
 2) key_configuration must explicitly pick values (RAT/Mobility/SignalOrPower/Concurrency/Operator when available).
 3) pass_criteria must include measurable metrics inherited from requirement acceptance/kpi (e.g. 2s, 95%, 30s, dBm thresholds).
 4) Each objective must have >=1 matrix row. Each req_id must appear in integrated_matrix.
-5) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, row_id/req_id/objective_id, and key_configuration dimension keys unchanged. 最终以“简体中文”输出。
+5) For each row, choose a recommended test_environment.primary from REAL_NETWORK / AMARISOFT / PROTOCOL_ANALYZER.
+6) Prioritize user-selected available_test_environments when they are sufficient.
+7) If a scenario must rely on an environment not selected by the user, still keep the row and explain the gap in test_environment.availability_risk.
+8) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, row_id/req_id/objective_id, key_configuration dimension keys, and test_environment.primary IDs unchanged. 最终以“简体中文”输出。
 
 [User]
 final_requirements: {final_requirements_json}
 objectives: {objectives_json}
 coverage_matrices: {coverage_matrices_json}
+available_test_environments: {available_test_environments_json}
 output_schema: {output_schema}
 
 Return JSON format:
@@ -31,7 +35,13 @@ Return JSON format:
         "Concurrency": "...",
         "Operator": "..."
       },
-      "pass_criteria": ["..."]
+      "pass_criteria": ["..."],
+      "test_environment": {
+        "primary": "REAL_NETWORK|AMARISOFT|PROTOCOL_ANALYZER",
+        "alternatives": ["..."],
+        "rationale": "...",
+        "availability_risk": "..."
+      }
     }
   ]
 }

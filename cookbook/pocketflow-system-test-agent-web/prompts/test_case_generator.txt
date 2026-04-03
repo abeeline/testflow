@@ -9,7 +9,9 @@ Hard constraints:
 4) Preserve numeric thresholds and KPI values exactly in pass_fail (e.g. 2s, 95%, -115dBm, 30s). Do not weaken or paraphrase away numbers.
 5) Steps must use ONLY actions from action_vocabulary.
 6) Include trace to req_id and row_id for each testcase.
-7) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, tc_id/objective_id, action names, trace field names, and action_vocabulary tokens unchanged. 最终以“简体中文”输出。
+7) Each testcase MUST include test_environment, inherited from the corresponding integrated_matrix row. Do not omit it.
+8) Keep test_environment.primary unchanged if the integrated_matrix row already selected one. If the environment is unavailable, keep it and preserve the risk note.
+9) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, tc_id/objective_id, action names, trace field names, action_vocabulary tokens, and test_environment.primary IDs unchanged. 最终以“简体中文”输出。
 
 Output format:
 {
@@ -29,6 +31,12 @@ Output format:
       ],
       "expected": ["..."],
       "pass_fail": ["must include numeric criteria from integrated_matrix.pass_criteria"],
+      "test_environment": {
+        "primary": "REAL_NETWORK|AMARISOFT|PROTOCOL_ANALYZER",
+        "alternatives": ["..."],
+        "rationale": "...",
+        "availability_risk": "..."
+      },
       "observability": {"must_capture": ["..."], "assertions": ["..."]},
       "failure_taxonomy": [{"code": "...", "signals": ["..."], "likely_owner": "..."}],
       "trace": {"req_ids": ["REQ-..."], "source_refs": ["ROW-..."]}

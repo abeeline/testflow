@@ -33,6 +33,7 @@ class GenerateRequest(BaseModel):
     rag_context: str = ""
     framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
+    test_environments: Optional[Dict[str, Any]] = None
     capabilities: Optional[Dict[str, Any]] = None
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
@@ -46,6 +47,7 @@ class ExportTestCasesRequest(BaseModel):
     requirement_input: Optional[List[str]] = None
     requirement_spec: Optional[Dict[str, Any]] = None
     persona_reviews: Optional[Dict[str, Any]] = None
+    requirement_review_history: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Dict[str, Any]
 
@@ -76,6 +78,7 @@ class RequirementRoundRequest(BaseModel):
     rag_context: str = ""
     framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
+    test_environments: Optional[Dict[str, Any]] = None
     round: int = 1
     previous_persona_reviews: Optional[Dict[str, Any]] = None
     open_question_answers: Optional[Dict[str, str]] = None
@@ -86,6 +89,7 @@ class RequirementHITLStartRequest(BaseModel):
     rag_context: str = ""
     framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
+    test_environments: Optional[Dict[str, Any]] = None
     automation_modes: Optional[List[str]] = None
     adb_device_id: str = ""
     at_port: str = ""
@@ -100,9 +104,11 @@ class StageGenerateRequest(BaseModel):
     requirement_input: Optional[List[str]] = None
     requirement_spec: Dict[str, Any]
     persona_reviews: Optional[Dict[str, Any]] = None
+    requirement_review_history: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Optional[Dict[str, Any]] = None
     product_profile: Optional[Dict[str, Any]] = None
+    test_environments: Optional[Dict[str, Any]] = None
     capabilities: Optional[Dict[str, Any]] = None
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
@@ -417,6 +423,104 @@ def _render_html_kv_table(rows: List[List[str]]) -> str:
     return f"<table><tbody>{body}</tbody></table>"
 
 
+def _render_test_environment_lines(test_environments: Dict[str, Any]) -> List[str]:
+    if not isinstance(test_environments, dict):
+        return []
+    display = test_environments.get("display")
+    if isinstance(display, list):
+        lines = [str(x).strip() for x in display if str(x).strip()]
+        if lines:
+            return lines
+    details = test_environments.get("selected_details")
+    if isinstance(details, list):
+        lines = []
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label", "")).strip()
+            desc = str(item.get("description", "")).strip()
+            priority = str(item.get("priority", "")).strip()
+            prefix = f"{priority}. " if priority else ""
+            if label and desc:
+                lines.append(f"{prefix}{label}: {desc}")
+            elif label:
+                lines.append(f"{prefix}{label}")
+        if lines:
+            return lines
+    return []
+
+
+def _format_test_environment_cell(env: Any) -> tuple[str, str]:
+    if not isinstance(env, dict):
+        return ("未指定", "")
+    primary = str(env.get("primary_label") or env.get("primary") or "未指定").strip() or "未指定"
+    alternatives = env.get("alternative_labels")
+    if not isinstance(alternatives, list) or not alternatives:
+        alternatives = env.get("alternatives") if isinstance(env.get("alternatives"), list) else []
+    alt_text = "、".join(str(x).strip() for x in alternatives if str(x).strip())
+    rationale = str(env.get("rationale", "")).strip()
+    risk = str(env.get("availability_risk", "")).strip()
+
+    parts = [primary]
+    if alt_text:
+        parts.append(f"备选: {alt_text}")
+    if rationale:
+        parts.append(f"依据: {rationale}")
+    return ("；".join(parts), risk)
+
+
+def _parse_answer_map(answer_map: Dict[str, Any], source_round: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(answer_map, dict):
+        return out
+    for raw_key, raw_answer in answer_map.items():
+        answer = str(raw_answer or "").strip()
+        if not answer:
+            continue
+        key = str(raw_key or "")
+        req_id, question = "", key
+        if "::" in key:
+            req_id, question = key.split("::", 1)
+        out.append(
+            {
+                "source_round": source_round,
+                "req_id": req_id.strip(),
+                "question": question.strip(),
+                "answer": answer,
+            }
+        )
+    return out
+
+
+def _merge_answered_questions(existing: Any, additions: Any) -> List[Dict[str, Any]]:
+    merged: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for item in list(existing or []) + list(additions or []):
+        if not isinstance(item, dict):
+            continue
+        req_id = str(item.get("req_id", "")).strip()
+        question = str(item.get("question", "")).strip()
+        answer = str(item.get("answer", "")).strip()
+        if not question or not answer:
+            continue
+        merged[(req_id, question)] = {
+            "source_round": int(item.get("source_round", 0) or 0),
+            "req_id": req_id,
+            "question": question,
+            "answer": answer,
+        }
+    return list(merged.values())
+
+
+def _build_requirement_review_history(rounds: Any, answered_questions: Any) -> Dict[str, Any]:
+    round_list = [item for item in (rounds or []) if isinstance(item, dict)]
+    answered_list = [item for item in (answered_questions or []) if isinstance(item, dict)]
+    return {
+        "rounds": round_list,
+        "answered_questions": answered_list,
+        "answered_count": len(answered_list),
+    }
+
+
 def _render_history_review_table(items: List[Dict[str, Any]]) -> str:
     if not items:
         return "<p>无</p>"
@@ -436,11 +540,33 @@ def _render_history_review_table(items: List[Dict[str, Any]]) -> str:
     )
 
 
+def _render_answered_question_table(items: Any) -> str:
+    rows = [it for it in (items or []) if isinstance(it, dict)]
+    if not rows:
+        return "<p>无</p>"
+    body = []
+    for item in rows:
+        body.append(
+            "<tr>"
+            f"<td>{html.escape(str(item.get('source_round', '')))}</td>"
+            f"<td>{html.escape(str(item.get('req_id', '')))}</td>"
+            f"<td>{html.escape(str(item.get('question', '')))}</td>"
+            f"<td>{html.escape(str(item.get('answer', '')))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>用户确认/补充</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
 def _render_design_document_html(record: Dict[str, Any]) -> str:
     requirement_input = record.get("requirement_input", []) or []
     product_profile = record.get("product_profile", {}) if isinstance(record.get("product_profile"), dict) else {}
+    test_environments = record.get("test_environments", {}) if isinstance(record.get("test_environments"), dict) else {}
     requirement_spec = record.get("requirement_spec", {}) if isinstance(record.get("requirement_spec"), dict) else {}
     persona_reviews = record.get("persona_reviews", {}) if isinstance(record.get("persona_reviews"), dict) else {}
+    requirement_review_history = record.get("requirement_review_history", {}) if isinstance(record.get("requirement_review_history"), dict) else {}
     test_design_spec = record.get("test_design_spec", {}) if isinstance(record.get("test_design_spec"), dict) else {}
     reqs = requirement_spec.get("final_requirements", []) if isinstance(requirement_spec.get("final_requirements"), list) else []
     objectives = test_design_spec.get("objectives", []) if isinstance(test_design_spec.get("objectives"), list) else []
@@ -514,6 +640,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     for idx, row in enumerate(integrated, start=1):
         cfg = row.get("key_configuration", {}) if isinstance(row, dict) and isinstance(row.get("key_configuration"), dict) else {}
         cfg_text = " / ".join(f"{k}: {v}" for k, v in cfg.items())
+        env_text, risk_text = _format_test_environment_cell(row.get("test_environment"))
         integrated_rows.append(
             "<tr>"
             f"<td>{html.escape(str(row.get('row_id', f'ROW-{idx:03d}')))}</td>"
@@ -522,10 +649,12 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
             f"<td>{html.escape(str(row.get('scenario', '')))}</td>"
             f"<td>{html.escape(cfg_text)}</td>"
             f"<td>{html.escape(' / '.join(str(x) for x in row.get('pass_criteria', []) or []))}</td>"
+            f"<td>{html.escape(env_text)}</td>"
+            f"<td>{html.escape(risk_text)}</td>"
             "</tr>"
         )
     integrated_table = (
-        "<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th></tr></thead>"
+        "<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead>"
         f"<tbody>{''.join(integrated_rows)}</tbody></table>"
         if integrated_rows
         else "<p>无</p>"
@@ -538,6 +667,8 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
             values = item.get("values", []) or []
             if group and values:
                 profile_lines.append(f"{group}: {'、'.join(str(x) for x in values)}")
+    test_environment_lines = _render_test_environment_lines(test_environments)
+    answered_question_table = _render_answered_question_table(requirement_review_history.get("answered_questions", []))
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -581,10 +712,11 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
         <div class="grid">
           <div><h3>原始需求输入</h3>{_render_html_list(requirement_input)}</div>
           <div><h3>产品通信背景与支持特性</h3>{_render_html_list(profile_lines)}</div>
+          <div><h3>测试团队可用测试环境</h3>{_render_html_list(test_environment_lines)}</div>
         </div>
       </section>
       <section class="section"><h2>三、测试需求解读稿</h2>{req_table}</section>
-      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}</section>
+      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}<section><h3>用户已确认问题</h3>{answered_question_table}</section></section>
       <section class="section"><h2>五、测试目标</h2>{objective_table}</section>
       <section class="section"><h2>六、覆盖矩阵</h2>{matrix_html}</section>
       <section class="section"><h2>七、整合覆盖矩阵</h2>{integrated_table}</section>
@@ -632,8 +764,10 @@ def _upsert_design_history_record(
     requirement_input: Optional[List[str]] = None,
     requirement_spec: Optional[Dict[str, Any]] = None,
     persona_reviews: Optional[Dict[str, Any]] = None,
+    requirement_review_history: Optional[Dict[str, Any]] = None,
     test_design_spec: Optional[Dict[str, Any]] = None,
     product_profile: Optional[Dict[str, Any]] = None,
+    test_environments: Optional[Dict[str, Any]] = None,
     test_case_spec: Optional[Dict[str, Any]] = None,
     warnings: Optional[Dict[str, Any]] = None,
     trace: Optional[Dict[str, Any]] = None,
@@ -648,8 +782,10 @@ def _upsert_design_history_record(
     record["requirement_input"] = requirement_input or record.get("requirement_input", []) or []
     record["requirement_spec"] = requirement_spec or record.get("requirement_spec", {}) or {}
     record["persona_reviews"] = persona_reviews or record.get("persona_reviews", {}) or {}
+    record["requirement_review_history"] = requirement_review_history or record.get("requirement_review_history", {}) or {}
     record["test_design_spec"] = test_design_spec or record.get("test_design_spec", {}) or {}
     record["product_profile"] = product_profile or record.get("product_profile", {}) or {}
+    record["test_environments"] = test_environments or record.get("test_environments", {}) or {}
     if test_case_spec is not None:
         record["test_case_spec"] = test_case_spec
     else:
@@ -843,6 +979,7 @@ async def generate(payload: GenerateRequest):
         "rag_context": effective_rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog.strip(),
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
@@ -946,6 +1083,7 @@ async def _run_requirement_hitl_job(job_id: str):
     rag_context: str = job["rag_context"]
     framework_capability_catalog: str = job["framework_capability_catalog"]
     product_profile: Dict[str, Any] = job.get("product_profile") or {}
+    test_environments: Dict[str, Any] = job.get("test_environments") or {}
 
     try:
         for round_no in range(1, 4):
@@ -955,6 +1093,7 @@ async def _run_requirement_hitl_job(job_id: str):
                 "rag_context": effective_rag_context,
                 "framework_capability_catalog": framework_capability_catalog,
                 "product_profile": product_profile,
+                "test_environments": test_environments,
                 "capabilities": DEFAULT_CAPABILITIES,
                 "action_vocabulary": DEFAULT_ACTION_VOCABULARY,
                 "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
@@ -969,14 +1108,26 @@ async def _run_requirement_hitl_job(job_id: str):
 
             requirement_spec = shared.get("requirement_spec", {})
             persona_reviews = shared.get("persona_reviews", {})
+            round_summary = {
+                "round": round_no,
+                "is_final_round": round_no >= 3,
+                "issues": _collect_review_issues(persona_reviews),
+                "open_questions": _collect_open_questions(persona_reviews),
+            }
+            round_summaries = [item for item in (job.get("round_summaries", []) or []) if item.get("round") != round_no]
+            round_summaries.append(round_summary)
+            round_summaries.sort(key=lambda item: item.get("round", 0))
+            job["round_summaries"] = round_summaries
+            review_history = _build_requirement_review_history(job.get("round_summaries", []), job.get("answered_questions", []))
             round_payload = {
                 "job_id": job_id,
                 "round": round_no,
                 "is_final_round": round_no >= 3,
                 "requirement_spec": requirement_spec,
                 "persona_reviews": persona_reviews,
-                "issues": _collect_review_issues(persona_reviews),
-                "open_questions": _collect_open_questions(persona_reviews),
+                "issues": round_summary["issues"],
+                "open_questions": round_summary["open_questions"],
+                "requirement_review_history": review_history,
                 "warnings": shared.get("warnings", []),
                 "trace": shared.get("trace", []),
                 "rag": {"hits": rag_hits, "context_used": bool(effective_rag_context)},
@@ -1002,6 +1153,11 @@ async def _run_requirement_hitl_job(job_id: str):
             await job["answer_event"].wait()
             job["answer_event"].clear()
             answers = job.get("pending_answers", {}) or {}
+            if answers:
+                job["answered_questions"] = _merge_answered_questions(
+                    job.get("answered_questions", []),
+                    _parse_answer_map(answers, round_no),
+                )
 
             fb_parts: List[str] = []
             issues = _collect_review_issues(persona_reviews)
@@ -1066,7 +1222,10 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "rag_context": payload.rag_context.strip(),
         "framework_capability_catalog": framework_capability_catalog,
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "review_feedback": "",
+        "round_summaries": [],
+        "answered_questions": [],
         "pending_answers": {},
         "answer_event": answer_event,
         "queue": queue,
@@ -1158,7 +1317,9 @@ async def _run_stage_job(job_id: str):
                 "input_requirements": payload.requirement_input or [],
                 "requirement_spec": payload.requirement_spec,
                 "persona_reviews": payload.persona_reviews or {},
+                "requirement_review_history": payload.requirement_review_history or {},
                 "product_profile": payload.product_profile or {},
+                "test_environments": payload.test_environments or {},
                 "llm_client": LLMClient(),
                 "warnings": [],
                 "trace": [],
@@ -1171,8 +1332,10 @@ async def _run_stage_job(job_id: str):
                 requirement_input=payload.requirement_input or [],
                 requirement_spec=payload.requirement_spec or {},
                 persona_reviews=payload.persona_reviews or {},
+                requirement_review_history=payload.requirement_review_history or {},
                 test_design_spec=shared.get("test_design_spec", {}),
                 product_profile=payload.product_profile or {},
+                test_environments=payload.test_environments or {},
                 warnings={"design": shared.get("warnings", [])},
                 trace={"design": shared.get("trace", [])},
                 status="design_completed",
@@ -1190,7 +1353,9 @@ async def _run_stage_job(job_id: str):
                 "input_requirements": payload.requirement_input or [],
                 "requirement_spec": payload.requirement_spec,
                 "test_design_spec": payload.test_design_spec,
+                "requirement_review_history": payload.requirement_review_history or {},
                 "product_profile": payload.product_profile or {},
+                "test_environments": payload.test_environments or {},
                 "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
                 "llm_client": LLMClient(),
                 "warnings": [],
@@ -1204,8 +1369,10 @@ async def _run_stage_job(job_id: str):
                 requirement_input=payload.requirement_input or [],
                 requirement_spec=payload.requirement_spec or {},
                 persona_reviews=payload.persona_reviews or {},
+                requirement_review_history=payload.requirement_review_history or {},
                 test_design_spec=payload.test_design_spec or {},
                 product_profile=payload.product_profile or {},
+                test_environments=payload.test_environments or {},
                 test_case_spec=shared.get("test_case_spec", {}),
                 warnings={"testcases": shared.get("warnings", [])},
                 trace={"testcases": shared.get("trace", [])},
@@ -1223,6 +1390,7 @@ async def _run_stage_job(job_id: str):
             shared = {
                 "test_case_spec": payload.test_case_spec,
                 "product_profile": payload.product_profile or {},
+                "test_environments": payload.test_environments or {},
                 "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
                 "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
                 "llm_client": LLMClient(),
@@ -1359,6 +1527,7 @@ async def requirements_analyze(payload: RequirementRoundRequest):
         "rag_context": effective_rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog.strip(),
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "capabilities": DEFAULT_CAPABILITIES,
         "action_vocabulary": DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
@@ -1403,7 +1572,9 @@ async def design_generate(payload: StageGenerateRequest):
         "input_requirements": payload.requirement_input or [],
         "requirement_spec": payload.requirement_spec,
         "persona_reviews": payload.persona_reviews or {},
+        "requirement_review_history": payload.requirement_review_history or {},
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "llm_client": LLMClient(),
         "warnings": [],
         "trace": [],
@@ -1426,8 +1597,10 @@ async def design_generate(payload: StageGenerateRequest):
         requirement_input=payload.requirement_input or [],
         requirement_spec=payload.requirement_spec or {},
         persona_reviews=payload.persona_reviews or {},
+        requirement_review_history=payload.requirement_review_history or {},
         test_design_spec=shared.get("test_design_spec", {}),
         product_profile=payload.product_profile or {},
+        test_environments=payload.test_environments or {},
         warnings={"design": shared.get("warnings", [])},
         trace={"design": shared.get("trace", [])},
         status="design_completed",
@@ -1448,7 +1621,9 @@ async def testcases_generate(payload: StageGenerateRequest):
         "input_requirements": payload.requirement_input or [],
         "requirement_spec": payload.requirement_spec,
         "test_design_spec": payload.test_design_spec,
+        "requirement_review_history": payload.requirement_review_history or {},
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "llm_client": LLMClient(),
         "warnings": [],
@@ -1472,8 +1647,10 @@ async def testcases_generate(payload: StageGenerateRequest):
         requirement_input=payload.requirement_input or [],
         requirement_spec=payload.requirement_spec or {},
         persona_reviews=payload.persona_reviews or {},
+        requirement_review_history=payload.requirement_review_history or {},
         test_design_spec=payload.test_design_spec or {},
         product_profile=payload.product_profile or {},
+        test_environments=payload.test_environments or {},
         test_case_spec=shared.get("test_case_spec", {}),
         warnings={"testcases": shared.get("warnings", [])},
         trace={"testcases": shared.get("trace", [])},
@@ -1494,6 +1671,7 @@ async def scripts_generate(payload: StageGenerateRequest):
     shared = {
         "test_case_spec": payload.test_case_spec,
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
         "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
         "llm_client": LLMClient(),
@@ -1534,6 +1712,7 @@ async def generate_stream(payload: GenerateRequest):
         "rag_context": effective_rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog.strip(),
         "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
         "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
@@ -1701,6 +1880,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     requirement_input = payload.requirement_input or []
     requirement_spec = payload.requirement_spec or {}
     persona_reviews = payload.persona_reviews or {}
+    requirement_review_history = payload.requirement_review_history or {}
     test_design_spec = payload.test_design_spec or {}
     test_case_spec = payload.test_case_spec or {}
     testcases = test_case_spec.get("testcases", [])
@@ -1779,10 +1959,11 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
         )
 
     ws_design_matrix = wb.create_sheet("测试设计矩阵")
-    ws_design_matrix.append(["row_id", "req_id", "objective_id", "scenario", "key_configuration", "pass_criteria"])
+    ws_design_matrix.append(["row_id", "req_id", "objective_id", "scenario", "key_configuration", "pass_criteria", "recommended_test_environment", "availability_risk"])
     for row in test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []:
         if not isinstance(row, dict):
             continue
+        env_text, risk_text = _format_test_environment_cell(row.get("test_environment"))
         ws_design_matrix.append(
             [
                 row.get("row_id", ""),
@@ -1791,6 +1972,8 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                 row.get("scenario", ""),
                 _safe_json(row.get("key_configuration", {})),
                 _list_to_text(row.get("pass_criteria", [])),
+                env_text,
+                risk_text,
             ]
         )
 
@@ -1804,6 +1987,8 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
             "preconditions",
             "expected",
             "pass_fail",
+            "recommended_test_environment",
+            "availability_risk",
             "steps_count",
             "must_capture",
         ]
@@ -1811,6 +1996,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     for tc in testcases:
         if not isinstance(tc, dict):
             continue
+        env_text, risk_text = _format_test_environment_cell(tc.get("test_environment"))
         ws_cases.append(
             [
                 tc.get("tc_id", ""),
@@ -1820,8 +2006,24 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                 _list_to_text(tc.get("preconditions", [])),
                 _list_to_text(tc.get("expected", [])),
                 _list_to_text(tc.get("pass_fail", [])),
+                env_text,
+                risk_text,
                 len(tc.get("steps", [])),
                 ", ".join((tc.get("observability") or {}).get("must_capture", [])),
+            ]
+        )
+
+    ws_answers = wb.create_sheet("问题确认记录")
+    ws_answers.append(["source_round", "req_id", "question", "answer"])
+    for item in requirement_review_history.get("answered_questions", []) if isinstance(requirement_review_history, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        ws_answers.append(
+            [
+                item.get("source_round", ""),
+                item.get("req_id", ""),
+                item.get("question", ""),
+                item.get("answer", ""),
             ]
         )
 
@@ -1840,6 +2042,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     ws_raw.append(["section", "json"])
     ws_raw.append(["requirement_spec", _safe_json(requirement_spec)])
     ws_raw.append(["persona_reviews", _safe_json(persona_reviews)])
+    ws_raw.append(["requirement_review_history", _safe_json(requirement_review_history)])
     ws_raw.append(["test_design_spec", _safe_json(test_design_spec)])
     ws_raw.append(["test_case_spec", _safe_json(test_case_spec)])
 

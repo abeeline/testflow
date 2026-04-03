@@ -816,13 +816,24 @@ html[data-theme="light"] .theme-icon.sun {
 
 .feature-option {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 9px;
   font-size: 12px;
   background: color-mix(in srgb, var(--muted) 20%, var(--card));
+}
+
+.feature-option input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+.feature-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted-foreground);
+  line-height: 1.45;
 }
 
 .compact-device-grid {

@@ -1,13 +1,14 @@
 import asyncio
 import datetime as dt
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pocketflow import AsyncNode, Node
 from schemas import (
     DEFAULT_ACTION_VOCABULARY,
     DEFAULT_ASSERTION_VOCABULARY,
     DEFAULT_CAPABILITIES,
+    TEST_ENVIRONMENT_CATALOG,
     PERSONA_REVIEW_SCHEMA,
     REQUIREMENT_ITEM_SCHEMA,
     REQUIREMENT_LIST_SCHEMA,
@@ -46,9 +47,85 @@ def _emit(shared: Dict[str, Any], event_type: str, payload: Dict[str, Any]):
         pass
 
 
-def _fallback_testcases_from_objectives(objectives: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_available_test_environments(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    selected = raw.get("selected_ids") or raw.get("selected") or []
+    if not isinstance(selected, list):
+        selected = []
+    normalized = [str(x) for x in selected if str(x) in TEST_ENVIRONMENT_CATALOG]
+    details = [TEST_ENVIRONMENT_CATALOG[x] for x in normalized]
+    return {
+        "selected_ids": normalized,
+        "selected_details": details,
+        "selected_count": len(normalized),
+    }
+
+
+def _test_environment_label(env_id: str) -> str:
+    return TEST_ENVIRONMENT_CATALOG.get(env_id, {}).get("label", env_id or "未指定环境")
+
+
+def _recommend_test_environment(texts: List[str], available_envs: Any) -> Dict[str, Any]:
+    available = _normalize_available_test_environments(available_envs)
+    selected_ids = available["selected_ids"]
+    catalog_ids = list(TEST_ENVIRONMENT_CATALOG.keys())
+    text = " ".join([str(x) for x in texts if str(x).strip()]).lower()
+
+    protocol_keywords = [
+        "ie", "timer", "reject", "cause", "protocol", "nas", "rrc", "emm", "esm",
+        "信令", "协议", "定时器", "原因码", "异常注入", "流程构建", "ie配置", "协议栈",
+    ]
+    real_keywords = [
+        "现网", "实网", "运营商", "用户体验", "用户操作", "真实网络", "长稳", "ui", "业务连续性", "真实sim",
+    ]
+    amari_keywords = [
+        "amarisoft", "l3", "phy", "基础注册", "基础附着", "基础协议", "基础移动性", "仿真", "模拟基站",
+    ]
+
+    required_env = "AMARISOFT"
+    rationale = "当前场景偏向可重复、可控的基础协议与接入验证，优先使用Amarisoft模拟基站。"
+
+    if any(k in text for k in protocol_keywords):
+        required_env = "PROTOCOL_ANALYZER"
+        rationale = "当前场景需要精确协议流程控制、IE配置或异常注入，更适合使用协议分析仪表。"
+    elif any(k in text for k in real_keywords):
+        required_env = "REAL_NETWORK"
+        rationale = "当前场景关注真实运营商网络与用户操作体验，优先使用实网环境。"
+    elif any(k in text for k in amari_keywords):
+        required_env = "AMARISOFT"
+        rationale = "当前场景偏向基础PHY/L3仿真与可重复回归，优先使用Amarisoft模拟基站。"
+
+    if selected_ids:
+        if required_env in selected_ids:
+            primary = required_env
+            risk = ""
+        else:
+            primary = required_env
+            risk = f"当前建议环境为{_test_environment_label(required_env)}，但用户未勾选该环境；若测试团队当前不可用，需要补齐环境或调整覆盖策略。"
+        alternatives = [x for x in selected_ids if x != primary]
+    else:
+        primary = required_env
+        alternatives = [x for x in catalog_ids if x != primary]
+        risk = "用户未勾选任何测试环境，当前按场景必要性推荐环境；请测试团队确认资源可用性。"
+
+    return {
+        "primary": primary,
+        "primary_label": _test_environment_label(primary),
+        "alternatives": alternatives,
+        "alternative_labels": [_test_environment_label(x) for x in alternatives],
+        "rationale": rationale,
+        "availability_risk": risk,
+    }
+
+
+def _fallback_testcases_from_objectives(objectives: List[Dict[str, Any]], available_envs: Any = None) -> List[Dict[str, Any]]:
     cases: List[Dict[str, Any]] = []
     for idx, obj in enumerate(objectives, start=1):
+        env = _recommend_test_environment(
+            [obj.get("goal", ""), " ".join(obj.get("success_criteria", []) or [])],
+            available_envs,
+        )
         cases.append(
             {
                 "tc_id": f"TC-{idx:03d}",
@@ -65,6 +142,7 @@ def _fallback_testcases_from_objectives(objectives: List[Dict[str, Any]]) -> Lis
                 ],
                 "expected": obj.get("success_criteria", []),
                 "pass_fail": ["满足目标成功标准", "失败可定位"],
+                "test_environment": env,
                 "observability": {
                     "must_capture": obj.get("evidence", ["modem_log", "logcat"]),
                     "assertions": ["ASSERT_IMS_REGISTERED"],
@@ -167,6 +245,7 @@ def _fallback_integrated_matrix(
     final_requirements: List[Dict[str, Any]],
     objectives: List[Dict[str, Any]],
     coverage_matrices: List[Dict[str, Any]],
+    available_envs: Any = None,
 ) -> List[Dict[str, Any]]:
     req_map = {r.get("req_id"): r for r in final_requirements if isinstance(r, dict) and r.get("req_id")}
     dim_defaults = _first_dimension_values(coverage_matrices)
@@ -183,6 +262,7 @@ def _fallback_integrated_matrix(
         }
         scenario = f"{obj.get('goal','目标验证')} | {cfg['RAT']} / {cfg['Mobility']} / {cfg['SignalOrPower']}"
         pass_criteria = _extract_req_metrics(req) or obj.get("success_criteria", []) or ["关键指标满足需求标准"]
+        env = _recommend_test_environment([scenario] + pass_criteria, available_envs)
         rows.append(
             {
                 "row_id": f"ROW-{idx:03d}",
@@ -191,6 +271,7 @@ def _fallback_integrated_matrix(
                 "scenario": scenario,
                 "key_configuration": cfg,
                 "pass_criteria": pass_criteria,
+                "test_environment": env,
             }
         )
     return rows
@@ -200,6 +281,7 @@ def _normalize_integrated_rows(
     rows: List[Dict[str, Any]],
     final_requirements: List[Dict[str, Any]],
     objectives: List[Dict[str, Any]],
+    available_envs: Any = None,
 ) -> List[Dict[str, Any]]:
     req_map = {r.get("req_id"): r for r in final_requirements if isinstance(r, dict) and r.get("req_id")}
     obj_map = {o.get("objective_id"): o for o in objectives if isinstance(o, dict) and o.get("objective_id")}
@@ -226,6 +308,22 @@ def _normalize_integrated_rows(
         for m in req_metrics:
             if m not in pass_criteria:
                 pass_criteria.append(m)
+        env = r.get("test_environment")
+        if not isinstance(env, dict):
+            env = {}
+        primary = str(env.get("primary", "")).strip()
+        if primary not in TEST_ENVIRONMENT_CATALOG:
+            env = _recommend_test_environment([scenario] + pass_criteria, available_envs)
+        else:
+            env = {
+                "primary": primary,
+                "primary_label": env.get("primary_label") or _test_environment_label(primary),
+                "alternatives": [x for x in env.get("alternatives", []) if str(x) in TEST_ENVIRONMENT_CATALOG],
+                "alternative_labels": env.get("alternative_labels")
+                or [_test_environment_label(x) for x in env.get("alternatives", []) if str(x) in TEST_ENVIRONMENT_CATALOG],
+                "rationale": env.get("rationale") or env.get("reason") or "",
+                "availability_risk": env.get("availability_risk") or env.get("risk") or "",
+            }
         norm.append(
             {
                 "row_id": r.get("row_id") or f"ROW-{idx:03d}",
@@ -234,13 +332,22 @@ def _normalize_integrated_rows(
                 "scenario": scenario,
                 "key_configuration": cfg,
                 "pass_criteria": pass_criteria or ["关键指标满足需求标准"],
+                "test_environment": env,
             }
         )
     return norm
 
 
-def _normalize_testcases(data: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_testcases(data: Dict[str, Any], integrated_rows: Optional[List[Dict[str, Any]]] = None, available_envs: Any = None) -> Dict[str, Any]:
     tcs = data.get("testcases", [])
+    integrated_rows = integrated_rows or []
+    row_env_map = {}
+    for row in integrated_rows:
+        if isinstance(row, dict):
+            row_id = str(row.get("row_id", "")).strip()
+            env = row.get("test_environment")
+            if row_id and isinstance(env, dict):
+                row_env_map[row_id] = env
     norm = []
     for idx, tc in enumerate(tcs, start=1):
         if not isinstance(tc, dict):
@@ -261,6 +368,39 @@ def _normalize_testcases(data: Dict[str, Any]) -> Dict[str, Any]:
         trace = tc.get("trace") or tc.get("traceability") or {}
         if not isinstance(trace, dict):
             trace = {}
+        source_refs = trace.get("source_refs") or trace.get("sources") or ["USER_INPUT"]
+        source_refs_list = source_refs if isinstance(source_refs, list) else [str(source_refs)]
+        linked_env = None
+        for ref in source_refs_list:
+            ref_key = str(ref or "").strip()
+            if ref_key in row_env_map:
+                linked_env = row_env_map[ref_key]
+                break
+        env = tc.get("test_environment")
+        if not isinstance(env, dict):
+            env = linked_env or _recommend_test_environment(
+                [
+                    tc.get("title", ""),
+                    " ".join(tc.get("pass_fail", []) if isinstance(tc.get("pass_fail", []), list) else [str(tc.get("pass_fail", ""))]),
+                ],
+                available_envs,
+            )
+        else:
+            primary = str(env.get("primary", "")).strip()
+            if primary not in TEST_ENVIRONMENT_CATALOG and isinstance(linked_env, dict):
+                env = linked_env
+            elif primary not in TEST_ENVIRONMENT_CATALOG:
+                env = _recommend_test_environment([tc.get("title", "")], available_envs)
+            else:
+                env = {
+                    "primary": primary,
+                    "primary_label": env.get("primary_label") or _test_environment_label(primary),
+                    "alternatives": [x for x in env.get("alternatives", []) if str(x) in TEST_ENVIRONMENT_CATALOG],
+                    "alternative_labels": env.get("alternative_labels")
+                    or [_test_environment_label(x) for x in env.get("alternatives", []) if str(x) in TEST_ENVIRONMENT_CATALOG],
+                    "rationale": env.get("rationale") or env.get("reason") or "",
+                    "availability_risk": env.get("availability_risk") or env.get("risk") or "",
+                }
         norm.append(
             {
                 "tc_id": tc.get("tc_id") or tc.get("testcase_id") or tc.get("id") or f"TC-{idx:03d}",
@@ -277,13 +417,14 @@ def _normalize_testcases(data: Dict[str, Any]) -> Dict[str, Any]:
                 "pass_fail": tc.get("pass_fail")
                 if isinstance(tc.get("pass_fail"), list)
                 else (tc.get("criteria") if isinstance(tc.get("criteria"), list) else [str(tc.get("pass_fail") or tc.get("criteria") or "待补充通过条件")]),
+                "test_environment": env,
                 "observability": tc.get("observability")
                 or {"must_capture": ["modem_log", "logcat"], "assertions": ["ASSERT_IMS_REGISTERED"]},
                 "failure_taxonomy": tc.get("failure_taxonomy")
                 or [{"code": "TC_FAIL", "signals": ["unknown"], "likely_owner": "UNKNOWN"}],
                 "trace": {
                     "req_ids": trace.get("req_ids") or trace.get("requirements") or [],
-                    "source_refs": trace.get("source_refs") or trace.get("sources") or ["USER_INPUT"],
+                    "source_refs": source_refs_list,
                 },
             }
         )
@@ -297,10 +438,14 @@ def _chunked(items: List[Any], size: int) -> List[List[Any]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def _fallback_testcases_from_integrated(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _fallback_testcases_from_integrated(rows: List[Dict[str, Any]], available_envs: Any = None) -> List[Dict[str, Any]]:
     out = []
     for idx, r in enumerate(rows, start=1):
         cfg = r.get("key_configuration", {}) if isinstance(r.get("key_configuration", {}), dict) else {}
+        env = r.get("test_environment") if isinstance(r.get("test_environment"), dict) else _recommend_test_environment(
+            [r.get("scenario", ""), " ".join(r.get("pass_criteria", []) if isinstance(r.get("pass_criteria", []), list) else [str(r.get("pass_criteria", ""))])],
+            available_envs,
+        )
         out.append(
             {
                 "tc_id": f"TC-{idx:03d}",
@@ -317,6 +462,7 @@ def _fallback_testcases_from_integrated(rows: List[Dict[str, Any]]) -> List[Dict
                 ],
                 "expected": [r.get("scenario", "场景通过")],
                 "pass_fail": r.get("pass_criteria", []) if isinstance(r.get("pass_criteria", []), list) else [str(r.get("pass_criteria", ""))],
+                "test_environment": env,
                 "observability": {"must_capture": ["modem_log", "logcat"], "assertions": ["ASSERT_ATTACH_SUCCESS"]},
                 "failure_taxonomy": [{"code": "MATRIX_FAIL", "signals": ["criteria_not_met"], "likely_owner": "MODEM_OR_NETWORK"}],
                 "trace": {"req_ids": [r.get("req_id", "")], "source_refs": [r.get("row_id", f"ROW-{idx:03d}")]},
@@ -603,6 +749,7 @@ class TestDesignNode(Node):
             "assumptions": shared["requirement_spec"].get("assumptions", []),
             "persona_reviews": shared.get("persona_reviews", {}),
             "product_profile": shared.get("product_profile", {}),
+            "test_environments": shared.get("test_environments", {}),
             "supervisor_feedback": shared.get("design_supervisor_feedback", ""),
         }
 
@@ -627,6 +774,7 @@ class TestDesignNode(Node):
                         "assumptions": prep_res.get("assumptions", []),
                         "persona_reviews": prep_res.get("persona_reviews", {}),
                         "product_profile": prep_res.get("product_profile", {}),
+                        "available_test_environments": prep_res.get("test_environments", {}),
                         "supervisor_feedback": prep_res.get("supervisor_feedback", ""),
                     },
                     ensure_ascii=False,
@@ -652,13 +800,19 @@ class TestDesignNode(Node):
                 "final_requirements_json": json.dumps(reqs, ensure_ascii=False),
                 "objectives_json": json.dumps(normalized.get("objectives", []), ensure_ascii=False),
                 "coverage_matrices_json": json.dumps(normalized.get("coverage_matrices", []), ensure_ascii=False),
+                "available_test_environments_json": json.dumps(prep_res.get("test_environments", {}), ensure_ascii=False),
                 "output_schema": json.dumps(INTEGRATED_MATRIX_SCHEMA, ensure_ascii=False),
             },
             schema=INTEGRATED_MATRIX_SCHEMA,
             warn_tag="IntegratedMatrixNode",
             custom_validator=_matrix_custom,
         )
-        integrated_rows = _normalize_integrated_rows(matrix_data.get("integrated_matrix", []), reqs, normalized.get("objectives", []))
+        integrated_rows = _normalize_integrated_rows(
+            matrix_data.get("integrated_matrix", []),
+            reqs,
+            normalized.get("objectives", []),
+            prep_res.get("test_environments", {}),
+        )
         if not integrated_rows:
             raise RuntimeError("IntegratedMatrixNode: normalized integrated_matrix is empty")
         normalized["integrated_matrix"] = integrated_rows
@@ -760,6 +914,7 @@ class TestCaseGeneratorNode(Node):
             "coverage": shared["test_design_spec"].get("coverage_matrices", []),
             "integrated_matrix": shared["test_design_spec"].get("integrated_matrix", []),
             "action_vocabulary": shared["action_vocabulary"],
+            "test_environments": shared.get("test_environments", {}),
             "questions_to_ask": shared["requirement_spec"].get("questions_to_ask", []),
             "assumptions": shared["requirement_spec"].get("assumptions", []),
             "persona_reviews": shared.get("persona_reviews", {}),
@@ -769,7 +924,7 @@ class TestCaseGeneratorNode(Node):
         objectives = prep_res["objectives"]
         integrated = prep_res.get("integrated_matrix", [])
         if not isinstance(integrated, list) or not integrated:
-            fallback = {"testcases": _fallback_testcases_from_objectives(objectives)}
+            fallback = {"testcases": _fallback_testcases_from_objectives(objectives, prep_res.get("test_environments", {}))}
             data = run_json_agent_with_retry(
                 shared=self._shared,
                 template_name="test_case_generator.txt",
@@ -782,6 +937,7 @@ class TestCaseGeneratorNode(Node):
                             "questions_to_ask": prep_res.get("questions_to_ask", []),
                             "assumptions": prep_res.get("assumptions", []),
                             "persona_reviews": prep_res.get("persona_reviews", {}),
+                            "available_test_environments": prep_res.get("test_environments", {}),
                         },
                         ensure_ascii=False,
                     ),
@@ -793,12 +949,12 @@ class TestCaseGeneratorNode(Node):
                 fallback=fallback,
                 warn_tag="TestCaseGeneratorNode",
             )
-            return _normalize_testcases(data)
+            return _normalize_testcases(data, [], prep_res.get("test_environments", {}))
 
         all_tcs: List[Dict[str, Any]] = []
         chunks = _chunked(integrated, 16)
         for i, chunk in enumerate(chunks, start=1):
-            fallback = {"testcases": _fallback_testcases_from_integrated(chunk)}
+            fallback = {"testcases": _fallback_testcases_from_integrated(chunk, prep_res.get("test_environments", {}))}
             try:
                 data = run_json_agent_strict_with_retry(
                     shared=self._shared,
@@ -812,6 +968,7 @@ class TestCaseGeneratorNode(Node):
                                 "questions_to_ask": prep_res.get("questions_to_ask", []),
                                 "assumptions": prep_res.get("assumptions", []),
                                 "persona_reviews": prep_res.get("persona_reviews", {}),
+                                "available_test_environments": prep_res.get("test_environments", {}),
                                 "batch_index": i,
                                 "batch_total": len(chunks),
                             },
@@ -828,7 +985,7 @@ class TestCaseGeneratorNode(Node):
             except Exception as exc:
                 self._shared.setdefault("warnings", []).append(f"TestCaseGeneratorNode-Batch{i}: 严格生成失败，回退该批: {exc}")
                 data = fallback
-            norm = _normalize_testcases(data)
+            norm = _normalize_testcases(data, chunk, prep_res.get("test_environments", {}))
             all_tcs.extend(norm.get("testcases", []))
 
         return {"testcases": all_tcs}
@@ -857,6 +1014,7 @@ class TestCaseBatchGenNode(AsyncNode):
             "objectives": shared["test_design_spec"].get("objectives", []),
             "coverage": shared["test_design_spec"].get("coverage_matrices", []),
             "action_vocabulary": shared["action_vocabulary"],
+            "test_environments": shared.get("test_environments", {}),
             "questions_to_ask": shared["requirement_spec"].get("questions_to_ask", []),
             "assumptions": shared["requirement_spec"].get("assumptions", []),
             "persona_reviews": shared.get("persona_reviews", {}),
@@ -866,8 +1024,8 @@ class TestCaseBatchGenNode(AsyncNode):
     async def exec_async(self, prep_res):
         chunk = prep_res["integrated_chunk"]
         if not chunk:
-            return {"testcases": _fallback_testcases_from_objectives(prep_res.get("objectives", []))}
-        fallback = {"testcases": _fallback_testcases_from_integrated(chunk)}
+            return {"testcases": _fallback_testcases_from_objectives(prep_res.get("objectives", []), prep_res.get("test_environments", {}))}
+        fallback = {"testcases": _fallback_testcases_from_integrated(chunk, prep_res.get("test_environments", {}))}
         try:
             data = await asyncio.to_thread(
                 run_json_agent_strict_with_retry,
@@ -882,6 +1040,7 @@ class TestCaseBatchGenNode(AsyncNode):
                             "questions_to_ask": prep_res.get("questions_to_ask", []),
                             "assumptions": prep_res.get("assumptions", []),
                             "persona_reviews": prep_res.get("persona_reviews", {}),
+                            "available_test_environments": prep_res.get("test_environments", {}),
                             "batch_index": prep_res["batch_index"] + 1,
                             "batch_total": prep_res["batch_total"],
                             "supervisor_feedback": prep_res.get("supervisor_feedback", ""),
@@ -902,7 +1061,7 @@ class TestCaseBatchGenNode(AsyncNode):
                 f"TestCaseBatchGenNode-Batch{prep_res['batch_index'] + 1}: 严格生成失败，回退该批: {exc}"
             )
             data = fallback
-        return _normalize_testcases(data)
+        return _normalize_testcases(data, chunk, prep_res.get("test_environments", {}))
 
     async def post_async(self, shared, prep_res, exec_res):
         batches = shared.setdefault("_testcase_batches", {})

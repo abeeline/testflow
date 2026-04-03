@@ -10,7 +10,9 @@ Hard requirements:
 4) If requirement has acceptance.pass_fail or acceptance.kpi, at least one objective and one matrix row must reference them.
 5) Do not drop critical metric constraints (time window, threshold, latency, stability duration, recovery time).
 6) Respect product_profile from constraints: selected capabilities must be reflected in dimensions/scenarios; explicitly de-scope non-selected capabilities in de_scoped when relevant.
-7) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, objective_id/req_id, matrix_id/row_id, dimension names, and other structured field names unchanged. 最终以“简体中文”输出。
+7) Respect available_test_environments from constraints. Prefer user-selected environments when they are sufficient for the scenario.
+8) If a scenario actually requires an unselected environment, you MUST still design it and surface the gap as a risk/dependency in design_notes or de_scoped; do not silently weaken the scenario.
+9) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, objective_id/req_id, matrix_id/row_id, dimension names, and other structured field names unchanged. 最终以“简体中文”输出。
 
 [User]
 final_requirements: {final_requirements_json}
@@ -60,7 +62,13 @@ You MUST return JSON with these sections:
         "Concurrency": "...",
         "Operator": "..."
       },
-      "pass_criteria": ["must be measurable and traceable to requirement acceptance/kpi"]
+      "pass_criteria": ["must be measurable and traceable to requirement acceptance/kpi"],
+      "test_environment": {
+        "primary": "REAL_NETWORK|AMARISOFT|PROTOCOL_ANALYZER",
+        "alternatives": ["..."],
+        "rationale": "...",
+        "availability_risk": "..."
+      }
     }
   ],
   "req_to_objective_map": [
@@ -79,3 +87,4 @@ Quality gates before you answer:
 - No requirement is left without objective mapping.
 - No objective is left without integrated_matrix rows.
 - If any metric cannot be covered, put it in req_to_objective_map.missing_metrics and explain in design_notes.
+- If any row requires an environment not selected by user, keep the row and state the environment gap explicitly.

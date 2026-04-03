@@ -76,6 +76,7 @@ const actionVocabEl = document.getElementById("actionVocab");
 const assertVocabEl = document.getElementById("assertVocab");
 const modeAndroidEl = document.getElementById("modeAndroid");
 const modeATEl = document.getElementById("modeAT");
+const testEnvironmentOptionsEl = document.getElementById("testEnvironmentOptions");
 const productProfileGroupsEl = document.getElementById("productProfileGroups");
 const atBaudEl = document.getElementById("atBaud");
 const adbDeviceSelectEl = document.getElementById("adbDeviceSelect");
@@ -149,6 +150,7 @@ let selectedDesignHistoryRecord = null;
 let stageState = {
   requirement_spec: null,
   persona_reviews: null,
+  requirement_review_history: null,
   test_design_spec: null,
   test_case_spec: null,
   round: 0,
@@ -193,6 +195,27 @@ const PRODUCT_PROFILE_GROUPS = [
     key: "form_factor",
     label: "7. 产品定位与形态 (Form Factor)",
     options: ["智能手机", "功能手机", "穿戴产品", "通信模组", "车载模组"],
+  },
+];
+
+const TEST_ENVIRONMENT_OPTIONS = [
+  {
+    id: "REAL_NETWORK",
+    label: "实网环境",
+    priority: 1,
+    description: "使用运营商的SIM和网络，进行真实网络下的用户操作层面的测试。",
+  },
+  {
+    id: "AMARISOFT",
+    label: "Amarisoft模拟基站",
+    priority: 2,
+    description: "使用Amarisoft模拟基站，进行部分基础（PHY/协议L3）的仿真测试。",
+  },
+  {
+    id: "PROTOCOL_ANALYZER",
+    label: "协议分析仪表",
+    priority: 3,
+    description: "使用Keysight/Anritsu等协议分析仪表，进行IE配置与协议流程构建等测试。",
   },
 ];
 
@@ -296,6 +319,40 @@ function setSelectedProductProfile(selectedMap = {}) {
   });
 }
 
+function renderTestEnvironmentOptions() {
+  if (!testEnvironmentOptionsEl) return;
+  testEnvironmentOptionsEl.innerHTML = `<div class="feature-profile-group"><h4>按实际可用资源勾选；LLM会优先基于勾选环境设计，但若场景必须依赖未勾选环境，仍会保留设计并输出风险。</h4><div class="feature-option-grid">${TEST_ENVIRONMENT_OPTIONS.map((env) => {
+    const id = `te_${env.id.toLowerCase()}`;
+    return `<label class="feature-option"><input type="checkbox" id="${id}" data-test-env-id="${esc(env.id)}" /> ${esc(env.priority)}. ${esc(env.label)}<span class="feature-hint">${esc(env.description)}</span></label>`;
+  }).join("")}</div></div>`;
+}
+
+function getSelectedTestEnvironments() {
+  const selectedIds = [];
+  const selectedDetails = [];
+  TEST_ENVIRONMENT_OPTIONS.forEach((env) => {
+    const el = document.getElementById(`te_${env.id.toLowerCase()}`);
+    if (el?.checked) {
+      selectedIds.push(env.id);
+      selectedDetails.push(env);
+    }
+  });
+  return {
+    selected_ids: selectedIds,
+    selected_count: selectedIds.length,
+    selected_details: selectedDetails,
+    display: selectedDetails.map((env) => `${env.priority}. ${env.label}: ${env.description}`),
+  };
+}
+
+function setSelectedTestEnvironments(selectedIds = []) {
+  const set = new Set(Array.isArray(selectedIds) ? selectedIds.map((x) => String(x)) : []);
+  TEST_ENVIRONMENT_OPTIONS.forEach((env) => {
+    const el = document.getElementById(`te_${env.id.toLowerCase()}`);
+    if (el) el.checked = set.has(env.id);
+  });
+}
+
 function setSelectOptions(selectEl, options, currentValue = "") {
   if (!selectEl) return;
   selectEl.innerHTML = "";
@@ -368,15 +425,18 @@ function buildFrameworkCapabilityCatalog() {
   const base = (capabilityEl?.value || "").trim();
   const p = getAutomationProfile();
   const productProfile = getSelectedProductProfile();
+  const testEnvironments = getSelectedTestEnvironments();
   const productSummary = (productProfile.profile_display || [])
     .map((x) => `${x.group}: ${x.values.join(", ")}`)
     .join(" | ");
+  const envSummary = (testEnvironments.selected_details || []).map((x) => `${x.label}`).join(", ");
   const modeLabel = p.modes.map((m) => (m === "android_adb" ? "Android Web ADB" : "Web Serial AT")).join(", ");
   const extra = [
     `Automation Modes: ${modeLabel || "None"}`,
     p.adb_device_id ? `ADB Device: ${p.adb_device_id}` : "",
     p.at_port ? `AT Port: ${p.at_port} @ ${p.at_baud}` : "",
     productSummary ? `Product Profile: ${productSummary}` : "",
+    envSummary ? `Available Test Environments: ${envSummary}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -405,6 +465,29 @@ function inferCapabilitiesFromProfile() {
 
 function esc(s) {
   return String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function formatTestEnvironmentSummary(env) {
+  if (!env || typeof env !== "object") return "未指定";
+  const primary = `${env.primary_label || env.primary || "未指定"}`.trim() || "未指定";
+  const alternatives = Array.isArray(env.alternative_labels) && env.alternative_labels.length
+    ? env.alternative_labels
+    : Array.isArray(env.alternatives)
+      ? env.alternatives
+      : [];
+  const parts = [primary];
+  if (alternatives.length) {
+    parts.push(`备选: ${alternatives.join("、")}`);
+  }
+  if (env.rationale) {
+    parts.push(`依据: ${env.rationale}`);
+  }
+  return parts.join("；");
+}
+
+function formatTestEnvironmentRisk(env) {
+  if (!env || typeof env !== "object") return "";
+  return `${env.availability_risk || ""}`.trim();
 }
 
 function isBotPanelOpen() {
@@ -805,12 +888,27 @@ function renderDocKeyValueTable(rows = []) {
   return `<table><tbody>${arr.map((x) => `<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td></tr>`).join("")}</tbody></table>`;
 }
 
+function renderAnsweredQuestionsTable(items = []) {
+  const rows = Array.isArray(items) ? items.filter((x) => x && typeof x === "object") : [];
+  if (!rows.length) return "<p>无</p>";
+  return `<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>用户确认/补充</th></tr></thead><tbody>${rows
+    .map(
+      (it) =>
+        `<tr><td>${esc(it.source_round || "")}</td><td>${esc(it.req_id || "")}</td><td>${esc(it.question || "")}</td><td>${esc(
+          it.answer || ""
+        )}</td></tr>`
+    )
+    .join("")}</tbody></table>`;
+}
+
 function buildDesignDocumentHtml() {
   const design = stageState.test_design_spec || {};
   const requirementSpec = stageState.requirement_spec || {};
   const personaReviews = stageState.persona_reviews || {};
+  const requirementReviewHistory = stageState.requirement_review_history || {};
   const requirementInputs = parseRequirements(requirementsEl?.value || "");
   const productProfile = getSelectedProductProfile();
+  const testEnvironments = getSelectedTestEnvironments();
   const nowText = new Date().toLocaleString("zh-CN", { hour12: false });
   const reqs = Array.isArray(requirementSpec.final_requirements) ? requirementSpec.final_requirements : [];
   const objectives = Array.isArray(design.objectives) ? design.objectives : [];
@@ -880,20 +978,23 @@ function buildDesignDocumentHtml() {
     : "<p>无</p>";
 
   const integratedTable = integrated.length
-    ? `<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th></tr></thead><tbody>${integrated
+    ? `<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead><tbody>${integrated
         .map((r, idx) => {
           const cfg = r.key_configuration || {};
           const cfgText = Object.keys(cfg)
             .map((k) => `${k}: ${cfg[k]}`)
             .join(" / ");
+          const envText = formatTestEnvironmentSummary(r.test_environment);
+          const riskText = formatTestEnvironmentRisk(r.test_environment);
           return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(
             r.objective_id || ""
           )}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgText)}</td><td>${esc(
             (r.pass_criteria || []).join(" / ")
-          )}</td></tr>`;
+          )}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td></tr>`;
         })
         .join("")}</tbody></table>`
     : "<p>无</p>";
+  const answeredQuestionTable = renderAnsweredQuestionsTable(requirementReviewHistory.answered_questions || []);
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -950,6 +1051,10 @@ function buildDesignDocumentHtml() {
             <h3>产品通信背景与支持特性</h3>
             ${renderDocList((productProfile.profile_display || []).map((x) => `${x.group}: ${x.values.join("、")}`))}
           </div>
+          <div>
+            <h3>测试团队可用测试环境</h3>
+            ${renderDocList(testEnvironments.display || [])}
+          </div>
         </div>
       </section>
       <section class="section">
@@ -959,6 +1064,10 @@ function buildDesignDocumentHtml() {
       <section class="section">
         <h2>四、三人评审记录</h2>
         ${reviewSections}
+        <section>
+          <h3>用户已确认问题</h3>
+          ${answeredQuestionTable}
+        </section>
       </section>
       <section class="section">
         <h2>五、测试目标</h2>
@@ -1046,10 +1155,12 @@ function renderDesign(design) {
         const cfg = r.key_configuration || {};
         const cfgStr = Object.keys(cfg).map((k) => `${k}: ${cfg[k]}`).join(" / ");
         const pass = Array.isArray(r.pass_criteria) ? r.pass_criteria.join(" / ") : String(r.pass_criteria || "");
-        return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(r.objective_id || "")}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgStr)}</td><td>${esc(pass)}</td></tr>`;
+        const envText = formatTestEnvironmentSummary(r.test_environment);
+        const riskText = formatTestEnvironmentRisk(r.test_environment);
+        return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(r.objective_id || "")}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgStr)}</td><td>${esc(pass)}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td></tr>`;
       })
       .join("");
-    html += `<h4>整合覆盖矩阵</h4><table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>具体测试场景</th><th>矩阵组合选取</th><th>通过标准</th></tr></thead><tbody>${rows}</tbody></table>`;
+    html += `<h4>整合覆盖矩阵</h4><table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>具体测试场景</th><th>矩阵组合选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   if ((design?.design_notes || []).length) {
@@ -1077,10 +1188,12 @@ function renderCases(spec) {
     .map((tc) => {
       const tags = Array.isArray(tc.tags) ? tc.tags : [String(tc.tags || "")];
       const passFail = Array.isArray(tc.pass_fail) ? tc.pass_fail : [String(tc.pass_fail || "")];
-      return `<tr><td>${esc(tc.tc_id)}</td><td>${esc(tc.objective_id)}</td><td>${esc(tc.title)}</td><td>${esc(tags.join(", "))}</td><td>${esc(passFail.join(" / "))}</td><td>${esc((tc.steps || []).length)}</td></tr>`;
+      const envText = formatTestEnvironmentSummary(tc.test_environment);
+      const riskText = formatTestEnvironmentRisk(tc.test_environment);
+      return `<tr><td>${esc(tc.tc_id)}</td><td>${esc(tc.objective_id)}</td><td>${esc(tc.title)}</td><td>${esc(tags.join(", "))}</td><td>${esc(passFail.join(" / "))}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td><td>${esc((tc.steps || []).length)}</td></tr>`;
     })
     .join("");
-  viewCases.innerHTML = `<table><thead><tr><th>用例ID</th><th>目标ID</th><th>标题</th><th>标签</th><th>通过标准</th><th>步骤数</th></tr></thead><tbody>${rows}</tbody></table>`;
+  viewCases.innerHTML = `<table><thead><tr><th>用例ID</th><th>目标ID</th><th>标题</th><th>标签</th><th>通过标准</th><th>测试环境</th><th>资源风险</th><th>步骤数</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderDesignHistoryList() {
@@ -1148,6 +1261,12 @@ function renderDesignHistoryDetail(record) {
   const objectives = Array.isArray(record.test_design_spec?.objectives) ? record.test_design_spec.objectives : [];
   const integrated = Array.isArray(record.test_design_spec?.integrated_matrix) ? record.test_design_spec.integrated_matrix : [];
   const tcCount = Array.isArray(record.test_case_spec?.testcases) ? record.test_case_spec.testcases.length : 0;
+  const answeredQuestions = Array.isArray(record.requirement_review_history?.answered_questions) ? record.requirement_review_history.answered_questions : [];
+  const selectedTestEnvironments = Array.isArray(record.test_environments?.display)
+    ? record.test_environments.display
+    : Array.isArray(record.test_environments?.selected_details)
+      ? record.test_environments.selected_details.map((env) => `${env.priority || ""}. ${env.label || ""}: ${env.description || ""}`.replace(/^\. /, ""))
+      : [];
   if (designHistoryVisual) {
     const reqRows = reqs.length
       ? `<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th></tr></thead><tbody>${reqs
@@ -1167,6 +1286,10 @@ function renderDesignHistoryDetail(record) {
         <span class="design-history-chip">整合矩阵 ${esc(integrated.length)}</span>
         <span class="design-history-chip">测试用例 ${esc(tcCount)}</span>
       </div>
+      <h4>测试环境约束</h4>
+      ${renderDocList(selectedTestEnvironments)}
+      <h4>用户已确认问题</h4>
+      ${renderAnsweredQuestionsTable(answeredQuestions)}
       <h4>需求摘要</h4>
       ${reqRows}
       <h4>测试目标摘要</h4>
@@ -1210,11 +1333,11 @@ function applyHistoryRecordToCurrentSession(record) {
   if (!record) return;
   const reqInput = Array.isArray(record.requirement_input) ? record.requirement_input : [];
   if (requirementsEl) requirementsEl.value = reqInput[0] || "";
-  if (record.product_profile?.selected) {
-    setSelectedProductProfile(record.product_profile.selected);
-  }
+  setSelectedTestEnvironments(record.test_environments?.selected_ids || record.test_environments?.selected || []);
+  setSelectedProductProfile(record.product_profile?.selected || {});
   stageState.requirement_spec = record.requirement_spec || null;
   stageState.persona_reviews = record.persona_reviews || null;
+  stageState.requirement_review_history = record.requirement_review_history || null;
   stageState.test_design_spec = record.test_design_spec || null;
   stageState.test_case_spec = record.test_case_spec || null;
   stageState.design_history_record_id = record.record_id || "";
@@ -1222,6 +1345,7 @@ function applyHistoryRecordToCurrentSession(record) {
   latestStructured = latestStructured || {};
   latestStructured.requirement_spec = record.requirement_spec || null;
   latestStructured.persona_reviews = record.persona_reviews || null;
+  latestStructured.requirement_review_history = record.requirement_review_history || null;
   latestStructured.test_design_spec = record.test_design_spec || null;
   latestStructured.test_case_spec = record.test_case_spec || null;
   applyStageOutputs();
@@ -1270,6 +1394,7 @@ function restoreLastResultUI(snapshot) {
   if (adbDeviceSelectEl) adbDeviceSelectEl.value = snapshot.form?.adb_device_id || "";
   if (atPortSelectEl) atPortSelectEl.value = snapshot.form?.at_port || "";
   if (automationExecModeEl) automationExecModeEl.value = snapshot.form?.exec_mode || "auto";
+  setSelectedTestEnvironments(snapshot.form?.test_environment_selected || []);
   setSelectedProductProfile(snapshot.form?.product_profile_selected || {});
   statusEl.textContent = snapshot.status || "已恢复上次结果";
   outCode.textContent = snapshot.outputs?.test_code_reference || "";
@@ -1295,6 +1420,7 @@ function restoreLastResultUI(snapshot) {
   stageState.hitl_job_id = snapshot.stage_state?.hitl_job_id || "";
   stageState.requirement_spec = snapshot.stage_state?.requirement_spec || latestStructured?.requirement_spec || null;
   stageState.persona_reviews = snapshot.stage_state?.persona_reviews || latestStructured?.persona_reviews || null;
+  stageState.requirement_review_history = snapshot.stage_state?.requirement_review_history || latestStructured?.requirement_review_history || null;
   stageState.test_design_spec = snapshot.stage_state?.test_design_spec || latestStructured?.test_design_spec || null;
   stageState.test_case_spec = snapshot.stage_state?.test_case_spec || latestStructured?.test_case_spec || null;
   stageState.script_spec = snapshot.stage_state?.script_spec || latestStructured?.script_spec || null;
@@ -1344,6 +1470,7 @@ function persistCurrentState(customStatus) {
       at_port: atPortSelectEl?.value || "",
       at_baud: atBaudEl?.value || "",
       exec_mode: automationExecModeEl?.value || "auto",
+      test_environment_selected: getSelectedTestEnvironments().selected_ids,
       product_profile_selected: getSelectedProductProfile().selected,
     },
   });
@@ -1970,6 +2097,11 @@ async function generateRequirementsRound(round) {
   if (!requirements.length) throw new Error("请至少输入一条需求");
   const profile = getAutomationProfile();
   const productProfile = getSelectedProductProfile();
+  const testEnvironments = getSelectedTestEnvironments();
+  if (round <= 1) {
+    stageState.requirement_review_history = null;
+    if (latestStructured) latestStructured.requirement_review_history = null;
+  }
   if (!profile.modes.length) throw new Error("请至少选择一种自动化测试方式（Android Web ADB 或 Web 串口 AT）");
   pushSystemBotMessage(`任务开始：测试需求评审 v${round}。`);
   let data = null;
@@ -1979,6 +2111,7 @@ async function generateRequirementsRound(round) {
       rag_context: ragEl.value,
       framework_capability_catalog: buildFrameworkCapabilityCatalog(),
       product_profile: productProfile,
+      test_environments: testEnvironments,
       automation_modes: profile.modes,
       adb_device_id: profile.adb_device_id,
       at_port: profile.at_port,
@@ -1994,9 +2127,11 @@ async function generateRequirementsRound(round) {
   stageState.round = data.round;
   stageState.requirement_spec = data.requirement_spec;
   stageState.persona_reviews = data.persona_reviews;
+  stageState.requirement_review_history = data.requirement_review_history || stageState.requirement_review_history || null;
   latestStructured = latestStructured || {};
   latestStructured.requirement_spec = data.requirement_spec;
   latestStructured.persona_reviews = data.persona_reviews;
+  latestStructured.requirement_review_history = stageState.requirement_review_history;
 
   applyStageOutputs();
   renderOpenQuestions(data.open_questions || []);
@@ -2016,11 +2151,14 @@ async function generateRequirementsRound(round) {
 async function generateDesign() {
   if (!stageState.requirement_spec) throw new Error("请先完成测试需求评审（至少v1）");
   const productProfile = getSelectedProductProfile();
+  const testEnvironments = getSelectedTestEnvironments();
   const data = await startStageJobAndWait("design", {
     requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
     persona_reviews: stageState.persona_reviews,
+    requirement_review_history: stageState.requirement_review_history || {},
     product_profile: productProfile,
+    test_environments: testEnvironments,
     history_record_id: stageState.design_history_record_id || "",
   });
   stageState.test_design_spec = data.test_design_spec;
@@ -2039,14 +2177,17 @@ async function generateDesign() {
 async function generateCases() {
   if (!stageState.test_design_spec) throw new Error("请先生成测试设计稿");
   const productProfile = getSelectedProductProfile();
+  const testEnvironments = getSelectedTestEnvironments();
   const actionVocab = parseCSVLine(actionVocabEl.value);
   const data = await startStageJobAndWait("testcases", {
     requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
     persona_reviews: stageState.persona_reviews,
+    requirement_review_history: stageState.requirement_review_history || {},
     test_design_spec: stageState.test_design_spec,
     action_vocabulary: actionVocab,
     product_profile: productProfile,
+    test_environments: testEnvironments,
     history_record_id: stageState.design_history_record_id || "",
   });
   stageState.test_case_spec = data.test_case_spec;
@@ -2065,6 +2206,7 @@ async function generateCases() {
 async function generateScripts() {
   if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
   const productProfile = getSelectedProductProfile();
+  const testEnvironments = getSelectedTestEnvironments();
   let capabilities = null;
   if (capabilitiesJsonEl.value.trim()) {
     capabilities = JSON.parse(capabilitiesJsonEl.value);
@@ -2075,9 +2217,11 @@ async function generateScripts() {
   const data = await startStageJobAndWait("scripts", {
     requirement_spec: stageState.requirement_spec,
     test_case_spec: stageState.test_case_spec,
+    requirement_review_history: stageState.requirement_review_history || {},
     capabilities,
     assertion_vocabulary: assertVocab,
     product_profile: productProfile,
+    test_environments: testEnvironments,
   });
   latestStructured = latestStructured || {};
   latestStructured.script_spec = data.script_spec;
@@ -2403,6 +2547,7 @@ async function downloadExcel() {
       requirement_input: parseRequirements(requirementsEl?.value || ""),
       requirement_spec: stageState.requirement_spec || latestStructured?.requirement_spec || {},
       persona_reviews: stageState.persona_reviews || latestStructured?.persona_reviews || {},
+      requirement_review_history: stageState.requirement_review_history || latestStructured?.requirement_review_history || {},
       test_design_spec: stageState.test_design_spec || latestStructured?.test_design_spec || {},
       test_case_spec: latestStructured.test_case_spec,
     }),
@@ -2990,6 +3135,7 @@ async function sendBotMessage() {
 // init
 initTheme();
 initTabs();
+renderTestEnvironmentOptions();
 renderProductProfileOptions();
 renderDesignHistoryDetail(null);
 restoreLastResultUI(loadLastResult());
