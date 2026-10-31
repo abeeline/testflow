@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TestFlow · 测试设计工作台</title>
+    <link rel="icon" href="/static/bot.png" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo">TF</div>
+          <div>
+            <h1>TestFlow</h1>
+            <p>需求驱动的测试设计工作台</p>
+          </div>
+        </div>
+
+        <button id="llmStatusPill" class="llm-pill" type="button" title="点击配置大模型">
+          <span class="llm-pill-dot"></span>
+          <span id="llmStatusText">大模型未配置</span>
+        </button>
+
+        <nav class="sheet-tabs" id="sheetTabs">
+          <div class="nav-group-label">测试流程</div>
+          <button class="sheet-tab active" data-sheet="sheet1"><span class="step-no">1</span>需求准备</button>
+          <button class="sheet-tab" data-sheet="sheet2"><span class="step-no">2</span>测试需求评审</button>
+          <button class="sheet-tab" data-sheet="sheet3"><span class="step-no">3</span>测试设计</button>
+          <button class="sheet-tab" data-sheet="sheet4"><span class="step-no">4</span>测试用例</button>
+          <button class="sheet-tab" data-sheet="sheet5"><span class="step-no">5</span>可执行用例</button>
+          <div class="nav-group-label">资料</div>
+          <button class="sheet-tab" data-sheet="sheet8"><span class="step-no step-icon">◷</span>测试设计历史</button>
+          <button class="sheet-tab" data-sheet="sheet6"><span class="step-no step-icon">⇢</span>流程可视化</button>
+        </nav>
+
+        <div class="status-panel sidebar-status">
+          <div class="status-head"><span class="status-dot"></span>运行状态</div>
+          <pre id="status" class="ui-pre">等待执行</pre>
+        </div>
+
+        <div class="sidebar-bottom">
+          <button id="settingsBtn" class="ui-btn ui-btn-secondary w-full" type="button">⚙ 系统设置</button>
+          <label class="theme-switch ui-switch" title="切换暗黑/浅色">
+            <svg class="theme-icon sun" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4V2M12 22v-2M4.93 4.93 3.51 3.51M20.49 20.49l-1.42-1.42M20 12h2M2 12h2M19.07 4.93l1.42-1.42M4.93 19.07l-1.42 1.42M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10Z"></path>
+            </svg>
+            <input id="themeToggle" type="checkbox" />
+            <span class="switch-slider"></span>
+            <svg class="theme-icon moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3c0 .33-.01.66.02.99A7 7 0 0 0 20.01 12c.33.03.66.02.99.02Z"></path>
+            </svg>
+          </label>
+        </div>
+      </aside>
+
+      <section class="main-content">
+        <section class="sheet active" id="sheet1">
+          <header class="page-head">
+            <div>
+              <h2>需求准备</h2>
+              <p>填写一个完整需求（或从 Bugzilla 导入），勾选产品形态和可用测试环境后生成测试需求。</p>
+            </div>
+          </header>
+
+          <div id="llmBanner" class="banner hidden">
+            <span>还没有配置大模型，生成结果会使用降级模板。</span>
+            <button id="llmBannerBtn" class="ui-btn ui-btn-sm" type="button">去配置</button>
+          </div>
+
+          <div class="card ui-card">
+            <div class="card-head">
+              <h3>从 Bugzilla 导入需求 <span class="tag">可选</span></h3>
+              <span id="bzSettingsHint" class="feature-hint">未配置</span>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="bzIds">Bug 编号（逗号分隔，最多 20 个）</label>
+                <input id="bzIds" class="ui-input" type="text" placeholder="例如：123456, 123457" />
+              </div>
+              <div class="field">
+                <label for="bzExcluded">排除评论作者（可选）</label>
+                <input id="bzExcluded" class="ui-input" type="text" placeholder="逗号分隔，如机器人账号" />
+              </div>
+            </div>
+            <div class="btn-row">
+              <button id="bzFetchBtn" class="ui-btn ui-btn-secondary" type="button">读取并追加到需求描述</button>
+            </div>
+            <div id="bzResult" class="visual"></div>
+          </div>
+
+          <div class="card ui-card">
+            <div class="card-head"><h3>需求描述</h3></div>
+            <label for="requirements">单次填写一个完整需求，可粘贴该需求的全部说明</label>
+            <textarea class="ui-input tall" id="requirements" placeholder="例如：请完整描述该需求的业务目标、约束、指标阈值、边界场景、验收口径、失败处理策略等。"></textarea>
+
+            <details class="fold">
+              <summary>参考资料（RAG）<span class="tag">可选</span></summary>
+              <label for="rag">直接粘贴上下文</label>
+              <textarea class="ui-input" id="rag" placeholder="例如：3GPP 条款、运营商验收口径、历史缺陷知识"></textarea>
+              <label for="ragFile">或上传文档（txt / md / pdf）</label>
+              <div class="btn-row">
+                <input id="ragFile" class="ui-input" type="file" multiple />
+                <button id="uploadRagBtn" class="ui-btn ui-btn-secondary" type="button">上传入库</button>
+              </div>
+              <div id="ragDocs" class="visual"></div>
+            </details>
+
+            <details class="fold">
+              <summary>执行平台能力 <span class="tag">可选</span></summary>
+              <label for="capability">执行平台能力说明（供需求分析参考）</label>
+              <textarea class="ui-input" id="capability" placeholder="例如：pytest+allure，支持日志采集"></textarea>
+              <label for="actionVocab">Action Vocabulary（逗号分隔）</label>
+              <input class="ui-input" id="actionVocab" type="text" placeholder="SET_DEVICE_STATE,TRIGGER_REGISTRATION,WAIT,CHECK,COLLECT_LOG" />
+            </details>
+          </div>
+
+          <div class="card ui-card">
+            <div class="card-head"><h3>可用测试环境</h3></div>
+            <p class="feature-hint">勾选项会约束测试设计与测试用例生成；必须依赖未勾选环境的场景会保留并标出风险。</p>
+            <div id="testEnvironmentOptions" class="feature-profile-groups"></div>
+          </div>
+
+          <div class="card ui-card">
+            <div class="card-head"><h3>产品通信背景与支持特性</h3></div>
+            <p class="feature-hint">勾选项会带入测试需求和设计生成。实网用例分给 Artemis 还是 AT Agent 取决于“产品形态”。</p>
+            <div id="productProfileGroups" class="feature-profile-groups"></div>
+          </div>
+
+          <div class="action-bar">
+            <button id="runBtn" class="ui-btn ui-btn-lg">生成测试需求 v1</button>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet2">
+          <header class="page-head">
+            <div>
+              <h2>测试需求评审</h2>
+              <p>三人格评审（规范 / 运营商 / 体验）后形成测试需求稿，补充 Open Questions 后可再迭代一轮。</p>
+            </div>
+          </header>
+          <div class="card ui-card">
+            <div class="card-head"><h3>测试需求稿</h3></div>
+            <div id="viewReq" class="visual"></div>
+            <details class="raw-json"><summary>原始 JSON</summary><pre id="outReq" class="ui-pre"></pre></details>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>三人评审记录</h3></div>
+            <div id="viewReview" class="visual"></div>
+            <details class="raw-json"><summary>原始 JSON</summary><pre id="outReview" class="ui-pre"></pre></details>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>Open Questions（人工补充）</h3></div>
+            <div id="openQuestionsPanel" class="visual"></div>
+          </div>
+          <div class="action-bar">
+            <button id="regenReqBtn" class="ui-btn ui-btn-secondary">再次生成（下一轮）</button>
+            <button id="genDesignBtn" class="ui-btn">生成测试设计稿</button>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet3">
+          <header class="page-head">
+            <div>
+              <h2>测试设计</h2>
+              <p>需求 → 测试目标 → 覆盖矩阵 → 整合矩阵，完成后自动归档到测试设计历史。</p>
+            </div>
+            <div id="designDocActions" class="btn-row compact-row hidden">
+              <a id="designDocLink" class="ui-btn ui-btn-secondary" href="#" target="_blank" rel="noopener noreferrer">查看测试设计文档 ↗</a>
+            </div>
+          </header>
+          <div class="card ui-card">
+            <div id="viewDesign" class="visual"></div>
+            <details class="raw-json"><summary>原始 JSON</summary><pre id="outDesign" class="ui-pre"></pre></details>
+          </div>
+          <div class="action-bar">
+            <button id="genCasesBtn" class="ui-btn">生成测试用例稿</button>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet4">
+          <header class="page-head">
+            <div>
+              <h2>测试用例</h2>
+              <p>每条用例保留到需求和设计矩阵的追溯关系，可导出 Excel。</p>
+            </div>
+            <button id="downloadExcelBtn" class="ui-btn ui-btn-secondary">下载 Excel</button>
+          </header>
+          <div class="card ui-card">
+            <div id="viewCases" class="visual"></div>
+            <details class="raw-json"><summary>原始 JSON</summary><pre id="outCases" class="ui-pre"></pre></details>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet8">
+          <header class="page-head">
+            <div>
+              <h2>测试设计历史</h2>
+              <p>每次完成测试设计都会归档，可查看固定链接文档、载入会话或继续生成用例。</p>
+            </div>
+            <button id="refreshDesignHistoryBtn" class="ui-btn ui-btn-secondary">刷新</button>
+          </header>
+          <div class="card ui-card">
+            <div class="design-history-layout">
+              <div class="design-history-list-panel">
+                <div id="designHistoryList" class="visual"></div>
+              </div>
+              <div class="design-history-detail-panel">
+                <div class="row-head">
+                  <h4 id="designHistoryDetailTitle">选择一条历史记录</h4>
+                  <div class="btn-row compact-row">
+                    <a id="designHistoryDocLink" class="ui-btn ui-btn-secondary hidden" href="#" target="_blank" rel="noopener noreferrer">查看文档 ↗</a>
+                    <button id="designHistoryLoadBtn" class="ui-btn ui-btn-secondary" type="button" disabled>载入当前会话</button>
+                    <button id="designHistoryCasesBtn" class="ui-btn" type="button" disabled>继续生成测试用例</button>
+                  </div>
+                </div>
+                <div id="designHistoryMeta" class="visual"></div>
+                <div id="designHistoryVisual" class="visual"></div>
+                <details class="raw-json"><summary>原始 JSON</summary><pre id="designHistoryJson" class="ui-pre"></pre></details>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet5">
+          <header class="page-head">
+            <div>
+              <h2>可执行用例</h2>
+              <p>按测试环境分流：实网手机 → Artemis，实网模组 / AT 指令 → AT Agent，模拟基站 → Amarisoft Agent，协议分析仪 → 协议流程测试需求（PRTest）。</p>
+            </div>
+            <button id="genExecCasesBtn" class="ui-btn">生成可执行用例</button>
+          </header>
+          <div class="card ui-card">
+            <div class="card-head"><h3>分流结果</h3></div>
+            <div id="execCasesSummary" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>追溯矩阵（Bug → 需求 → 用例 → 可执行 case）</h3></div>
+            <div id="execCasesTrace" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>导出内容预览</h3></div>
+            <div id="execCasesBundles" class="visual"></div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet6">
+          <header class="page-head">
+            <div>
+              <h2>流程可视化</h2>
+              <p>流水线节点关系与各节点使用的 Prompt 模板。</p>
+            </div>
+            <button id="refreshFlowVizBtn" class="ui-btn ui-btn-secondary">刷新</button>
+          </header>
+          <div class="card ui-card">
+            <div id="flowVizCanvas" class="flow-viz-canvas"></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>Prompt 角色映射</h3></div>
+            <div id="flowPromptRoles" class="visual"></div>
+            <details class="raw-json"><summary>Mermaid 源码</summary><pre id="flowMermaid" class="ui-pre flow-mermaid"></pre></details>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-card ui-card">
+        <div class="modal-head">
+          <h3>系统设置</h3>
+          <button id="closeSettingsBtn" class="ui-btn ui-btn-ghost icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="settings-tabs" role="tablist">
+          <button class="settings-tab active" data-settings-tab="llm" type="button">大模型</button>
+          <button class="settings-tab" data-settings-tab="bugzilla" type="button">Bugzilla</button>
+          <button class="settings-tab" data-settings-tab="prompts" type="button">Prompt 模板</button>
+        </div>
+
+        <div class="settings-pane active" data-settings-pane="llm">
+          <p class="feature-hint">支持任意 OpenAI 兼容接口（OpenAI、DeepSeek、通义千问、vLLM、Ollama 等），接口地址填写到 <code>/v1</code> 为止。</p>
+          <div class="field">
+            <label for="llmApiBase">接口地址（Base URL）</label>
+            <input id="llmApiBase" class="ui-input" type="text" placeholder="https://api.openai.com/v1" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="llmApiKey">API Key <span id="llmKeyHint" class="feature-hint"></span></label>
+            <input id="llmApiKey" class="ui-input" type="password" placeholder="sk-...（留空则沿用已保存的）" autocomplete="off" />
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="llmModel">模型名称</label>
+              <input id="llmModel" class="ui-input" type="text" placeholder="例如 gpt-4o-mini / deepseek-chat / qwen-plus" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="llmTimeout">超时（秒）</label>
+              <input id="llmTimeout" class="ui-input" type="number" min="10" max="600" step="10" value="120" />
+            </div>
+          </div>
+          <div id="llmTestResult" class="test-result hidden"></div>
+          <div class="btn-row">
+            <button id="llmSaveBtn" class="ui-btn" type="button">保存</button>
+            <button id="llmTestBtn" class="ui-btn ui-btn-secondary" type="button">测试连接</button>
+            <button id="llmClearKeyBtn" class="ui-btn ui-btn-ghost" type="button">清除 API Key</button>
+          </div>
+        </div>
+
+        <div class="settings-pane" data-settings-pane="bugzilla">
+          <p class="feature-hint">只读接入，兼容 Bugzilla 5.x。填了 API Key 时走 JSON-RPC，key 不会出现在 URL 里。</p>
+          <div class="field">
+            <label for="bzUrl">Bugzilla 地址</label>
+            <input id="bzUrl" class="ui-input" type="text" placeholder="https://bugzilla.example.com" />
+          </div>
+          <div class="field">
+            <label for="bzKey">API Key</label>
+            <input id="bzKey" class="ui-input" type="password" placeholder="留空则沿用已保存的" autocomplete="off" />
+          </div>
+          <div class="btn-row">
+            <button id="bzSaveBtn" class="ui-btn" type="button">保存</button>
+          </div>
+        </div>
+
+        <div class="settings-pane" data-settings-pane="prompts">
+          <div class="field">
+            <label for="promptSelect">选择模板</label>
+            <select class="ui-input" id="promptSelect"></select>
+          </div>
+          <textarea id="promptEditor" class="ui-input editor" spellcheck="false"></textarea>
+          <div class="btn-row">
+            <button id="savePromptBtn" class="ui-btn" type="button">保存当前模板</button>
+            <button id="reloadPromptsBtn" class="ui-btn ui-btn-secondary" type="button">重新加载</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button id="botFab" class="bot-fab" type="button" aria-label="打开助手">
+      <span class="bot-halo"></span>
+      <span id="botUnreadBadge" class="bot-unread hidden">0</span>
+      <img src="/static/bot.png" alt="助手" />
+    </button>
+
+    <section id="botPanel" class="bot-panel hidden" aria-label="TestFlow 助手">
+      <header class="bot-head">
+        <div class="bot-title"><span class="bot-dot"></span>TestFlow 助手</div>
+        <div class="bot-head-actions">
+          <button id="botRefreshBtn" class="ui-btn ui-btn-ghost bot-head-btn" type="button" title="新对话">↻</button>
+          <button id="botCloseBtn" class="ui-btn ui-btn-ghost bot-head-btn" type="button" title="关闭">×</button>
+        </div>
+      </header>
+      <div class="bot-body">
+        <div id="botMessages" class="bot-messages"></div>
+      </div>
+      <footer class="bot-input-row">
+        <input id="botInput" class="ui-input bot-input" type="text" placeholder="问问测试流程或产出物…" />
+        <button id="botSendBtn" class="ui-btn bot-send" type="button" aria-label="发送">➤</button>
+      </footer>
+    </section>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

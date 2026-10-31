@@ -1,6 +1,6 @@
 # TestFlow
 
-基于 PocketFlow 的 **LLM 系统测试 Agent Web 平台**，面向通信/模组测试场景，覆盖从需求分析到测试脚本与联机调试的全流程。
+基于 PocketFlow 的 **LLM 系统测试 Agent Web 平台**，面向通信/模组测试场景，覆盖从需求分析、测试设计到可执行用例的全流程。
 
 ## 项目定位
 
@@ -81,132 +81,69 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 
 ---
 
-## 目录说明
+## 运行方式
 
-- Web 应用目录：`cookbook/pocketflow-system-test-agent-web`
-- 一键部署脚本：`deploy/vps_deploy.sh`
-- 一键更新脚本：`deploy/update.sh`
+### Windows 发布包（推荐）
+
+1. 下载 `TestFlow-<版本>-win64.zip`，完整解压到任意目录
+2. 双击 `start.bat`，浏览器会自动打开 `http://127.0.0.1:8010/`（端口被占用会自动顺延）
+3. 首次使用在左下角“系统设置 → 大模型”里填写 OpenAI 兼容接口地址、API Key、模型名称，点“测试连接”后保存
+
+发布包内置 Python，不需要另外安装。可选参数：`start.bat --port 9000`、`start.bat --host 0.0.0.0`（局域网访问）、`start.bat --no-browser`。
+
+配置、设计历史、RAG 文档和网页上改过的 Prompt 都在发布包的 `data\` 目录；升级时把旧版本的 `data\` 复制到新版本即可。
+
+### 从源码运行
+
+```bash
+python -m venv .venv
+. .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python run.py                 # 等价于 start.bat；数据默认写在源码目录
+```
+
+Windows 上也可以直接双击源码根目录的 `start.bat`：没有内置 Python 时，它会用系统 Python 创建 `.venv` 并安装依赖。
+
+### 打 Windows 发布包
+
+```bash
+python scripts/build_windows_release.py --version 0.1.0
+# 产物：release/TestFlow-0.1.0-win64.zip
+```
+
+脚本可以在 macOS / Linux / Windows 上运行，会从 nuget.org 下载官方 Windows Python（3.12）并从 PyPI 预装 win_amd64 依赖。
 
 ---
 
-## 本地启动
+## 目录结构
 
-```bash
-cd cookbook/pocketflow-system-test-agent-web
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8010
+```
+main.py            FastAPI 接口
+flow.py / nodes.py PocketFlow 流水线与各节点
+exec_cases.py      可执行用例（按验收方案分流）
+schemas.py         JSON Schema
+prompts/           各 agent 的默认 Prompt 模板
+static/            Web 前端
+utils/             LLM 客户端与配置、Bugzilla、RAG、路径
+pocketflow/        PocketFlow 核心（约 100 行）
+run.py             启动入口
+start.bat          Windows 启动脚本
+scripts/           打包脚本
+packaging/windows/ 发布包附带的使用说明
 ```
 
-访问：`http://127.0.0.1:8010`
+## 大模型配置
 
-生成测试设计后，可在左侧 `测试设计历史` 中查看归档记录与固定 URL 设计文档。
+只支持 OpenAI 兼容接口（`POST {base}/chat/completions`），在网页“系统设置 → 大模型”里配置，保存在数据目录的 `config/llm-settings.json`。接口只返回“是否已配置 key”，不回显 key 本身；修改接口地址时不会沿用旧 key。
 
----
-
-## VPS 一键安装（首次）
-
-> 适用 Ubuntu 24.04 LTS
-
-```bash
-cd /opt
-git clone https://github.com/abeeline/testflow.git
-cd /opt/testflow
-bash deploy/vps_deploy.sh
-```
-
-默认服务名：`testflow-web`
-
----
-
-## VPS 一键更新（增量，不重装）
-
-```bash
-cd /opt/testflow
-bash deploy/update.sh
-```
-
-`update.sh` 会自动执行：
-
-1. `git pull origin main`
-2. 校验/创建虚拟环境
-3. 安装依赖
-4. 重启 `testflow-web`
-5. 健康检查 `http://127.0.0.1:8010/`
-
-### 可选环境变量
-
-```bash
-SERVICE_NAME=testflow-web APP_PORT=8010 bash deploy/update.sh
-```
-
----
-
-## 环境变量配置
-
-编辑：
-
-```bash
-/opt/testflow/cookbook/pocketflow-system-test-agent-web/.env
-```
-
-修改后重启服务：
-
-```bash
-sudo systemctl restart testflow-web
-```
-
----
-
-## 运维常用命令
-
-```bash
-# 查看服务状态
-sudo systemctl status testflow-web --no-pager -l
-
-# 查看实时日志
-sudo journalctl -u testflow-web -f
-
-# 重启服务
-sudo systemctl restart testflow-web
-```
+相关接口：`GET/POST /api/settings/llm`、`POST /api/settings/llm/test`。
 
 ## 关键接口
 
-```bash
-# 历史测试设计列表
-GET /api/design-history
-
-# 历史测试设计详情
-GET /api/design-history/{record_id}
-
-# 固定 URL 测试设计文档
-GET /api/design-history/{record_id}/document
 ```
-
----
-
-## 常见问题
-
-### 1) `detected dubious ownership`
-
-```bash
-git config --global --add safe.directory /opt/testflow
+GET  /api/design-history                     历史测试设计列表
+GET  /api/design-history/{record_id}         历史测试设计详情
+GET  /api/design-history/{record_id}/document 固定 URL 测试设计文档
+POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases）
+POST /api/export/testcases.xlsx              导出 Excel
 ```
-
-### 2) `uvicorn: command not found`
-
-使用虚拟环境启动：
-
-```bash
-cd /opt/testflow/cookbook/pocketflow-system-test-agent-web
-source .venv/bin/activate
-python -m uvicorn main:app --host 127.0.0.1 --port 8010
-```
-
-### 3) 更新后页面还是旧版本
-
-- 强制刷新浏览器（Cmd/Ctrl + Shift + R）
-- 确认服务已重启
-- 确认 `git pull` 已拿到最新提交
