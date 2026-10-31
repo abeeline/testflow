@@ -3,13 +3,6 @@ const regenReqBtn = document.getElementById("regenReqBtn");
 const genDesignBtn = document.getElementById("genDesignBtn");
 const genCasesBtn = document.getElementById("genCasesBtn");
 const genScriptsBtn = document.getElementById("genScriptsBtn");
-const debugScriptBtn = document.getElementById("debugScriptBtn");
-const runOnlineBtn = document.getElementById("runOnlineBtn");
-const loadAtAssetsBtn = document.getElementById("loadAtAssetsBtn");
-const saveAtAssetsBtn = document.getElementById("saveAtAssetsBtn");
-const runAtMbtBtn = document.getElementById("runAtMbtBtn");
-const renderAtMbtGraphBtn = document.getElementById("renderAtMbtGraphBtn");
-const compileAtBtn = document.getElementById("compileAtBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsModal = document.getElementById("settingsModal");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
@@ -22,51 +15,6 @@ const flowVizCanvas = document.getElementById("flowVizCanvas");
 const flowMermaid = document.getElementById("flowMermaid");
 const flowPromptRoles = document.getElementById("flowPromptRoles");
 const themeToggle = document.getElementById("themeToggle");
-const atSpecEditor = document.getElementById("atSpecEditor");
-const atProfileEditor = document.getElementById("atProfileEditor");
-const atManifestEditor = document.getElementById("atManifestEditor");
-const atExtensionEditor = document.getElementById("atExtensionEditor");
-const manifestFromJsonBtn = document.getElementById("manifestFromJsonBtn");
-const manifestToJsonBtn = document.getElementById("manifestToJsonBtn");
-const saveManifestBtn = document.getElementById("saveManifestBtn");
-const mfBaseline = document.getElementById("mfBaseline");
-const mfExtensionsList = document.getElementById("mfExtensionsList");
-const mfMustList = document.getElementById("mfMustList");
-const mfAllowedList = document.getElementById("mfAllowedList");
-const mfDisableCapsList = document.getElementById("mfDisableCapsList");
-const mfDisableCmdsList = document.getElementById("mfDisableCmdsList");
-const mfAddExtBtn = document.getElementById("mfAddExtBtn");
-const mfAddMustBtn = document.getElementById("mfAddMustBtn");
-const mfAddAllowedBtn = document.getElementById("mfAddAllowedBtn");
-const mfAddDisableCapBtn = document.getElementById("mfAddDisableCapBtn");
-const mfAddDisableCmdBtn = document.getElementById("mfAddDisableCmdBtn");
-const extFromJsonBtn = document.getElementById("extFromJsonBtn");
-const extToJsonBtn = document.getElementById("extToJsonBtn");
-const saveExtensionBtn = document.getElementById("saveExtensionBtn");
-const extMetaId = document.getElementById("extMetaId");
-const extMetaVersion = document.getElementById("extMetaVersion");
-const extCapabilitiesList = document.getElementById("extCapabilitiesList");
-const extCommandsList = document.getElementById("extCommandsList");
-const extAddCapBtn = document.getElementById("extAddCapBtn");
-const extAddCmdBtn = document.getElementById("extAddCmdBtn");
-const atEfsmEditor = document.getElementById("atEfsmEditor");
-const atMbtModeEl = document.getElementById("atMbtMode");
-const atMbtMaxStepsEl = document.getElementById("atMbtMaxSteps");
-const atMbtResultEl = document.getElementById("atMbtResult");
-const atMbtGraphCanvas = document.getElementById("atMbtGraphCanvas");
-const atCompileUseLlm = document.getElementById("atCompileUseLlm");
-const atCompileReport = document.getElementById("atCompileReport");
-const atActiveEfsmView = document.getElementById("atActiveEfsmView");
-const atEffectiveAtspecView = document.getElementById("atEffectiveAtspecView");
-const atEffectiveProfileView = document.getElementById("atEffectiveProfileView");
-const atCommandSelector = document.getElementById("atCommandSelector");
-const atCommandSelectionSummary = document.getElementById("atCommandSelectionSummary");
-const atApplyCommandSelectionBtn = document.getElementById("atApplyCommandSelectionBtn");
-const atConfigRequest = document.getElementById("atConfigRequest");
-const atConfigCompileBtn = document.getElementById("atConfigCompileBtn");
-const atChangeSpecView = document.getElementById("atChangeSpecView");
-const atManifestPatchView = document.getElementById("atManifestPatchView");
-const atExtensionPatchView = document.getElementById("atExtensionPatchView");
 
 const requirementsEl = document.getElementById("requirements");
 const ragEl = document.getElementById("rag");
@@ -74,16 +22,8 @@ const capabilityEl = document.getElementById("capability");
 const capabilitiesJsonEl = document.getElementById("capabilitiesJson");
 const actionVocabEl = document.getElementById("actionVocab");
 const assertVocabEl = document.getElementById("assertVocab");
-const modeAndroidEl = document.getElementById("modeAndroid");
-const modeATEl = document.getElementById("modeAT");
 const testEnvironmentOptionsEl = document.getElementById("testEnvironmentOptions");
 const productProfileGroupsEl = document.getElementById("productProfileGroups");
-const atBaudEl = document.getElementById("atBaud");
-const adbDeviceSelectEl = document.getElementById("adbDeviceSelect");
-const atPortSelectEl = document.getElementById("atPortSelect");
-const refreshAdbBtn = document.getElementById("refreshAdbBtn");
-const refreshSerialBtn = document.getElementById("refreshSerialBtn");
-const automationExecModeEl = document.getElementById("automationExecMode");
 const ragFileEl = document.getElementById("ragFile");
 const uploadRagBtn = document.getElementById("uploadRagBtn");
 const ragDocsEl = document.getElementById("ragDocs");
@@ -102,8 +42,6 @@ const outReview = document.getElementById("outReview");
 const outDesign = document.getElementById("outDesign");
 const outCases = document.getElementById("outCases");
 const outCode = document.getElementById("outCode");
-const outDebug = document.getElementById("outDebug");
-const outRun = document.getElementById("outRun");
 const agenticScriptMessages = document.getElementById("agenticScriptMessages");
 const agenticScriptInput = document.getElementById("agenticScriptInput");
 const agenticScriptSendBtn = document.getElementById("agenticScriptSendBtn");
@@ -135,7 +73,6 @@ let latestStructured = null;
 let botHistory = [];
 let botUnread = 0;
 let flowVizLoaded = false;
-let atAssetsLoaded = false;
 let designHistoryLoaded = false;
 let hitlStream = null;
 let hitlStreamJobId = "";
@@ -219,7 +156,7 @@ const TEST_ENVIRONMENT_OPTIONS = [
   },
 ];
 
-const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genScriptsBtn, debugScriptBtn, runOnlineBtn];
+const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genScriptsBtn];
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -244,24 +181,6 @@ function parseRequirements(text) {
 function parseCSVLine(text) {
   if (!text.trim()) return null;
   return text.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
-}
-
-function getSelectedAutomationModes() {
-  const modes = [];
-  if (modeAndroidEl?.checked) modes.push("android_adb");
-  if (modeATEl?.checked) modes.push("at_serial");
-  return modes;
-}
-
-function getAutomationProfile() {
-  const selectedAdb = (adbDeviceSelectEl?.value || "").trim();
-  const selectedAtPort = (atPortSelectEl?.value || "").trim();
-  return {
-    modes: getSelectedAutomationModes(),
-    adb_device_id: selectedAdb,
-    at_port: selectedAtPort,
-    at_baud: Number(atBaudEl?.value || 115200) || 115200,
-  };
 }
 
 function toProfileOptionId(groupKey, option) {
@@ -353,114 +272,21 @@ function setSelectedTestEnvironments(selectedIds = []) {
   });
 }
 
-function setSelectOptions(selectEl, options, currentValue = "") {
-  if (!selectEl) return;
-  selectEl.innerHTML = "";
-  options.forEach((opt) => {
-    const o = document.createElement("option");
-    o.value = opt.value;
-    o.textContent = opt.label;
-    selectEl.appendChild(o);
-  });
-  if (currentValue) {
-    const match = options.some((x) => x.value === currentValue);
-    if (match) selectEl.value = currentValue;
-  }
-}
-
-async function fetchAdbDevices() {
-  if (!adbDeviceSelectEl) return;
-  setSingleButtonBusy(refreshAdbBtn, true, "刷新中...");
-  try {
-    const resp = await fetch("/api/devices/adb");
-    if (!resp.ok) throw new Error(await resp.text());
-    const data = await resp.json();
-    const devices = Array.isArray(data.devices) ? data.devices : [];
-    const opts = [{ value: "", label: "未选择" }];
-    devices.forEach((d) => {
-      const label = `${d.id}${d.model ? ` (${d.model})` : ""} [${d.state || "unknown"}]`;
-      opts.push({ value: d.id, label });
-    });
-    const current = (adbDeviceSelectEl?.value || "").trim();
-    setSelectOptions(adbDeviceSelectEl, opts, current);
-    if (!current && devices.length && adbDeviceSelectEl) adbDeviceSelectEl.value = devices[0].id || "";
-  } catch (e) {
-    setStatus(`ADB设备发现失败: ${e.message || e}`);
-  } finally {
-    setSingleButtonBusy(refreshAdbBtn, false);
-  }
-}
-
-async function fetchSerialPorts() {
-  if (!atPortSelectEl) return;
-  setSingleButtonBusy(refreshSerialBtn, true, "刷新中...");
-  try {
-    const resp = await fetch("/api/devices/serial");
-    if (!resp.ok) throw new Error(await resp.text());
-    const data = await resp.json();
-    const ports = Array.isArray(data.ports) ? data.ports : [];
-    const opts = [{ value: "", label: "未选择" }];
-    ports.forEach((p) => {
-      const label = `${p.device}${p.description ? ` (${p.description})` : ""}`;
-      opts.push({ value: p.device, label });
-    });
-    const current = (atPortSelectEl?.value || "").trim();
-    setSelectOptions(atPortSelectEl, opts, current);
-    if (!current && ports.length && atPortSelectEl) atPortSelectEl.value = ports[0].device || "";
-  } catch (e) {
-    setStatus(`串口发现失败: ${e.message || e}`);
-  } finally {
-    setSingleButtonBusy(refreshSerialBtn, false);
-  }
-}
-
-function getExecutionMode() {
-  const preferred = (automationExecModeEl?.value || "auto").trim();
-  if (preferred && preferred !== "auto") return preferred;
-  const p = getAutomationProfile();
-  return p.modes[0] || "";
-}
-
 function buildFrameworkCapabilityCatalog() {
   const base = (capabilityEl?.value || "").trim();
-  const p = getAutomationProfile();
   const productProfile = getSelectedProductProfile();
   const testEnvironments = getSelectedTestEnvironments();
   const productSummary = (productProfile.profile_display || [])
     .map((x) => `${x.group}: ${x.values.join(", ")}`)
     .join(" | ");
   const envSummary = (testEnvironments.selected_details || []).map((x) => `${x.label}`).join(", ");
-  const modeLabel = p.modes.map((m) => (m === "android_adb" ? "Android Web ADB" : "Web Serial AT")).join(", ");
   const extra = [
-    `Automation Modes: ${modeLabel || "None"}`,
-    p.adb_device_id ? `ADB Device: ${p.adb_device_id}` : "",
-    p.at_port ? `AT Port: ${p.at_port} @ ${p.at_baud}` : "",
     productSummary ? `Product Profile: ${productSummary}` : "",
     envSummary ? `Available Test Environments: ${envSummary}` : "",
   ]
     .filter(Boolean)
     .join("\n");
   return [base, extra].filter(Boolean).join("\n");
-}
-
-function inferCapabilitiesFromProfile() {
-  const p = getAutomationProfile();
-  const harnesses = [];
-  const actionsSupported = {};
-  if (p.modes.includes("android_adb")) {
-    harnesses.push("WEB_ADB");
-    actionsSupported.SET_DEVICE_STATE = ["adb"];
-    actionsSupported.TRIGGER_REGISTRATION = ["adb"];
-    actionsSupported.CHECK = ["adb_dumpsys"];
-    actionsSupported.COLLECT_LOG = ["adb_logcat"];
-  }
-  if (p.modes.includes("at_serial")) {
-    harnesses.push("WEB_SERIAL_AT");
-    actionsSupported.SEND_AT = ["pyserial"];
-    actionsSupported.TRIGGER_REGISTRATION = ["at"];
-    actionsSupported.CHECK = ["at_creg"];
-  }
-  return { harnesses, actions_supported: actionsSupported };
 }
 
 function esc(s) {
@@ -747,9 +573,6 @@ function buildAgenticScriptContext() {
     requirement_input: normalizeScriptContextText(requirementsEl?.value || "", 2000),
     test_case_spec_json: normalizeScriptContextText(outCases?.textContent || "", 12000),
     current_script_code: normalizeScriptContextText(outCode?.textContent || "", 16000),
-    latest_debug_result: normalizeScriptContextText(outDebug?.textContent || "", 12000),
-    latest_run_result: normalizeScriptContextText(outRun?.textContent || "", 12000),
-    execution_mode: automationExecModeEl?.value || "auto",
   };
 }
 
@@ -1388,32 +1211,14 @@ function restoreLastResultUI(snapshot) {
   capabilitiesJsonEl.value = snapshot.form?.capabilities_json || "";
   actionVocabEl.value = snapshot.form?.action_vocab || "";
   assertVocabEl.value = snapshot.form?.assert_vocab || "";
-  modeAndroidEl.checked = snapshot.form?.mode_android !== false;
-  modeATEl.checked = !!snapshot.form?.mode_at;
-  atBaudEl.value = snapshot.form?.at_baud || 115200;
-  if (adbDeviceSelectEl) adbDeviceSelectEl.value = snapshot.form?.adb_device_id || "";
-  if (atPortSelectEl) atPortSelectEl.value = snapshot.form?.at_port || "";
-  if (automationExecModeEl) automationExecModeEl.value = snapshot.form?.exec_mode || "auto";
   setSelectedTestEnvironments(snapshot.form?.test_environment_selected || []);
   setSelectedProductProfile(snapshot.form?.product_profile_selected || {});
   statusEl.textContent = snapshot.status || "已恢复上次结果";
   outCode.textContent = snapshot.outputs?.test_code_reference || "";
-  outDebug.textContent = snapshot.outputs?.debug_result || "";
-  outRun.textContent = snapshot.outputs?.run_result || "";
   agenticScriptHistory = Array.isArray(snapshot.outputs?.agentic_script_history) ? snapshot.outputs.agentic_script_history : [];
   latestAgenticCode = snapshot.outputs?.agentic_latest_code || "";
   if (agenticScriptInput) agenticScriptInput.value = snapshot.outputs?.agentic_draft_input || "";
   renderAgenticScriptMessages();
-  atMbtResultEl.textContent = snapshot.outputs?.at_mbt_result || "";
-  atSpecEditor.value = snapshot.outputs?.at_spec_editor || "";
-  atProfileEditor.value = snapshot.outputs?.at_profile_editor || "";
-  atManifestEditor.value = snapshot.outputs?.at_manifest_editor || "";
-  atExtensionEditor.value = snapshot.outputs?.at_extension_editor || "";
-  atEfsmEditor.value = snapshot.outputs?.at_efsm_editor || "";
-  atCompileReport.textContent = snapshot.outputs?.at_compile_report || "";
-  atActiveEfsmView.textContent = snapshot.outputs?.at_active_efsm || "";
-  atEffectiveAtspecView.textContent = snapshot.outputs?.at_effective_atspec || "";
-  atEffectiveProfileView.textContent = snapshot.outputs?.at_effective_profile || "";
 
   latestStructured = snapshot.artifacts_structured || null;
   stageState.round = snapshot.stage_state?.round || 0;
@@ -1440,21 +1245,9 @@ function persistCurrentState(customStatus) {
       test_design: outDesign.textContent || "",
       test_cases: outCases.textContent || "",
       test_code_reference: outCode.textContent || "",
-      debug_result: outDebug.textContent || "",
-      run_result: outRun.textContent || "",
       agentic_script_history: agenticScriptHistory || [],
       agentic_latest_code: latestAgenticCode || "",
       agentic_draft_input: agenticScriptInput?.value || "",
-      at_mbt_result: atMbtResultEl.textContent || "",
-      at_spec_editor: atSpecEditor.value || "",
-      at_profile_editor: atProfileEditor.value || "",
-      at_manifest_editor: atManifestEditor.value || "",
-      at_extension_editor: atExtensionEditor.value || "",
-      at_efsm_editor: atEfsmEditor.value || "",
-      at_compile_report: atCompileReport.textContent || "",
-      at_active_efsm: atActiveEfsmView.textContent || "",
-      at_effective_atspec: atEffectiveAtspecView.textContent || "",
-      at_effective_profile: atEffectiveProfileView.textContent || "",
     },
     stage_state: stageState,
     form: {
@@ -1464,12 +1257,6 @@ function persistCurrentState(customStatus) {
       capabilities_json: capabilitiesJsonEl.value,
       action_vocab: actionVocabEl.value,
       assert_vocab: assertVocabEl.value,
-      mode_android: !!modeAndroidEl?.checked,
-      mode_at: !!modeATEl?.checked,
-      adb_device_id: adbDeviceSelectEl?.value || "",
-      at_port: atPortSelectEl?.value || "",
-      at_baud: atBaudEl?.value || "",
-      exec_mode: automationExecModeEl?.value || "auto",
       test_environment_selected: getSelectedTestEnvironments().selected_ids,
       product_profile_selected: getSelectedProductProfile().selected,
     },
@@ -1498,544 +1285,6 @@ async function postJson(url, payload) {
     throw new Error(t || `HTTP ${resp.status}`);
   }
   return await resp.json();
-}
-
-function renderStringList(container, values = []) {
-  if (!container) return;
-  const items = Array.isArray(values) ? values : [];
-  container.innerHTML = "";
-  items.forEach((val, idx) => {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    const input = document.createElement("input");
-    input.className = "ui-input";
-    input.type = "text";
-    input.value = String(val || "");
-    input.dataset.idx = String(idx);
-    const del = document.createElement("button");
-    del.className = "ui-btn ui-btn-secondary";
-    del.type = "button";
-    del.textContent = "-";
-    del.dataset.delIdx = String(idx);
-    row.appendChild(input);
-    row.appendChild(del);
-    container.appendChild(row);
-  });
-}
-
-function collectStringList(container) {
-  if (!container) return [];
-  return Array.from(container.querySelectorAll("input"))
-    .map((x) => (x.value || "").trim())
-    .filter((x) => !!x);
-}
-
-function addStringListItem(container, defaultValue = "") {
-  const values = collectStringList(container);
-  values.push(defaultValue);
-  renderStringList(container, values);
-}
-
-function removeStringListItem(container, idx) {
-  const values = collectStringList(container);
-  values.splice(idx, 1);
-  renderStringList(container, values);
-}
-
-function buildManifestFromForm() {
-  return {
-    baseline: (mfBaseline?.value || "").trim(),
-    extensions: collectStringList(mfExtensionsList),
-    policy: {
-      must_have_capabilities: collectStringList(mfMustList),
-      allowed_missing_capabilities: collectStringList(mfAllowedList),
-    },
-    test_scope: {
-      enable_capabilities: ["*"],
-      disable_capabilities: collectStringList(mfDisableCapsList),
-      enable_commands: [],
-      disable_commands: collectStringList(mfDisableCmdsList),
-    },
-    env: {},
-  };
-}
-
-function fillManifestForm(manifest) {
-  const m = manifest || {};
-  if (mfBaseline) mfBaseline.value = m.baseline || "";
-  renderStringList(mfExtensionsList, m.extensions || []);
-  renderStringList(mfMustList, (m.policy || {}).must_have_capabilities || []);
-  renderStringList(mfAllowedList, (m.policy || {}).allowed_missing_capabilities || []);
-  renderStringList(mfDisableCapsList, (m.test_scope || {}).disable_capabilities || []);
-  renderStringList(mfDisableCmdsList, (m.test_scope || {}).disable_commands || []);
-}
-
-function buildExtensionFromForm() {
-  const capRows = Array.from(extCapabilitiesList?.querySelectorAll(".list-row") || []);
-  const caps = capRows
-    .map((row) => {
-      const inputs = row.querySelectorAll("input");
-      return { id: (inputs[0]?.value || "").trim(), desc: (inputs[1]?.value || "").trim() };
-    })
-    .filter((x) => x.id);
-
-  const cmdRows = Array.from(extCommandsList?.querySelectorAll(".list-row") || []);
-  const cmds = cmdRows
-    .map((row) => {
-      const inputs = row.querySelectorAll("input");
-      const id = (inputs[0]?.value || "").trim();
-      const capability = (inputs[1]?.value || "").trim();
-      const at = (inputs[2]?.value || "").trim();
-      if (!id) return null;
-      return { id, capability, forms: { set: at }, responses: { ok: ["OK"], err: ["ERROR", "+CME ERROR:{err}"] } };
-    })
-    .filter(Boolean);
-
-  return {
-    meta: { id: (extMetaId?.value || "").trim(), version: (extMetaVersion?.value || "").trim() || "1.0" },
-    capabilities: caps,
-    commands: cmds,
-  };
-}
-
-function renderExtensionCapabilities(caps = []) {
-  if (!extCapabilitiesList) return;
-  extCapabilitiesList.innerHTML = "";
-  (Array.isArray(caps) ? caps : []).forEach((c, idx) => {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    const idInput = document.createElement("input");
-    idInput.className = "ui-input";
-    idInput.placeholder = "capability id";
-    idInput.value = c?.id || "";
-    const descInput = document.createElement("input");
-    descInput.className = "ui-input";
-    descInput.placeholder = "desc";
-    descInput.value = c?.desc || "";
-    const del = document.createElement("button");
-    del.className = "ui-btn ui-btn-secondary";
-    del.type = "button";
-    del.textContent = "-";
-    del.dataset.capDelIdx = String(idx);
-    row.appendChild(idInput);
-    row.appendChild(descInput);
-    row.appendChild(del);
-    extCapabilitiesList.appendChild(row);
-  });
-}
-
-function renderExtensionCommands(cmds = []) {
-  if (!extCommandsList) return;
-  extCommandsList.innerHTML = "";
-  (Array.isArray(cmds) ? cmds : []).forEach((c, idx) => {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    const idInput = document.createElement("input");
-    idInput.className = "ui-input";
-    idInput.placeholder = "command id";
-    idInput.value = c?.id || "";
-    const capInput = document.createElement("input");
-    capInput.className = "ui-input";
-    capInput.placeholder = "capability";
-    capInput.value = c?.capability || "";
-    const atInput = document.createElement("input");
-    atInput.className = "ui-input";
-    atInput.placeholder = "AT form(set)";
-    atInput.value = (c?.forms || {}).set || "";
-    const del = document.createElement("button");
-    del.className = "ui-btn ui-btn-secondary";
-    del.type = "button";
-    del.textContent = "-";
-    del.dataset.cmdDelIdx = String(idx);
-    row.appendChild(idInput);
-    row.appendChild(capInput);
-    row.appendChild(atInput);
-    row.appendChild(del);
-    extCommandsList.appendChild(row);
-  });
-}
-
-function fillExtensionForm(ext) {
-  const e = ext || {};
-  if (extMetaId) extMetaId.value = (e.meta || {}).id || "";
-  if (extMetaVersion) extMetaVersion.value = (e.meta || {}).version || "1.0";
-  renderExtensionCapabilities(e.capabilities || []);
-  renderExtensionCommands(e.commands || []);
-}
-
-function getUncheckedAtCommandIds() {
-  if (!atCommandSelector) return [];
-  const ids = [];
-  atCommandSelector.querySelectorAll("input[type='checkbox'][data-cmd-id]").forEach((cb) => {
-    if (!cb.checked) ids.push(cb.getAttribute("data-cmd-id"));
-  });
-  return ids.filter(Boolean);
-}
-
-function updateAtCommandSelectionSummary() {
-  if (!atCommandSelectionSummary) return;
-  const all = atCommandSelector ? atCommandSelector.querySelectorAll("input[type='checkbox'][data-cmd-id]").length : 0;
-  const disabled = getUncheckedAtCommandIds();
-  atCommandSelectionSummary.innerHTML = `
-    <div>总命令数：${all}，勾选：${Math.max(0, all - disabled.length)}，未勾选：${disabled.length}</div>
-    <div>未勾选命令ID：${disabled.length ? esc(disabled.join(", ")) : "无"}</div>
-  `;
-}
-
-function renderAtCommandSelector(spec, manifest) {
-  if (!atCommandSelector) return;
-  const commands = Array.isArray(spec?.commands) ? spec.commands.filter((c) => c && c.id) : [];
-  const disabled = new Set(
-    Array.isArray(manifest?.test_scope?.disable_commands) ? manifest.test_scope.disable_commands.map((x) => String(x)) : []
-  );
-  if (!commands.length) {
-    atCommandSelector.innerHTML = "<em>ATSpec中暂无可展示命令。</em>";
-    updateAtCommandSelectionSummary();
-    return;
-  }
-  atCommandSelector.innerHTML = commands
-    .map((c, i) => {
-      const id = String(c.id || "");
-      const desc = String(c.desc || c.title || c.name || id);
-      const checked = !disabled.has(id) ? "checked" : "";
-      return `<label style="display:block;margin:6px 0;">
-        <input type="checkbox" data-cmd-id="${esc(id)}" ${checked} />
-        <span>${i + 1}. ${esc(desc)}</span>
-      </label>`;
-    })
-    .join("");
-  updateAtCommandSelectionSummary();
-}
-
-function applyAtCommandSelectionToManifestEditor() {
-  let manifest = {};
-  try {
-    manifest = JSON.parse(atManifestEditor.value || "{}");
-  } catch (e) {
-    throw new Error(`Manifest JSON解析失败: ${e.message || e}`);
-  }
-  if (!manifest.test_scope || typeof manifest.test_scope !== "object") manifest.test_scope = {};
-  manifest.test_scope.disable_commands = getUncheckedAtCommandIds();
-  atManifestEditor.value = JSON.stringify(manifest, null, 2);
-  updateAtCommandSelectionSummary();
-  persistCurrentState();
-}
-
-async function loadAtAgentAssets() {
-  const [specResp, profileResp, manifestResp, extResp, efsmResp, buildResp] = await Promise.all([
-    fetch("/api/at-agent/spec"),
-    fetch("/api/at-agent/profile"),
-    fetch("/api/at-agent/manifest"),
-    fetch("/api/at-agent/extension"),
-    fetch("/api/at-agent/efsm"),
-    fetch("/api/at-agent/build"),
-  ]);
-  if (!specResp.ok) throw new Error(`加载ATSpec失败: ${await specResp.text()}`);
-  if (!profileResp.ok) throw new Error(`加载Profile失败: ${await profileResp.text()}`);
-  if (!manifestResp.ok) throw new Error(`加载Manifest失败: ${await manifestResp.text()}`);
-  if (!extResp.ok) throw new Error(`加载Extension失败: ${await extResp.text()}`);
-  if (!efsmResp.ok) throw new Error(`加载EFSM失败: ${await efsmResp.text()}`);
-  const spec = await specResp.json();
-  const profile = await profileResp.json();
-  const manifest = await manifestResp.json();
-  const extension = await extResp.json();
-  const efsm = await efsmResp.json();
-  atSpecEditor.value = JSON.stringify(spec, null, 2);
-  atProfileEditor.value = JSON.stringify(profile, null, 2);
-  atManifestEditor.value = JSON.stringify(manifest, null, 2);
-  atExtensionEditor.value = JSON.stringify(extension, null, 2);
-  atEfsmEditor.value = JSON.stringify(efsm, null, 2);
-  renderAtCommandSelector(spec, manifest);
-  if (atChangeSpecView) atChangeSpecView.textContent = "";
-  if (atManifestPatchView) atManifestPatchView.textContent = "";
-  if (atExtensionPatchView) atExtensionPatchView.textContent = "";
-  fillManifestForm(manifest);
-  fillExtensionForm(extension);
-  if (buildResp.ok) {
-    const build = await buildResp.json();
-    atCompileReport.textContent = JSON.stringify(build.report || {}, null, 2);
-    atActiveEfsmView.textContent = JSON.stringify(build.active_efsm || {}, null, 2);
-    atEffectiveAtspecView.textContent = JSON.stringify(build.effective_atspec || {}, null, 2);
-    atEffectiveProfileView.textContent = JSON.stringify(build.effective_profile || {}, null, 2);
-    await renderAtMbtGraph(build.active_efsm || null);
-  } else {
-    atCompileReport.textContent = "";
-    atActiveEfsmView.textContent = "";
-    atEffectiveAtspecView.textContent = "";
-    atEffectiveProfileView.textContent = "";
-    await renderAtMbtGraph();
-  }
-  persistCurrentState();
-}
-
-async function resetAtAgentBaseline() {
-  const data = await postJson("/api/at-agent/reset-baseline", {});
-  atManifestEditor.value = JSON.stringify(data.manifest || {}, null, 2);
-  atExtensionEditor.value = JSON.stringify(data.extension || {}, null, 2);
-  try {
-    const spec = JSON.parse(atSpecEditor.value || "{}");
-    renderAtCommandSelector(spec, data.manifest || {});
-  } catch (_) {}
-  const compiled = data.compile_result || {};
-  atCompileReport.textContent = JSON.stringify(compiled.report || {}, null, 2);
-  atActiveEfsmView.textContent = JSON.stringify(compiled.active_efsm || {}, null, 2);
-  atEffectiveAtspecView.textContent = JSON.stringify(compiled.effective_atspec || {}, null, 2);
-  atEffectiveProfileView.textContent = JSON.stringify(compiled.effective_profile || {}, null, 2);
-  await loadAtAgentAssets();
-  setStatus("AT配置已重置为基线（Manifest/Extension）并重新编译。");
-  pushSystemBotMessage("AT测试Agent: 已执行基线重置并更新模型。");
-}
-
-async function saveAtAgentAssets() {
-  const spec = JSON.parse(atSpecEditor.value || "{}");
-  const profile = JSON.parse(atProfileEditor.value || "{}");
-  const manifest = JSON.parse(atManifestEditor.value || "{}");
-  const extension = JSON.parse(atExtensionEditor.value || "{}");
-  const efsm = JSON.parse(atEfsmEditor.value || "{}");
-  await postJson("/api/at-agent/spec", { data: spec, locked_baseline: true });
-  await postJson("/api/at-agent/profile", { data: profile });
-  await postJson("/api/at-agent/manifest", { data: manifest });
-  await postJson("/api/at-agent/extension", { data: extension });
-  await postJson("/api/at-agent/efsm", { data: efsm });
-  await renderAtMbtGraph();
-  persistCurrentState();
-}
-
-async function compileAtArtifacts() {
-  const data = await postJson("/api/at-agent/compile", {
-    use_llm: !!atCompileUseLlm?.checked,
-  });
-  atCompileReport.textContent = JSON.stringify(data.report || {}, null, 2);
-  atActiveEfsmView.textContent = JSON.stringify(data.active_efsm || {}, null, 2);
-  atEffectiveAtspecView.textContent = JSON.stringify(data.effective_atspec || {}, null, 2);
-  atEffectiveProfileView.textContent = JSON.stringify(data.effective_profile || {}, null, 2);
-  await renderAtMbtGraph(data.active_efsm || null);
-  setStatus("AT 编译完成：已生成 effective_atspec / effective_profile / active_efsm");
-  pushSystemBotMessage("AT测试Agent: 编译完成，Active EFSM已更新。");
-  persistCurrentState();
-}
-
-async function configCompileAtArtifacts() {
-  const requestText = (atConfigRequest?.value || "").trim();
-  if (!requestText) throw new Error("请先输入配置需求");
-  const data = await postJson("/api/at-agent/config-compile", {
-    request_text: requestText,
-    use_llm: !!atCompileUseLlm?.checked,
-    apply_changes: true,
-    compile_after_apply: true,
-  });
-
-  atChangeSpecView.textContent = JSON.stringify(data.change_spec || {}, null, 2);
-  atManifestPatchView.textContent = JSON.stringify(data.manifest_patch || [], null, 2);
-  atExtensionPatchView.textContent = JSON.stringify(
-    { extension_mode: data.extension_mode || "replace", extension_patch: data.extension_patch || [] },
-    null,
-    2
-  );
-
-  atManifestEditor.value = JSON.stringify(data.manifest || {}, null, 2);
-  atExtensionEditor.value = JSON.stringify(data.extension || {}, null, 2);
-
-  const compiled = data.compile_result || {};
-  atCompileReport.textContent = JSON.stringify(compiled.report || {}, null, 2);
-  atActiveEfsmView.textContent = JSON.stringify(compiled.active_efsm || {}, null, 2);
-  atEffectiveAtspecView.textContent = JSON.stringify(compiled.effective_atspec || {}, null, 2);
-  atEffectiveProfileView.textContent = JSON.stringify(compiled.effective_profile || {}, null, 2);
-  await renderAtMbtGraph(compiled.active_efsm || null);
-
-  setStatus(`AT配置已更新并编译完成（重试次数: ${data.retries_used || 1}）`);
-  pushSystemBotMessage("AT测试Agent: Manifest/Extension 已通过LLM更新并完成编译。");
-  persistCurrentState();
-}
-
-async function runAtMbtCoverage() {
-  if (!atActiveEfsmView?.textContent?.trim()) {
-    await compileAtArtifacts();
-  }
-  const mode = (atMbtModeEl?.value || "at_serial").trim();
-  const maxSteps = Number(atMbtMaxStepsEl?.value || 20) || 20;
-  const p = getAutomationProfile();
-  const payload = {
-    mode,
-    max_steps: maxSteps,
-    device_id: p.adb_device_id,
-    at_port: p.at_port,
-    baudrate: p.at_baud,
-  };
-  const data = await postJson("/api/at-agent/mbt/run", payload);
-  atMbtResultEl.textContent = JSON.stringify(data, null, 2);
-  setStatus(`AT MBT执行完成: 覆盖 ${data.coverage?.covered || 0}/${data.coverage?.total || 0}`);
-  pushSystemBotMessage(`AT测试Agent: MBT执行完成，覆盖 ${data.coverage?.covered || 0}/${data.coverage?.total || 0}`);
-  persistCurrentState();
-}
-
-async function renderAtMbtGraph(efsmOverride = null) {
-  if (!atMbtGraphCanvas) return;
-  atMbtGraphCanvas.innerHTML = "";
-
-  let efsm = null;
-  if (efsmOverride && typeof efsmOverride === "object") {
-    efsm = efsmOverride;
-  } else {
-    try {
-      const activeText = (atActiveEfsmView?.textContent || "").trim();
-      efsm = activeText ? JSON.parse(activeText) : JSON.parse(atEfsmEditor?.value || "{}");
-    } catch (e) {
-      atMbtGraphCanvas.innerHTML = `<em>EFSM JSON 解析失败：${esc(e.message || e)}</em>`;
-      return;
-    }
-  }
-  const states = Array.isArray(efsm?.states) ? efsm.states.filter((s) => s && s.id) : [];
-  const transitions = Array.isArray(efsm?.transitions)
-    ? efsm.transitions.filter((t) => t && t.from && t.to && String(t.from) !== "*" && String(t.to) !== "*")
-    : [];
-  if (!states.length) {
-    atMbtGraphCanvas.innerHTML = "<em>暂无可渲染状态（states 为空）</em>";
-    return;
-  }
-
-  try {
-    await ensureD3Loaded();
-  } catch (_) {
-    const lines = transitions.map((t) => `${t.from} -> ${t.to} [${t.id || ""}]`).join("<br/>");
-    atMbtGraphCanvas.innerHTML = `<div style="padding:12px"><strong>MBT关系文本：</strong><br/>${lines || "无转移"}</div>`;
-    return;
-  }
-
-  const d3 = window.d3;
-  const width = atMbtGraphCanvas.clientWidth || 960;
-  const height = atMbtGraphCanvas.clientHeight || 420;
-  const svg = d3.select(atMbtGraphCanvas).append("svg").attr("width", width).attr("height", height);
-
-  const nodeMap = new Map();
-  states.forEach((s, idx) => {
-    nodeMap.set(String(s.id), { id: String(s.id), isStart: idx === 0 });
-  });
-
-  const links = transitions.map((t) => ({
-    source: String(t.from),
-    target: String(t.to),
-    label: t.id || "",
-  }));
-
-  links.forEach((l) => {
-    if (!nodeMap.has(String(l.source))) {
-      nodeMap.set(String(l.source), { id: String(l.source), isStart: false });
-    }
-    if (!nodeMap.has(String(l.target))) {
-      nodeMap.set(String(l.target), { id: String(l.target), isStart: false });
-    }
-  });
-
-  const nodes = Array.from(nodeMap.values());
-
-  const simulation = d3
-    .forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id((d) => d.id).distance(130))
-    .force("charge", d3.forceManyBody().strength(-580))
-    .force("center", d3.forceCenter(width / 2, height / 2))
-    .force("collide", d3.forceCollide().radius(44));
-
-  svg
-    .append("defs")
-    .append("marker")
-    .attr("id", "mbt-arrow")
-    .attr("viewBox", "0 -5 10 10")
-    .attr("refX", 18)
-    .attr("refY", 0)
-    .attr("markerWidth", 7)
-    .attr("markerHeight", 7)
-    .attr("orient", "auto")
-    .append("path")
-    .attr("d", "M0,-5L10,0L0,5")
-    .attr("fill", "#60a5fa");
-
-  const link = svg
-    .append("g")
-    .selectAll("line")
-    .data(links)
-    .enter()
-    .append("line")
-    .attr("stroke", "#60a5fa")
-    .attr("stroke-opacity", 0.9)
-    .attr("stroke-width", 1.6)
-    .attr("marker-end", "url(#mbt-arrow)");
-
-  const linkLabel = svg
-    .append("g")
-    .selectAll("text")
-    .data(links)
-    .enter()
-    .append("text")
-    .text((d) => d.label)
-    .attr("font-size", 10)
-    .attr("fill", "#cbd5e1");
-
-  const node = svg
-    .append("g")
-    .selectAll("g")
-    .data(nodes)
-    .enter()
-    .append("g")
-    .call(
-      d3
-        .drag()
-        .on("start", (event, d) => {
-          if (!event.active) simulation.alphaTarget(0.25).restart();
-          d.fx = d.x;
-          d.fy = d.y;
-        })
-        .on("drag", (event, d) => {
-          d.fx = event.x;
-          d.fy = event.y;
-        })
-        .on("end", (event, d) => {
-          if (!event.active) simulation.alphaTarget(0);
-          d.fx = null;
-          d.fy = null;
-        })
-    );
-
-  node
-    .append("circle")
-    .attr("r", 16)
-    .attr("fill", (d) => (d.isStart ? "#16a34a" : "#0ea5b7"))
-    .attr("stroke", "#e2e8f0")
-    .attr("stroke-width", 1.2);
-
-  node
-    .append("text")
-    .text((d) => d.id)
-    .attr("text-anchor", "middle")
-    .attr("dy", 30)
-    .attr("font-size", 11)
-    .attr("fill", "#cbd5e1");
-
-  node
-    .filter((d) => d.isStart)
-    .append("text")
-    .text("start")
-    .attr("text-anchor", "middle")
-    .attr("dy", 3)
-    .attr("font-size", 8)
-    .attr("font-weight", "700")
-    .attr("fill", "#ecfdf5");
-
-  simulation.on("tick", () => {
-    nodes.forEach((d) => {
-      d.x = Math.max(24, Math.min(width - 24, d.x || 24));
-      d.y = Math.max(24, Math.min(height - 24, d.y || 24));
-    });
-    link
-      .attr("x1", (d) => d.source.x)
-      .attr("y1", (d) => d.source.y)
-      .attr("x2", (d) => d.target.x)
-      .attr("y2", (d) => d.target.y);
-    linkLabel
-      .attr("x", (d) => (d.source.x + d.target.x) / 2)
-      .attr("y", (d) => (d.source.y + d.target.y) / 2 - 4);
-    node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-  });
 }
 
 async function fetchRagDocs() {
@@ -2095,14 +1344,12 @@ async function uploadRagDocs() {
 async function generateRequirementsRound(round) {
   const requirements = parseRequirements(requirementsEl.value);
   if (!requirements.length) throw new Error("请至少输入一条需求");
-  const profile = getAutomationProfile();
   const productProfile = getSelectedProductProfile();
   const testEnvironments = getSelectedTestEnvironments();
   if (round <= 1) {
     stageState.requirement_review_history = null;
     if (latestStructured) latestStructured.requirement_review_history = null;
   }
-  if (!profile.modes.length) throw new Error("请至少选择一种自动化测试方式（Android Web ADB 或 Web 串口 AT）");
   pushSystemBotMessage(`任务开始：测试需求评审 v${round}。`);
   let data = null;
   if (round <= 1 || !stageState.hitl_job_id) {
@@ -2112,10 +1359,6 @@ async function generateRequirementsRound(round) {
       framework_capability_catalog: buildFrameworkCapabilityCatalog(),
       product_profile: productProfile,
       test_environments: testEnvironments,
-      automation_modes: profile.modes,
-      adb_device_id: profile.adb_device_id,
-      at_port: profile.at_port,
-      at_baudrate: profile.at_baud,
     });
   } else {
     data = await postJson(`/api/hitl/requirements/${stageState.hitl_job_id}/next`, {
@@ -2210,8 +1453,6 @@ async function generateScripts() {
   let capabilities = null;
   if (capabilitiesJsonEl.value.trim()) {
     capabilities = JSON.parse(capabilitiesJsonEl.value);
-  } else {
-    capabilities = inferCapabilitiesFromProfile();
   }
   const assertVocab = parseCSVLine(assertVocabEl.value);
   const data = await startStageJobAndWait("scripts", {
@@ -2229,44 +1470,6 @@ async function generateScripts() {
   outCode.textContent = data.test_code_reference || "";
   pushAgenticScriptMessage("system", "右侧脚本参考已更新：已生成最新自动化脚本参考，可继续提问进行定向修改。");
   setStatus("测试脚本参考已生成。");
-  persistCurrentState();
-}
-
-async function debugAutomationScript() {
-  const profile = getAutomationProfile();
-  const mode = getExecutionMode();
-  if (!mode) throw new Error("请先在需求准备中选择至少一种自动化测试方式");
-  const data = await postJson("/api/automation/debug", {
-    mode,
-    device_id: profile.adb_device_id,
-    at_port: profile.at_port,
-    baudrate: profile.at_baud,
-    script_spec: stageState.script_spec || latestStructured?.script_spec || {},
-  });
-  outDebug.textContent = JSON.stringify(data, null, 2);
-  pushAgenticScriptMessage("system", `右侧联机调试已完成：${data.ok ? "通过" : "失败"}。你可以要求我基于该结果修复脚本。`);
-  setStatus(`联机调试完成：${data.ok ? "通过" : "失败"}`);
-  pushSystemBotMessage(`联机调试完成：${data.ok ? "通过" : "失败"}`);
-  persistCurrentState();
-}
-
-async function runAutomationOnline() {
-  const profile = getAutomationProfile();
-  const mode = getExecutionMode();
-  if (!mode) throw new Error("请先在需求准备中选择至少一种自动化测试方式");
-  if (!stageState.test_case_spec) throw new Error("缺少测试用例稿");
-  const data = await postJson("/api/automation/run", {
-    mode,
-    device_id: profile.adb_device_id,
-    at_port: profile.at_port,
-    baudrate: profile.at_baud,
-    test_case_spec: stageState.test_case_spec || {},
-    script_spec: stageState.script_spec || latestStructured?.script_spec || {},
-  });
-  outRun.textContent = JSON.stringify(data, null, 2);
-  pushAgenticScriptMessage("system", `右侧在线自动化执行完成：${data.summary?.passed || 0}/${data.summary?.total || 0} 通过。可据此继续优化脚本。`);
-  setStatus(`在线自动化测试完成：${data.summary?.passed || 0}/${data.summary?.total || 0}`);
-  pushSystemBotMessage(`在线自动化测试完成：${data.summary?.passed || 0}/${data.summary?.total || 0}`);
   persistCurrentState();
 }
 
@@ -2596,11 +1799,6 @@ function switchSheetById(id) {
       .then(() => { flowVizLoaded = true; })
       .catch((e) => setStatus(`流程可视化加载失败: ${e.message}`));
   }
-  if (id === "sheet7" && !atAssetsLoaded) {
-    loadAtAgentAssets()
-      .then(() => { atAssetsLoaded = true; })
-      .catch((e) => setStatus(`AT资产加载失败: ${e.message}`));
-  }
   if (id === "sheet8" && !designHistoryLoaded) {
     loadDesignHistory()
       .then(() => { designHistoryLoaded = true; })
@@ -2689,242 +1887,6 @@ genScriptsBtn.addEventListener("click", async () => {
     setSingleButtonBusy(genScriptsBtn, false);
     stageButtons.filter((b) => b !== genScriptsBtn).forEach((b) => b && (b.disabled = false));
   }
-});
-
-debugScriptBtn?.addEventListener("click", async () => {
-  setSingleButtonBusy(debugScriptBtn, true, "调试中...");
-  stageButtons.filter((b) => b !== debugScriptBtn).forEach((b) => b && (b.disabled = true));
-  try {
-    await debugAutomationScript();
-    switchSheetById("sheet5");
-  } catch (e) {
-    setStatus(`联机调试失败: ${e.message}`);
-    pushSystemBotMessage(`联机调试失败：${e.message}`, { actionNeeded: true });
-  } finally {
-    setSingleButtonBusy(debugScriptBtn, false);
-    stageButtons.filter((b) => b !== debugScriptBtn).forEach((b) => b && (b.disabled = false));
-  }
-});
-
-runOnlineBtn?.addEventListener("click", async () => {
-  setSingleButtonBusy(runOnlineBtn, true, "执行中...");
-  stageButtons.filter((b) => b !== runOnlineBtn).forEach((b) => b && (b.disabled = true));
-  try {
-    await runAutomationOnline();
-    switchSheetById("sheet5");
-  } catch (e) {
-    setStatus(`在线自动化测试失败: ${e.message}`);
-    pushSystemBotMessage(`在线自动化测试失败：${e.message}`, { actionNeeded: true });
-  } finally {
-    setSingleButtonBusy(runOnlineBtn, false);
-    stageButtons.filter((b) => b !== runOnlineBtn).forEach((b) => b && (b.disabled = false));
-  }
-});
-
-loadAtAssetsBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(loadAtAssetsBtn, true, "重置中...");
-    await resetAtAgentBaseline();
-    atAssetsLoaded = true;
-  } catch (e) {
-    setStatus(`AT资产加载失败: ${e.message}`);
-  } finally {
-    setSingleButtonBusy(loadAtAssetsBtn, false);
-  }
-});
-
-saveAtAssetsBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(saveAtAssetsBtn, true, "保存中...");
-    await saveAtAgentAssets();
-    setStatus("ATSpec(Profile锁定基线)/Manifest/Extension/EFSM 已保存。");
-    pushSystemBotMessage("AT测试Agent: 规范与模型已保存。");
-  } catch (e) {
-    setStatus(`AT资产保存失败: ${e.message}`);
-    pushSystemBotMessage(`AT资产保存失败: ${e.message}`, { actionNeeded: true });
-  } finally {
-    setSingleButtonBusy(saveAtAssetsBtn, false);
-  }
-});
-
-compileAtBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(compileAtBtn, true, "编译中...");
-    await compileAtArtifacts();
-  } catch (e) {
-    setStatus(`AT编译失败: ${e.message}`);
-    pushSystemBotMessage(`AT编译失败: ${e.message}`, { actionNeeded: true });
-  } finally {
-    setSingleButtonBusy(compileAtBtn, false);
-  }
-});
-
-atConfigCompileBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(atConfigCompileBtn, true, "处理中...");
-    await configCompileAtArtifacts();
-  } catch (e) {
-    setStatus(`AT配置更新失败: ${e.message}`);
-    pushSystemBotMessage(`AT配置更新失败: ${e.message}`, { actionNeeded: true });
-  } finally {
-    setSingleButtonBusy(atConfigCompileBtn, false);
-  }
-});
-
-atCommandSelector?.addEventListener("change", () => {
-  updateAtCommandSelectionSummary();
-});
-
-atApplyCommandSelectionBtn?.addEventListener("click", () => {
-  try {
-    applyAtCommandSelectionToManifestEditor();
-    setStatus("已将未勾选AT命令写入 Manifest.test_scope.disable_commands（仅预览，需保存后生效）");
-  } catch (e) {
-    setStatus(`应用命令勾选失败: ${e.message || e}`);
-  }
-});
-
-runAtMbtBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(runAtMbtBtn, true, "执行中...");
-    await runAtMbtCoverage();
-  } catch (e) {
-    setStatus(`AT MBT执行失败: ${e.message}`);
-    pushSystemBotMessage(`AT MBT执行失败: ${e.message}`, { actionNeeded: true });
-  } finally {
-    setSingleButtonBusy(runAtMbtBtn, false);
-  }
-});
-
-renderAtMbtGraphBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(renderAtMbtGraphBtn, true, "绘制中...");
-    await renderAtMbtGraph();
-    setStatus("MBT模型图已更新。");
-  } catch (e) {
-    setStatus(`MBT模型图绘制失败: ${e.message}`);
-  } finally {
-    setSingleButtonBusy(renderAtMbtGraphBtn, false);
-  }
-});
-
-manifestFromJsonBtn?.addEventListener("click", () => {
-  try {
-    const m = JSON.parse(atManifestEditor.value || "{}");
-    fillManifestForm(m);
-    setStatus("Manifest: 已从JSON载入到结构化UI。");
-  } catch (e) {
-    setStatus(`Manifest JSON解析失败: ${e.message}`);
-  }
-});
-
-manifestToJsonBtn?.addEventListener("click", () => {
-  try {
-    const m = buildManifestFromForm();
-    atManifestEditor.value = JSON.stringify(m, null, 2);
-    setStatus("Manifest: 结构化UI已应用到JSON。");
-    persistCurrentState();
-  } catch (e) {
-    setStatus(`Manifest 表单转JSON失败: ${e.message}`);
-  }
-});
-
-saveManifestBtn?.addEventListener("click", async () => {
-  try {
-    const m = buildManifestFromForm();
-    atManifestEditor.value = JSON.stringify(m, null, 2);
-    await postJson("/api/at-agent/manifest", { data: m });
-    setStatus("Manifest 已保存。");
-    persistCurrentState();
-  } catch (e) {
-    setStatus(`Manifest 保存失败: ${e.message}`);
-  }
-});
-
-extFromJsonBtn?.addEventListener("click", () => {
-  try {
-    const e = JSON.parse(atExtensionEditor.value || "{}");
-    fillExtensionForm(e);
-    setStatus("Extension: 已从JSON载入到结构化UI。");
-  } catch (err) {
-    setStatus(`Extension JSON解析失败: ${err.message}`);
-  }
-});
-
-extToJsonBtn?.addEventListener("click", () => {
-  try {
-    const e = buildExtensionFromForm();
-    atExtensionEditor.value = JSON.stringify(e, null, 2);
-    setStatus("Extension: 结构化UI已应用到JSON。");
-    persistCurrentState();
-  } catch (err) {
-    setStatus(`Extension 表单转JSON失败: ${err.message}`);
-  }
-});
-
-saveExtensionBtn?.addEventListener("click", async () => {
-  try {
-    const e = buildExtensionFromForm();
-    atExtensionEditor.value = JSON.stringify(e, null, 2);
-    await postJson("/api/at-agent/extension", { data: e });
-    setStatus("Extension 已保存。");
-    persistCurrentState();
-  } catch (err) {
-    setStatus(`Extension 保存失败: ${err.message}`);
-  }
-});
-
-mfAddExtBtn?.addEventListener("click", () => addStringListItem(mfExtensionsList, "atspec.vendor.xxx@1.0"));
-mfAddMustBtn?.addEventListener("click", () => addStringListItem(mfMustList, "capability.id"));
-mfAddAllowedBtn?.addEventListener("click", () => addStringListItem(mfAllowedList, "capability.id"));
-mfAddDisableCapBtn?.addEventListener("click", () => addStringListItem(mfDisableCapsList, "capability.id"));
-mfAddDisableCmdBtn?.addEventListener("click", () => addStringListItem(mfDisableCmdsList, "COMMAND_ID"));
-
-extAddCapBtn?.addEventListener("click", () => {
-  const current = buildExtensionFromForm();
-  current.capabilities.push({ id: "vendor.cap.new", desc: "new vendor capability" });
-  fillExtensionForm(current);
-});
-
-extAddCmdBtn?.addEventListener("click", () => {
-  const current = buildExtensionFromForm();
-  current.commands.push({
-    id: "VENDOR_CMD_NEW",
-    capability: "vendor.cap.new",
-    forms: { set: "AT+VENDOR={x}" },
-    responses: { ok: ["OK"], err: ["ERROR", "+CME ERROR:{err}"] },
-  });
-  fillExtensionForm(current);
-});
-
-[mfExtensionsList, mfMustList, mfAllowedList, mfDisableCapsList, mfDisableCmdsList].forEach((container) => {
-  container?.addEventListener("click", (ev) => {
-    const btn = ev.target.closest("button[data-del-idx]");
-    if (!btn) return;
-    const idx = Number(btn.dataset.delIdx || -1);
-    if (idx < 0) return;
-    removeStringListItem(container, idx);
-  });
-});
-
-extCapabilitiesList?.addEventListener("click", (ev) => {
-  const btn = ev.target.closest("button[data-cap-del-idx]");
-  if (!btn) return;
-  const idx = Number(btn.dataset.capDelIdx || -1);
-  if (idx < 0) return;
-  const cur = buildExtensionFromForm();
-  cur.capabilities.splice(idx, 1);
-  fillExtensionForm(cur);
-});
-
-extCommandsList?.addEventListener("click", (ev) => {
-  const btn = ev.target.closest("button[data-cmd-del-idx]");
-  if (!btn) return;
-  const idx = Number(btn.dataset.cmdDelIdx || -1);
-  if (idx < 0) return;
-  const cur = buildExtensionFromForm();
-  cur.commands.splice(idx, 1);
-  fillExtensionForm(cur);
 });
 
 downloadExcelBtn.addEventListener("click", async () => {
@@ -3028,22 +1990,6 @@ uploadRagBtn?.addEventListener("click", async () => {
   }
 });
 
-refreshAdbBtn?.addEventListener("click", () => {
-  fetchAdbDevices().catch((e) => setStatus(`ADB设备发现失败: ${e.message || e}`));
-});
-
-refreshSerialBtn?.addEventListener("click", () => {
-  fetchSerialPorts().catch((e) => setStatus(`串口发现失败: ${e.message || e}`));
-});
-
-modeAndroidEl?.addEventListener("change", () => {
-  if (modeAndroidEl.checked) fetchAdbDevices().catch(() => {});
-});
-
-modeATEl?.addEventListener("change", () => {
-  if (modeATEl.checked) fetchSerialPorts().catch(() => {});
-});
-
 botFab?.addEventListener("click", () => {
   botPanel?.classList.toggle("hidden");
   if (isBotPanelOpen()) markBotRead();
@@ -3141,8 +2087,6 @@ renderDesignHistoryDetail(null);
 restoreLastResultUI(loadLastResult());
 renderAgenticScriptMessages();
 fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`));
-fetchAdbDevices().catch(() => {});
-fetchSerialPorts().catch(() => {});
 
 window.addEventListener("beforeunload", () => {
   revokeDesignDocUrl();

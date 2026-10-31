@@ -120,7 +120,7 @@ export LLM_MODEL="gpt-4.1-mini"
   "rag_context": "可选",
   "framework_capability_catalog": "可选",
   "capabilities": {
-    "harnesses": ["ANDROID_UIA", "PY_AT", "QXDM"],
+    "harnesses": ["ANDROID_UIA", "QXDM"],
     "actions_supported": {"SET_DEVICE_STATE": ["adb"]}
   },
   "action_vocabulary": ["SET_DEVICE_STATE", "TRIGGER_REGISTRATION", "WAIT", "CHECK", "COLLECT_LOG"],

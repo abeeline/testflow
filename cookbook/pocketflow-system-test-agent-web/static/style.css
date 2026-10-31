@@ -951,10 +951,6 @@ html[data-theme="light"] .theme-icon.sun {
   }
 }
 
-.mbt-canvas {
-  height: 420px;
-}
-
 .split-editor {
   display: grid;
   grid-template-columns: 1fr 1fr;
