@@ -26,6 +26,7 @@ from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEF
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
 from utils.llm_client import LLMClient, LLMSettings
 from utils.paths import CONFIG_DIR, HISTORY_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
+from utils.prompt_loader import render_prompt
 from utils.rag_store import SimpleRAGStore
 
 
@@ -101,6 +102,20 @@ class LLMSettingsRequest(BaseModel):
     timeout: Optional[int] = None
 
 
+class ReviewChatRequest(BaseModel):
+    stage: str
+    artifact: Dict[str, Any]
+    message: str = Field(..., min_length=1)
+    history: List[ChatTurn] = Field(default_factory=list)
+    context: Optional[Dict[str, Any]] = None
+
+
+class ArtifactSaveRequest(BaseModel):
+    requirement_spec: Optional[Dict[str, Any]] = None
+    test_design_spec: Optional[Dict[str, Any]] = None
+    test_case_spec: Optional[Dict[str, Any]] = None
+
+
 class BugzillaFetchRequest(BaseModel):
     ids: str = Field(..., min_length=1)
     excluded_authors: str = ""
@@ -126,6 +141,7 @@ ALLOWED_PROMPT_FILES = {
     "exec_case_at_agent.txt",
     "exec_case_amarisoft.txt",
     "exec_case_protocol.txt",
+    "review_chat.txt",
 }
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -781,6 +797,86 @@ async def chat(payload: ChatRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
     return {"reply": reply}
+
+
+# 对话修订：每个阶段允许 AI 修改的集合，以及集合里条目的编号字段
+REVIEW_STAGES: Dict[str, Dict[str, Any]] = {
+    "requirements": {"label": "测试需求稿", "collections": {"final_requirements": "req_id"}},
+    "design": {"label": "测试设计稿", "collections": {"objectives": "objective_id", "coverage_matrices": "matrix_id",
+                                                       "integrated_matrix": "row_id"}},
+    "testcases": {"label": "测试用例稿", "collections": {"testcases": "tc_id"}},
+}
+
+
+def _validate_review_changes(stage: str, artifact: Dict[str, Any], changes: Any) -> List[Dict[str, Any]]:
+    """只保留结构合法的修改，避免 LLM 输出把产出物改坏。"""
+    spec = REVIEW_STAGES[stage]["collections"]
+    out: List[Dict[str, Any]] = []
+    for ch in changes if isinstance(changes, list) else []:
+        if not isinstance(ch, dict):
+            continue
+        op, coll, target = ch.get("op"), ch.get("collection"), str(ch.get("target") or "").strip()
+        if op not in ("update", "add", "remove") or coll not in spec or not target:
+            continue
+        key = spec[coll]
+        existing = {str(x.get(key)) for x in (artifact.get(coll) or []) if isinstance(x, dict)}
+        if op in ("update", "remove") and target not in existing:
+            continue
+        item = ch.get("item")
+        if op in ("update", "add"):
+            if not isinstance(item, dict):
+                continue
+            item[key] = item.get(key) or target
+        out.append({"op": op, "collection": coll, "target": target, "summary": str(ch.get("summary") or "").strip(),
+                    **({"item": item} if op != "remove" else {})})
+    return out
+
+
+@app.post("/api/review/chat")
+async def review_chat(payload: ReviewChatRequest):
+    if payload.stage not in REVIEW_STAGES:
+        raise HTTPException(status_code=400, detail="未知阶段")
+    client = LLMClient()
+    if not client.enabled:
+        raise HTTPException(status_code=400, detail="大模型未配置，请先在“系统设置 → 大模型”中配置。")
+    stage = REVIEW_STAGES[payload.stage]
+    history_text = "\n".join(
+        f"{'工程师' if t.role == 'user' else 'AI'}: {t.content.strip()}" for t in payload.history[-12:] if t.content.strip()
+    ) or "（无）"
+    prompt = render_prompt("review_chat.txt", {
+        "stage_label": stage["label"],
+        "collections": "\n".join(f"- {c}: {k}" for c, k in stage["collections"].items()),
+        "artifact_json": json.dumps(payload.artifact, ensure_ascii=False),
+        "context_json": json.dumps(payload.context or {}, ensure_ascii=False),
+        "history_text": history_text,
+        "message": payload.message.strip(),
+    })
+    last_error: Optional[Exception] = None
+    for _ in range(2):
+        try:
+            data = await asyncio.to_thread(client.generate_json, "Return strictly valid JSON only.", prompt)
+            if not isinstance(data, dict) or not isinstance(data.get("reply"), str):
+                raise ValueError("缺少 reply")
+            return {"reply": data["reply"].strip(),
+                    "changes": _validate_review_changes(payload.stage, payload.artifact, data.get("changes"))}
+        except Exception as exc:
+            last_error = exc
+    raise HTTPException(status_code=502, detail=f"AI 回复失败: {last_error}")
+
+
+@app.post("/api/design-history/{record_id}/artifacts")
+def save_design_history_artifacts(record_id: str, payload: ArtifactSaveRequest):
+    """对话修订后把最新产出物写回设计历史，固定 URL 文档随之更新。"""
+    if not _valid_history_record_id(record_id):
+        raise HTTPException(status_code=400, detail="非法记录ID")
+    _load_design_history_record(record_id)
+    record = _upsert_design_history_record(
+        record_id=record_id,
+        requirement_spec=payload.requirement_spec,
+        test_design_spec=payload.test_design_spec,
+        test_case_spec=payload.test_case_spec,
+    )
+    return {"design_history": _history_summary(record)}
 
 
 def _collect_review_issues(persona_reviews: Dict[str, Any]) -> List[str]:

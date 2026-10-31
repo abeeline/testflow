@@ -107,13 +107,6 @@
               <div id="ragDocs" class="visual"></div>
             </details>
 
-            <details class="fold">
-              <summary>执行平台能力 <span class="tag">可选</span></summary>
-              <label for="capability">执行平台能力说明（供需求分析参考）</label>
-              <textarea class="ui-input" id="capability" placeholder="例如：pytest+allure，支持日志采集"></textarea>
-              <label for="actionVocab">Action Vocabulary（逗号分隔）</label>
-              <input class="ui-input" id="actionVocab" type="text" placeholder="SET_DEVICE_STATE,TRIGGER_REGISTRATION,WAIT,CHECK,COLLECT_LOG" />
-            </details>
           </div>
 
           <div class="card ui-card">
@@ -124,7 +117,7 @@
 
           <div class="card ui-card">
             <div class="card-head"><h3>产品通信背景与支持特性</h3></div>
-            <p class="feature-hint">勾选项会带入测试需求和设计生成。实网用例分给 Artemis 还是 AT Agent 取决于“产品形态”。</p>
+            <p class="feature-hint">每类可多选，选项里没有的在“其他”里补充（多个用逗号分隔）。勾选项会带入测试需求和设计生成；实网用例分给 Artemis 还是 AT Agent 取决于“产品形态”。</p>
             <div id="productProfileGroups" class="feature-profile-groups"></div>
           </div>
 
@@ -139,6 +132,7 @@
               <h2>测试需求评审</h2>
               <p>三人格评审（规范 / 运营商 / 体验）后形成测试需求稿。大部分问题由 AI 按 3GPP 默认值和行业惯例自行确认，只有关键问题需要你回答。</p>
             </div>
+            <button class="ui-btn ui-btn-secondary" type="button" data-review-stage="requirements">💬 与 AI 讨论 / 修订</button>
           </header>
           <div class="card ui-card">
             <div class="card-head"><h3>测试需求稿</h3></div>
@@ -166,8 +160,11 @@
               <h2>测试设计</h2>
               <p>需求 → 测试目标 → 覆盖矩阵 → 整合矩阵，完成后自动归档到测试设计历史。</p>
             </div>
-            <div id="designDocActions" class="btn-row compact-row hidden">
-              <a id="designDocLink" class="ui-btn ui-btn-secondary" href="#" target="_blank" rel="noopener noreferrer">查看测试设计文档 ↗</a>
+            <div class="btn-row compact-row">
+              <button class="ui-btn ui-btn-secondary" type="button" data-review-stage="design">💬 与 AI 讨论 / 修订</button>
+              <div id="designDocActions" class="hidden">
+                <a id="designDocLink" class="ui-btn ui-btn-secondary" href="#" target="_blank" rel="noopener noreferrer">查看测试设计文档 ↗</a>
+              </div>
             </div>
           </header>
           <div class="card ui-card">
@@ -185,7 +182,10 @@
               <h2>测试用例</h2>
               <p>每条用例保留到需求和设计矩阵的追溯关系，可导出 Excel。</p>
             </div>
-            <button id="downloadExcelBtn" class="ui-btn ui-btn-secondary">下载 Excel</button>
+            <div class="btn-row compact-row">
+              <button class="ui-btn ui-btn-secondary" type="button" data-review-stage="testcases">💬 与 AI 讨论 / 修订</button>
+              <button id="downloadExcelBtn" class="ui-btn ui-btn-secondary">下载 Excel</button>
+            </div>
           </header>
           <div class="card ui-card">
             <div id="viewCases" class="visual"></div>
@@ -337,6 +337,24 @@
         </div>
       </div>
     </div>
+
+    <aside id="reviewDrawer" class="review-drawer hidden" aria-label="与 AI 讨论 / 修订">
+      <header class="review-head">
+        <div>
+          <h3 id="reviewTitle">与 AI 讨论</h3>
+          <span class="feature-hint">可以提问、澄清需求或直接提修改要求。AI 给出的修改要你点“应用”才会生效，可撤销。</span>
+        </div>
+        <div class="review-head-actions">
+          <button id="reviewUndoBtn" class="ui-btn ui-btn-ghost ui-btn-sm" type="button" disabled>↶ 撤销上次修改</button>
+          <button id="reviewCloseBtn" class="ui-btn ui-btn-ghost icon-btn" type="button" aria-label="关闭">×</button>
+        </div>
+      </header>
+      <div id="reviewMessages" class="review-messages"></div>
+      <footer class="review-input-row">
+        <textarea id="reviewInput" class="ui-input" rows="3" placeholder="例如：REQ-002 的通过门限改成 99.5%；TO-003 为什么需要协议分析仪？（Ctrl+Enter 发送）"></textarea>
+        <button id="reviewSendBtn" class="ui-btn" type="button">发送</button>
+      </footer>
+    </aside>
 
     <button id="botFab" class="bot-fab" type="button" aria-label="打开助手">
       <span class="bot-halo"></span>

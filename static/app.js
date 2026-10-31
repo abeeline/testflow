@@ -202,6 +202,10 @@ function toProfileOptionId(groupKey, option) {
   return `pp_${groupKey}_${String(option).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
 }
 
+function splitCustomValues(text) {
+  return Array.from(new Set(`${text || ""}`.split(/[,，、;；\n]+/).map((x) => x.trim()).filter(Boolean)));
+}
+
 function renderProductProfileOptions() {
   if (!productProfileGroupsEl) return;
   productProfileGroupsEl.innerHTML = PRODUCT_PROFILE_GROUPS.map((group) => {
@@ -211,7 +215,8 @@ function renderProductProfileOptions() {
         return `<label class="feature-option"><input type="checkbox" id="${id}" data-profile-group="${group.key}" data-profile-option="${esc(opt)}" /> ${esc(opt)}</label>`;
       })
       .join("");
-    return `<div class="feature-profile-group"><h4>${esc(group.label)}</h4><div class="feature-option-grid">${items}</div></div>`;
+    const custom = `<div class="feature-custom"><span>其他</span><input class="ui-input" type="text" id="pp_custom_${group.key}" data-profile-custom="${group.key}" placeholder="选项里没有的，在这里补充，多个用逗号分隔" /></div>`;
+    return `<div class="feature-profile-group"><h4>${esc(group.label)}</h4><div class="feature-option-grid">${items}</div>${custom}</div>`;
   }).join("");
 }
 
@@ -221,14 +226,16 @@ function getSelectedProductProfile() {
   PRODUCT_PROFILE_GROUPS.forEach((group) => {
     const values = [];
     group.options.forEach((opt) => {
-      const id = toProfileOptionId(group.key, opt);
-      const el = document.getElementById(id);
-      if (el?.checked) {
-        values.push(opt);
-        selectedFlat.push(opt);
-      }
+      const el = document.getElementById(toProfileOptionId(group.key, opt));
+      if (el?.checked) values.push(opt);
     });
-    if (values.length) selected[group.key] = values;
+    splitCustomValues(document.getElementById(`pp_custom_${group.key}`)?.value).forEach((v) => {
+      if (!values.includes(v)) values.push(v);
+    });
+    if (values.length) {
+      selected[group.key] = values;
+      selectedFlat.push(...values);
+    }
   });
   return {
     selected,
@@ -246,10 +253,11 @@ function setSelectedProductProfile(selectedMap = {}) {
   PRODUCT_PROFILE_GROUPS.forEach((group) => {
     const values = Array.isArray(selectedMap[group.key]) ? selectedMap[group.key] : [];
     group.options.forEach((opt) => {
-      const id = toProfileOptionId(group.key, opt);
-      const el = document.getElementById(id);
+      const el = document.getElementById(toProfileOptionId(group.key, opt));
       if (el) el.checked = values.includes(opt);
     });
+    const customEl = document.getElementById(`pp_custom_${group.key}`);
+    if (customEl) customEl.value = values.filter((v) => !group.options.includes(v)).join(", ");
   });
 }
 
@@ -1157,8 +1165,8 @@ function restoreLastResultUI(snapshot) {
   if (!snapshot) return;
   requirementsEl.value = snapshot.form?.requirements || "";
   ragEl.value = snapshot.form?.rag || "";
-  capabilityEl.value = snapshot.form?.framework_capability_catalog || "";
-  actionVocabEl.value = snapshot.form?.action_vocab || "";
+  if (capabilityEl) capabilityEl.value = snapshot.form?.framework_capability_catalog || "";
+  if (actionVocabEl) actionVocabEl.value = snapshot.form?.action_vocab || "";
   if (bzIdsEl) bzIdsEl.value = snapshot.form?.bz_ids || "";
   if (bzExcludedEl) bzExcludedEl.value = snapshot.form?.bz_excluded || "";
   setSelectedTestEnvironments(snapshot.form?.test_environment_selected || []);
@@ -1195,8 +1203,8 @@ function persistCurrentState(customStatus) {
     form: {
       requirements: requirementsEl.value,
       rag: ragEl.value,
-      framework_capability_catalog: capabilityEl.value,
-      action_vocab: actionVocabEl.value,
+      framework_capability_catalog: capabilityEl?.value || "",
+      action_vocab: actionVocabEl?.value || "",
       bz_ids: bzIdsEl?.value || "",
       bz_excluded: bzExcludedEl?.value || "",
       test_environment_selected: getSelectedTestEnvironments().selected_ids,
@@ -1363,7 +1371,7 @@ async function generateCases() {
   if (!stageState.test_design_spec) throw new Error("请先生成测试设计稿");
   const productProfile = getSelectedProductProfile();
   const testEnvironments = getSelectedTestEnvironments();
-  const actionVocab = parseCSVLine(actionVocabEl.value);
+  const actionVocab = parseCSVLine(actionVocabEl?.value || "");
   const data = await startStageJobAndWait("testcases", {
     requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
@@ -2161,6 +2169,172 @@ goExecCasesBtn?.addEventListener("click", () => {
   switchSheetById("sheet5");
   genExecCasesBtn?.click();
 });
+
+// ---------- 对话修订面板 ----------
+const REVIEW_STAGE_META = {
+  requirements: { label: "测试需求稿", key: "requirement_spec", sheet: "sheet2" },
+  design: { label: "测试设计稿", key: "test_design_spec", sheet: "sheet3" },
+  testcases: { label: "测试用例稿", key: "test_case_spec", sheet: "sheet4" },
+};
+const REVIEW_ID_KEYS = {
+  final_requirements: "req_id", objectives: "objective_id", coverage_matrices: "matrix_id",
+  integrated_matrix: "row_id", testcases: "tc_id",
+};
+const REVIEW_OP_LABELS = { update: "修改", add: "新增", remove: "删除" };
+const reviewDrawer = document.getElementById("reviewDrawer");
+const reviewTitle = document.getElementById("reviewTitle");
+const reviewMessages = document.getElementById("reviewMessages");
+const reviewInput = document.getElementById("reviewInput");
+const reviewSendBtn = document.getElementById("reviewSendBtn");
+const reviewUndoBtn = document.getElementById("reviewUndoBtn");
+const reviewState = {
+  stage: "",
+  chats: { requirements: [], design: [], testcases: [] },
+  undo: { requirements: [], design: [], testcases: [] },
+};
+
+function reviewArtifact(stage) {
+  return stageState[REVIEW_STAGE_META[stage].key];
+}
+
+function setReviewArtifact(stage, value) {
+  const key = REVIEW_STAGE_META[stage].key;
+  stageState[key] = value;
+  latestStructured = latestStructured || {};
+  latestStructured[key] = value;
+  applyStageOutputs();
+  persistCurrentState();
+  syncReviewedArtifactToHistory(stage).catch(() => {});
+}
+
+async function syncReviewedArtifactToHistory(stage) {
+  const id = stageState.design_history_record_id;
+  if (!id) return;
+  const key = REVIEW_STAGE_META[stage].key;
+  const data = await postJson(`/api/design-history/${encodeURIComponent(id)}/artifacts`, { [key]: stageState[key] });
+  if (data.design_history?.document_url) stageState.design_history_doc_url = data.design_history.document_url;
+}
+
+function applyReviewChanges(stage, changes) {
+  const before = reviewArtifact(stage);
+  const next = JSON.parse(JSON.stringify(before || {}));
+  changes.forEach((ch) => {
+    const idKey = REVIEW_ID_KEYS[ch.collection];
+    if (!idKey) return;
+    const list = Array.isArray(next[ch.collection]) ? next[ch.collection] : (next[ch.collection] = []);
+    const idx = list.findIndex((x) => `${x?.[idKey] ?? ""}` === `${ch.target}`);
+    if (ch.op === "update" && idx >= 0) list[idx] = ch.item;
+    else if (ch.op === "add") idx >= 0 ? (list[idx] = ch.item) : list.push(ch.item);
+    else if (ch.op === "remove" && idx >= 0) list.splice(idx, 1);
+  });
+  reviewState.undo[stage].push(before);
+  setReviewArtifact(stage, next);
+  reviewUndoBtn.disabled = false;
+}
+
+function renderReviewChat() {
+  const stage = reviewState.stage;
+  const chat = reviewState.chats[stage] || [];
+  const intro = `<div class="bot-msg bot-msg-assistant">我已读取当前的${esc(REVIEW_STAGE_META[stage].label)}。可以问我某条为什么这样设计、哪里不合理，或者直接说要怎么改。</div>`;
+  reviewMessages.innerHTML = intro + chat.map((m, i) => {
+    if (m.role === "user") return `<div class="bot-msg bot-msg-user">${esc(m.content)}</div>`;
+    if (m.role === "error") return `<div class="bot-msg bot-msg-system action-needed">${esc(m.content)}</div>`;
+    const changes = m.changes || [];
+    const cards = changes.length
+      ? `<div class="review-changes">${changes.map((c) => `<div class="review-change"><span class="op op-${esc(c.op)}">${esc(REVIEW_OP_LABELS[c.op] || c.op)}</span><code>${esc(c.target)}</code><span>${esc(c.summary || "")}</span></div>`).join("")}
+         <div class="btn-row">${m.status === "applied" ? "<span class='feature-hint'>✓ 已应用</span>" : m.status === "dismissed" ? "<span class='feature-hint'>已忽略</span>"
+           : `<button class="ui-btn ui-btn-sm" data-review-apply="${i}">应用这 ${changes.length} 处修改</button><button class="ui-btn ui-btn-ghost ui-btn-sm" data-review-dismiss="${i}">忽略</button>`}</div></div>`
+      : "";
+    return `<div class="bot-msg bot-msg-assistant">${esc(m.content)}${cards}</div>`;
+  }).join("") + (reviewState.pending ? `<div class="bot-msg bot-msg-assistant review-typing">AI 正在思考…</div>` : "");
+  reviewMessages.scrollTop = reviewMessages.scrollHeight;
+}
+
+function openReviewDrawer(stage) {
+  if (!reviewArtifact(stage)) {
+    setStatus(`还没有${REVIEW_STAGE_META[stage].label}，请先生成。`);
+    return;
+  }
+  reviewState.stage = stage;
+  reviewTitle.textContent = `与 AI 讨论：${REVIEW_STAGE_META[stage].label}`;
+  reviewUndoBtn.disabled = !reviewState.undo[stage].length;
+  reviewDrawer.classList.remove("hidden");
+  document.body.classList.add("review-open");
+  renderReviewChat();
+  reviewInput.focus();
+}
+
+async function sendReviewMessage() {
+  const stage = reviewState.stage;
+  const text = (reviewInput.value || "").trim();
+  if (!stage || !text || reviewState.pending) return;
+  const chat = reviewState.chats[stage];
+  const history = chat.filter((m) => m.role === "user" || m.role === "assistant").map((m) => ({ role: m.role, content: m.content }));
+  chat.push({ role: "user", content: text });
+  reviewInput.value = "";
+  reviewState.pending = true;
+  reviewSendBtn.disabled = true;
+  renderReviewChat();
+  try {
+    const data = await postJson("/api/review/chat", {
+      stage,
+      artifact: reviewArtifact(stage),
+      message: text,
+      history,
+      context: {
+        requirement_input: parseRequirements(requirementsEl.value),
+        product_profile: getSelectedProductProfile().selected,
+        test_environments: (getSelectedTestEnvironments().selected_details || []).map((x) => x.label),
+        confirmed_answers: (stageState.requirement_review_history?.answered_questions || []).map((q) => ({ question: q.question, answer: q.answer })),
+      },
+    });
+    chat.push({ role: "assistant", content: data.reply || "", changes: data.changes || [], status: "" });
+  } catch (e) {
+    chat.push({ role: "error", content: `请求失败：${e.message}` });
+  } finally {
+    reviewState.pending = false;
+    reviewSendBtn.disabled = false;
+    renderReviewChat();
+  }
+}
+
+document.querySelectorAll("[data-review-stage]").forEach((b) => b.addEventListener("click", () => openReviewDrawer(b.dataset.reviewStage)));
+document.getElementById("reviewCloseBtn")?.addEventListener("click", () => {
+  reviewDrawer.classList.add("hidden");
+  document.body.classList.remove("review-open");
+});
+reviewSendBtn?.addEventListener("click", () => sendReviewMessage());
+reviewInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    sendReviewMessage();
+  }
+});
+reviewMessages?.addEventListener("click", (e) => {
+  const stage = reviewState.stage;
+  const applyIdx = e.target.closest("[data-review-apply]")?.dataset.reviewApply;
+  const dismissIdx = e.target.closest("[data-review-dismiss]")?.dataset.reviewDismiss;
+  const msg = reviewState.chats[stage]?.[Number(applyIdx ?? dismissIdx)];
+  if (!msg) return;
+  if (applyIdx !== undefined) {
+    applyReviewChanges(stage, msg.changes || []);
+    msg.status = "applied";
+    const downstream = stage === "requirements" ? "测试设计和用例" : stage === "design" ? "测试用例" : "可执行用例";
+    setStatus(`已应用 ${msg.changes.length} 处修改到${REVIEW_STAGE_META[stage].label}。如需同步，请重新生成${downstream}。`);
+  } else {
+    msg.status = "dismissed";
+  }
+  renderReviewChat();
+});
+reviewUndoBtn?.addEventListener("click", () => {
+  const stage = reviewState.stage;
+  const prev = reviewState.undo[stage].pop();
+  if (prev === undefined) return;
+  setReviewArtifact(stage, prev);
+  reviewUndoBtn.disabled = !reviewState.undo[stage].length;
+  setStatus(`已撤销上次对${REVIEW_STAGE_META[stage].label}的修改。`);
+});
+
 
 // init
 initTheme();
