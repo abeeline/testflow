@@ -521,3 +521,34 @@ label .feature-hint { display: inline; margin: 0; font-weight: 400; font-size: 1
 .dir-dl { background: var(--primary-soft); color: var(--primary); }
 .dir-ul { background: var(--success-soft); color: var(--success); }
 @media (max-width: 1080px) { .proto-grid { grid-template-columns: 1fr; } }
+.feature-custom { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.feature-custom > span { flex: none; font-size: 13px; color: var(--muted-foreground); }
+.feature-custom .ui-input { padding: 7px 10px; font-size: 13px; }
+/* review drawer */
+.review-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 1280;
+  width: min(460px, 100vw); display: flex; flex-direction: column;
+  background: var(--card); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  animation: slideIn 0.18s ease;
+}
+@keyframes slideIn { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+body.review-open .main-content { padding-right: 480px; }
+body.review-open .bot-fab { display: none; }
+.review-head { display: flex; justify-content: space-between; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--border); }
+.review-head h3 { font-size: 16px; }
+.review-head .feature-hint { font-size: 12px; }
+.review-head-actions { display: flex; align-items: flex-start; gap: 4px; flex: none; }
+.review-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.review-messages .bot-msg { max-width: 92%; }
+.review-typing { color: var(--muted-foreground); font-style: italic; }
+.review-changes { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); white-space: normal; }
+.review-change { display: flex; gap: 6px; align-items: baseline; margin: 4px 0; font-size: 12.5px; }
+.review-change code { flex: none; }
+.review-changes .btn-row { margin-top: 8px; }
+.op { flex: none; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.op-update { background: var(--warning-soft); color: var(--warning); }
+.op-add { background: var(--success-soft); color: var(--success); }
+.op-remove { background: var(--danger-soft); color: var(--danger); }
+.review-input-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; border-top: 1px solid var(--border); align-items: end; }
+.review-input-row textarea { min-height: 64px; resize: none; }
+@media (max-width: 1080px) { body.review-open .main-content { padding-right: 16px; } }
