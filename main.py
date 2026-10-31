@@ -306,6 +306,7 @@ def _merge_answered_questions(existing: Any, additions: Any) -> List[Dict[str, A
             "req_id": req_id,
             "question": question,
             "answer": answer,
+            "source": str(item.get("source") or "用户"),
         }
     return list(merged.values())
 
@@ -351,10 +352,11 @@ def _render_answered_question_table(items: Any) -> str:
             f"<td>{html.escape(str(item.get('req_id', '')))}</td>"
             f"<td>{html.escape(str(item.get('question', '')))}</td>"
             f"<td>{html.escape(str(item.get('answer', '')))}</td>"
+            f"<td>{html.escape(str(item.get('source', '用户')))}</td>"
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>用户确认/补充</th></tr></thead>"
+        "<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>确认结果</th><th>确认方</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
     )
 
@@ -791,19 +793,72 @@ def _collect_review_issues(persona_reviews: Dict[str, Any]) -> List[str]:
     return issues
 
 
-def _collect_open_questions(persona_reviews: Dict[str, Any]) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
-    seen = set()
+MAX_USER_QUESTIONS = 5
+_PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2}
+_PERSONA_LABELS = {"spec": "规范", "carrier": "运营商", "ux": "体验"}
+
+
+def _question_key(text: str) -> str:
+    return re.sub(r"[\s，。、,.；;：:？?！!“”\"'（）()]+", "", str(text or "")).lower()
+
+
+def _triage_open_questions(persona_reviews: Dict[str, Any], answered: Any = None) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """把三位评审提出的问题分成两组：
+    - 需要用户确认：needs_user 且优先级最高的少数几条（最多 MAX_USER_QUESTIONS 条）
+    - AI 自行确认：其余问题，直接采用评审给出的默认答案
+    已经回答过的问题、三位评审重复提出的问题会被去掉。"""
+    done = {_question_key(q.get("question")) for q in (answered or []) if isinstance(q, dict)}
+    merged: Dict[str, Dict[str, Any]] = {}
     for persona in ["spec", "carrier", "ux"]:
         for item in (persona_reviews.get(persona, {}) or {}).get("reviews", []) or []:
-            req_id = item.get("req_id", "")
-            for q in item.get("open_questions", []) or []:
-                k = (req_id, q)
-                if k in seen:
+            req_id = str(item.get("req_id", ""))
+            details = item.get("question_details")
+            if not isinstance(details, list):
+                details = [{"question": q, "priority": "P1", "needs_user": True, "ai_answer": "", "basis": ""}
+                           for q in item.get("open_questions", []) or [] if isinstance(q, str)]
+            for d in details:
+                if not isinstance(d, dict) or not str(d.get("question") or "").strip():
                     continue
-                seen.add(k)
-                out.append({"req_id": req_id, "question": q})
-    return out
+                key = _question_key(d["question"])
+                if not key or key in done:
+                    continue
+                cur = merged.get(key)
+                cand = {
+                    "req_id": req_id,
+                    "question": str(d["question"]).strip(),
+                    "priority": d.get("priority") if d.get("priority") in _PRIORITY_RANK else "P1",
+                    "needs_user": bool(d.get("needs_user", True)),
+                    "ai_answer": str(d.get("ai_answer") or "").strip(),
+                    "basis": str(d.get("basis") or "").strip(),
+                    "personas": [_PERSONA_LABELS[persona]],
+                }
+                if cur is None:
+                    merged[key] = cand
+                    continue
+                # 多位评审都提到的问题：合并来源，取更高优先级，任一评审认为需要用户确认就保留
+                cur["personas"] = list(dict.fromkeys(cur["personas"] + cand["personas"]))
+                if _PRIORITY_RANK[cand["priority"]] < _PRIORITY_RANK[cur["priority"]]:
+                    cur["priority"] = cand["priority"]
+                cur["needs_user"] = cur["needs_user"] or cand["needs_user"]
+                if not cur["ai_answer"] and cand["ai_answer"]:
+                    cur["ai_answer"], cur["basis"] = cand["ai_answer"], cand["basis"]
+
+    ordered = sorted(merged.values(), key=lambda q: (_PRIORITY_RANK[q["priority"]], -len(q["personas"])))
+    user_qs: List[Dict[str, Any]] = []
+    auto_qs: List[Dict[str, Any]] = []
+    for q in ordered:
+        must_ask = q["needs_user"] and (q["priority"] in ("P0", "P1") or not q["ai_answer"])
+        if must_ask and len(user_qs) < MAX_USER_QUESTIONS:
+            user_qs.append(q)
+        else:
+            if not q["ai_answer"]:
+                q["ai_answer"] = "暂按需求原文理解，测试设计中标注为待确认风险"
+            auto_qs.append(q)
+    return user_qs, auto_qs
+
+
+def _collect_open_questions(persona_reviews: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return _triage_open_questions(persona_reviews)[0]
 
 
 async def _emit_hitl_event(job: Dict[str, Any], ev: Dict[str, Any]):
@@ -874,11 +929,20 @@ async def _run_requirement_hitl_job(job_id: str):
 
             requirement_spec = shared.get("requirement_spec", {})
             persona_reviews = shared.get("persona_reviews", {})
+            user_questions, auto_confirmed = _triage_open_questions(persona_reviews, job.get("answered_questions", []))
+            # AI 自行确认的问题直接记入已确认列表，用户跳过后续轮次直接生成设计时也能带上这些假设
+            job["answered_questions"] = _merge_answered_questions(
+                job.get("answered_questions", []),
+                [{"source_round": round_no, "req_id": q["req_id"], "question": q["question"],
+                  "answer": q["ai_answer"], "source": "AI 自行确认"} for q in auto_confirmed],
+            )
+            job["pending_questions"] = user_questions
             round_summary = {
                 "round": round_no,
                 "is_final_round": round_no >= 3,
                 "issues": _collect_review_issues(persona_reviews),
-                "open_questions": _collect_open_questions(persona_reviews),
+                "open_questions": user_questions,
+                "auto_confirmed": auto_confirmed,
             }
             round_summaries = [item for item in (job.get("round_summaries", []) or []) if item.get("round") != round_no]
             round_summaries.append(round_summary)
@@ -893,6 +957,7 @@ async def _run_requirement_hitl_job(job_id: str):
                 "persona_reviews": persona_reviews,
                 "issues": round_summary["issues"],
                 "open_questions": round_summary["open_questions"],
+                "auto_confirmed": auto_confirmed,
                 "requirement_review_history": review_history,
                 "warnings": shared.get("warnings", []),
                 "trace": shared.get("trace", []),
@@ -918,12 +983,18 @@ async def _run_requirement_hitl_job(job_id: str):
             )
             await job["answer_event"].wait()
             job["answer_event"].clear()
-            answers = job.get("pending_answers", {}) or {}
-            if answers:
-                job["answered_questions"] = _merge_answered_questions(
-                    job.get("answered_questions", []),
-                    _parse_answer_map(answers, round_no),
-                )
+            answers = {k: v for k, v in (job.get("pending_answers", {}) or {}).items() if str(v).strip()}
+            # 用户没填的问题采用 AI 建议答案
+            accepted = []
+            for q in job.get("pending_questions", []) or []:
+                key = f"{q['req_id']}::{q['question']}"
+                if key not in answers and q.get("ai_answer"):
+                    accepted.append({"source_round": round_no, "req_id": q["req_id"], "question": q["question"],
+                                     "answer": q["ai_answer"], "source": "采纳 AI 建议"})
+            job["answered_questions"] = _merge_answered_questions(
+                job.get("answered_questions", []),
+                _parse_answer_map(answers, round_no) + accepted,
+            )
 
             fb_parts: List[str] = []
             issues = _collect_review_issues(persona_reviews)
@@ -932,6 +1003,10 @@ async def _run_requirement_hitl_job(job_id: str):
             answer_lines = [f"{k}: {v}" for k, v in answers.items() if str(v).strip()]
             if answer_lines:
                 fb_parts.append("【用户补充回答】" + " | ".join(answer_lines))
+            ai_lines = [f"{q['req_id']}::{q['question']}: {q['answer']}" for q in job.get("answered_questions", [])
+                        if q.get("source") != "用户"]
+            if ai_lines:
+                fb_parts.append("【AI 自行确认 / 采纳的默认假设，可直接写入需求】" + " | ".join(ai_lines))
             job["review_feedback"] = "\n".join(fb_parts).strip()
             job["pending_answers"] = {}
 
@@ -1385,6 +1460,8 @@ def save_prompts(payload: PromptSettingsRequest):
 def export_testcases_excel(payload: ExportTestCasesRequest):
     try:
         from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"缺少openpyxl依赖: {exc}")
 
@@ -1409,167 +1486,118 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
         except Exception:
             return str(v)
 
+    def _kv_text(v: Any) -> str:
+        if isinstance(v, dict):
+            return "\n".join(f"{k}: {_list_to_text(x) if isinstance(x, list) else x}" for k, x in v.items())
+        return _list_to_text(v)
+
+    def _numbered(v: Any) -> str:
+        items = [str(x) for x in v] if isinstance(v, list) else ([str(v)] if v else [])
+        return items[0] if len(items) == 1 else "\n".join(f"{i}. {x}" for i, x in enumerate(items, 1))
+
+    def _sheet(title: str, headers: List[tuple], rows: List[List[Any]], first: bool = False):
+        """headers: [(列名, 列宽)]。表头加粗、冻结首行、自动换行。"""
+        ws = wb.active if first else wb.create_sheet(title)
+        ws.title = title
+        ws.append([h for h, _ in headers])
+        for r in rows:
+            ws.append(r)
+        for idx, (_, width) in enumerate(headers, start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = width
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+        ws.freeze_panes = "A2"
+        if rows:
+            ws.auto_filter.ref = ws.dimensions
+        return ws
+
     wb = Workbook()
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="2563EB")
+    persona_names = {"spec": "规范评审", "carrier": "运营商评审", "ux": "体验评审"}
 
-    ws_input = wb.active
-    ws_input.title = "需求输入"
-    ws_input.append(["index", "requirement_text"])
-    for i, txt in enumerate(requirement_input, start=1):
-        ws_input.append([i, txt])
-
-    ws_req = wb.create_sheet("测试需求稿")
-    ws_req.append(["req_id", "title", "priority", "rat_scope", "persona_sources", "pass_fail", "kpi"])
-    for r in requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else []:
-        if not isinstance(r, dict):
-            continue
-        ws_req.append(
-            [
-                r.get("req_id", ""),
-                r.get("title", ""),
-                r.get("priority", ""),
-                _list_to_text(r.get("rat_scope", [])),
-                _list_to_text(r.get("persona_sources", [])),
-                _list_to_text((r.get("acceptance") or {}).get("pass_fail", [])),
-                _list_to_text((r.get("acceptance") or {}).get("kpi", [])),
-            ]
-        )
-
-    ws_review = wb.create_sheet("三人评审")
-    ws_review.append(["persona", "req_id", "issues", "open_questions", "rewrite_suggestion", "scores_json"])
-    for persona_key in ["spec", "carrier", "ux"]:
-        revs = ((persona_reviews.get(persona_key) or {}).get("reviews", []) if isinstance(persona_reviews, dict) else [])
-        for item in revs:
-            if not isinstance(item, dict):
-                continue
-            ws_review.append(
-                [
-                    persona_key,
-                    item.get("req_id", ""),
-                    _list_to_text(item.get("issues", [])),
-                    _list_to_text(item.get("open_questions", [])),
-                    item.get("rewrite_suggestion", ""),
-                    _safe_json(item.get("scores", {})),
-                ]
-            )
-
-    ws_design_obj = wb.create_sheet("测试设计目标")
-    ws_design_obj.append(["objective_id", "linked_reqs", "goal", "success_criteria", "evidence", "priority", "risk_notes"])
-    for o in test_design_spec.get("objectives", []) if isinstance(test_design_spec, dict) else []:
-        if not isinstance(o, dict):
-            continue
-        ws_design_obj.append(
-            [
-                o.get("objective_id", ""),
-                _list_to_text(o.get("linked_reqs", [])),
-                o.get("goal", ""),
-                _list_to_text(o.get("success_criteria", [])),
-                _list_to_text(o.get("evidence", [])),
-                o.get("priority", ""),
-                o.get("risk_notes", ""),
-            ]
-        )
-
-    ws_design_matrix = wb.create_sheet("测试设计矩阵")
-    ws_design_matrix.append(["row_id", "req_id", "objective_id", "scenario", "key_configuration", "pass_criteria", "recommended_test_environment", "availability_risk"])
-    for row in test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []:
-        if not isinstance(row, dict):
-            continue
-        env_text, risk_text = _format_test_environment_cell(row.get("test_environment"))
-        ws_design_matrix.append(
-            [
-                row.get("row_id", ""),
-                row.get("req_id", ""),
-                row.get("objective_id", ""),
-                row.get("scenario", ""),
-                _safe_json(row.get("key_configuration", {})),
-                _list_to_text(row.get("pass_criteria", [])),
-                env_text,
-                risk_text,
-            ]
-        )
-
-    ws_cases = wb.create_sheet("测试用例")
-    ws_cases.append(
-        [
-            "tc_id",
-            "objective_id",
-            "title",
-            "tags",
-            "preconditions",
-            "expected",
-            "pass_fail",
-            "recommended_test_environment",
-            "availability_risk",
-            "steps_count",
-            "must_capture",
-        ]
-    )
+    case_rows = []
     for tc in testcases:
         if not isinstance(tc, dict):
             continue
         env_text, risk_text = _format_test_environment_cell(tc.get("test_environment"))
-        ws_cases.append(
-            [
-                tc.get("tc_id", ""),
-                tc.get("objective_id", ""),
-                tc.get("title", ""),
-                ", ".join(tc.get("tags", [])),
-                _list_to_text(tc.get("preconditions", [])),
-                _list_to_text(tc.get("expected", [])),
-                _list_to_text(tc.get("pass_fail", [])),
-                env_text,
-                risk_text,
-                len(tc.get("steps", [])),
-                ", ".join((tc.get("observability") or {}).get("must_capture", [])),
-            ]
-        )
+        case_rows.append([
+            tc.get("tc_id", ""), tc.get("title", ""), tc.get("objective_id", ""),
+            _numbered(tc.get("preconditions", [])), _numbered(tc.get("expected", [])), _numbered(tc.get("pass_fail", [])),
+            env_text, risk_text, "、".join(str(x) for x in tc.get("tags", []) or []),
+        ])
+    _sheet("测试用例", [("用例编号", 14), ("用例标题", 40), ("测试目标", 12), ("前置条件", 40), ("预期结果", 50),
+                        ("通过标准", 50), ("测试环境", 18), ("环境风险", 30), ("标签", 18)], case_rows, first=True)
 
-    ws_answers = wb.create_sheet("问题确认记录")
-    ws_answers.append(["source_round", "req_id", "question", "answer"])
-    for item in requirement_review_history.get("answered_questions", []) if isinstance(requirement_review_history, dict) else []:
-        if not isinstance(item, dict):
+    matrix_rows = []
+    for row in test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []:
+        if not isinstance(row, dict):
             continue
-        ws_answers.append(
-            [
-                item.get("source_round", ""),
-                item.get("req_id", ""),
-                item.get("question", ""),
-                item.get("answer", ""),
-            ]
-        )
+        env_text, risk_text = _format_test_environment_cell(row.get("test_environment"))
+        matrix_rows.append([
+            row.get("row_id", ""), row.get("req_id", ""), row.get("objective_id", ""), row.get("scenario", ""),
+            _kv_text(row.get("key_configuration", {})), _numbered(row.get("pass_criteria", [])), env_text, risk_text,
+        ])
+    _sheet("测试设计矩阵", [("矩阵行", 12), ("需求", 12), ("测试目标", 12), ("测试场景", 45), ("关键配置", 40),
+                          ("通过标准", 45), ("测试环境", 18), ("环境风险", 30)], matrix_rows)
 
-    ws_steps = wb.create_sheet("用例步骤")
-    ws_steps.append(["tc_id", "step_index", "action", "params_json"])
-    for tc in testcases:
-        if not isinstance(tc, dict):
-            continue
-        tc_id = tc.get("tc_id", "")
-        for idx, step in enumerate(tc.get("steps", []), start=1):
-            if not isinstance(step, dict):
-                continue
-            ws_steps.append([tc_id, idx, step.get("action", ""), _safe_json(step.get("params", {}))])
+    obj_rows = []
+    for o in test_design_spec.get("objectives", []) if isinstance(test_design_spec, dict) else []:
+        if isinstance(o, dict):
+            obj_rows.append([
+                o.get("objective_id", ""), _list_to_text(o.get("linked_reqs", [])), o.get("goal", ""),
+                _numbered(o.get("success_criteria", [])), _numbered(o.get("evidence", [])), o.get("priority", ""), o.get("risk_notes", ""),
+            ])
+    _sheet("测试设计目标", [("测试目标", 12), ("关联需求", 14), ("目标", 45), ("成功标准", 45), ("证据", 35),
+                          ("优先级", 8), ("风险说明", 35)], obj_rows)
+
+    req_rows = []
+    for r in requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else []:
+        if isinstance(r, dict):
+            req_rows.append([
+                r.get("req_id", ""), r.get("title", ""), r.get("priority", ""), _list_to_text(r.get("rat_scope", [])),
+                _numbered((r.get("acceptance") or {}).get("pass_fail", [])), _numbered((r.get("acceptance") or {}).get("kpi", [])),
+            ])
+    _sheet("测试需求", [("需求编号", 12), ("需求标题", 45), ("优先级", 8), ("制式范围", 14), ("通过/失败判定", 50),
+                      ("KPI", 40)], req_rows)
+
+    answer_rows = [
+        [item.get("source_round", ""), item.get("req_id", ""), item.get("question", ""), item.get("answer", ""),
+         item.get("source", "用户")]
+        for item in (requirement_review_history.get("answered_questions", []) if isinstance(requirement_review_history, dict) else [])
+        if isinstance(item, dict)
+    ]
+    if answer_rows:
+        _sheet("问题确认记录", [("轮次", 8), ("需求", 12), ("问题", 50), ("确认结果", 50), ("确认方", 14)], answer_rows)
+
+    review_rows = []
+    for persona_key in ["spec", "carrier", "ux"]:
+        revs = ((persona_reviews.get(persona_key) or {}).get("reviews", []) if isinstance(persona_reviews, dict) else [])
+        for item in revs:
+            if isinstance(item, dict):
+                review_rows.append([persona_names[persona_key], item.get("req_id", ""), _numbered(item.get("issues", [])),
+                                    item.get("rewrite_suggestion", "")])
+    if review_rows:
+        _sheet("三人评审", [("评审角色", 12), ("需求", 12), ("发现的问题", 60), ("改写建议", 60)], review_rows)
 
     executable_cases = payload.executable_cases or {}
     trace_rows = executable_cases.get("traceability") or []
     if trace_rows:
-        ws_trace = wb.create_sheet("追溯矩阵")
-        ws_trace.append(["Bug ID", "需求 ID", "需求标题", "测试目标", "矩阵行", "用例 ID", "用例标题", "测试环境", "验收方案", "可执行 case"])
-        for r in trace_rows:
-            ws_trace.append([
-                _list_to_text(r.get("bug_ids")), _list_to_text(r.get("req_ids")), _list_to_text(r.get("req_titles")),
-                r.get("objective_id", ""), _list_to_text(r.get("row_ids")), r.get("tc_id", ""), r.get("tc_title", ""),
-                r.get("test_environment", ""), r.get("route_label", ""), _list_to_text(r.get("exec_case_ids")),
-            ])
+        _sheet("追溯矩阵", [("Bug ID", 12), ("需求 ID", 12), ("需求标题", 35), ("测试目标", 12), ("矩阵行", 12),
+                          ("用例 ID", 14), ("用例标题", 35), ("测试环境", 16), ("验收方案", 22), ("可执行 case", 16)], [
+            [_list_to_text(r.get("bug_ids")), _list_to_text(r.get("req_ids")), _list_to_text(r.get("req_titles")),
+             r.get("objective_id", ""), _list_to_text(r.get("row_ids")), r.get("tc_id", ""), r.get("tc_title", ""),
+             r.get("test_environment", ""), r.get("route_label", ""), _list_to_text(r.get("exec_case_ids"))]
+            for r in trace_rows
+        ])
 
-    ws_raw = wb.create_sheet("RawJSON")
-    ws_raw.append(["section", "json"])
-    ws_raw.append(["requirement_spec", _safe_json(requirement_spec)])
-    ws_raw.append(["persona_reviews", _safe_json(persona_reviews)])
-    ws_raw.append(["requirement_review_history", _safe_json(requirement_review_history)])
-    ws_raw.append(["test_design_spec", _safe_json(test_design_spec)])
-    ws_raw.append(["test_case_spec", _safe_json(test_case_spec)])
-    if executable_cases:
-        ws_raw.append(["executable_cases", _safe_json(executable_cases)])
+    if requirement_input:
+        _sheet("需求原文", [("序号", 8), ("需求原文", 120)], [[i, txt] for i, txt in enumerate(requirement_input, start=1)])
 
     stream = BytesIO()
     wb.save(stream)

@@ -137,7 +137,7 @@
           <header class="page-head">
             <div>
               <h2>测试需求评审</h2>
-              <p>三人格评审（规范 / 运营商 / 体验）后形成测试需求稿，补充 Open Questions 后可再迭代一轮。</p>
+              <p>三人格评审（规范 / 运营商 / 体验）后形成测试需求稿。大部分问题由 AI 按 3GPP 默认值和行业惯例自行确认，只有关键问题需要你回答。</p>
             </div>
           </header>
           <div class="card ui-card">
@@ -151,12 +151,12 @@
             <details class="raw-json"><summary>原始 JSON</summary><pre id="outReview" class="ui-pre"></pre></details>
           </div>
           <div class="card ui-card">
-            <div class="card-head"><h3>Open Questions（人工补充）</h3></div>
+            <div class="card-head"><h3>需要你确认的问题</h3><span class="feature-hint">只列 AI 无法自行判断的关键问题，留空即采纳 AI 建议</span></div>
             <div id="openQuestionsPanel" class="visual"></div>
           </div>
           <div class="action-bar">
             <button id="regenReqBtn" class="ui-btn ui-btn-secondary">再次生成（下一轮）</button>
-            <button id="genDesignBtn" class="ui-btn">生成测试设计稿</button>
+            <button id="genDesignBtn" class="ui-btn">生成测试设计稿 →</button>
           </div>
         </section>
 
@@ -175,7 +175,7 @@
             <details class="raw-json"><summary>原始 JSON</summary><pre id="outDesign" class="ui-pre"></pre></details>
           </div>
           <div class="action-bar">
-            <button id="genCasesBtn" class="ui-btn">生成测试用例稿</button>
+            <button id="genCasesBtn" class="ui-btn">生成测试用例稿 →</button>
           </div>
         </section>
 
@@ -190,6 +190,10 @@
           <div class="card ui-card">
             <div id="viewCases" class="visual"></div>
             <details class="raw-json"><summary>原始 JSON</summary><pre id="outCases" class="ui-pre"></pre></details>
+          </div>
+          <div class="action-bar">
+            <span class="action-hint">下一步：按测试环境把用例转成 Artemis / AT Agent / Amarisoft / 协议测试平台可执行的 case</span>
+            <button id="goExecCasesBtn" class="ui-btn">生成可执行用例 →</button>
           </div>
         </section>
 

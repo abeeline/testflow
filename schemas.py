@@ -176,7 +176,8 @@ PERSONA_REVIEW_SCHEMA = {
                     "rewrite_suggestion": {"type": "string"},
                     "scores": {"type": "object"},
                     "must_observe": {"type": "array", "items": {"type": "string"}},
-                    "open_questions": {"type": "array", "items": {"type": "string"}},
+                    # 字符串（旧格式）或 {question, priority, needs_user, ai_answer, basis}
+                    "open_questions": {"type": "array", "items": {"type": ["string", "object"]}},
                 },
             },
         }

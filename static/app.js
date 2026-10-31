@@ -3,6 +3,7 @@ const regenReqBtn = document.getElementById("regenReqBtn");
 const genDesignBtn = document.getElementById("genDesignBtn");
 const genCasesBtn = document.getElementById("genCasesBtn");
 const genExecCasesBtn = document.getElementById("genExecCasesBtn");
+const goExecCasesBtn = document.getElementById("goExecCasesBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsModal = document.getElementById("settingsModal");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
@@ -170,7 +171,7 @@ const TEST_ENVIRONMENT_OPTIONS = [
   },
 ];
 
-const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genExecCasesBtn];
+const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genExecCasesBtn, goExecCasesBtn];
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -605,17 +606,28 @@ function renderReviewProcess(reviews) {
   viewReview.innerHTML = html || "<em>暂无评审过程记录</em>";
 }
 
-function renderOpenQuestions(openQuestions = []) {
-  if (!openQuestions.length) {
-    openQuestionsPanel.innerHTML = "<em>当前无待人工确认问题。</em>";
-    return;
-  }
-  openQuestionsPanel.innerHTML = openQuestions
-    .map((q) => {
-      const key = `${q.req_id || "REQ"}::${q.question || ""}`;
-      return `<div class="oq-item"><div><strong>${esc(q.req_id || "")}</strong> ${esc(q.question || "")}</div><input class="oq-answer" data-key="${esc(key)}" type="text" placeholder="请输入你的确认/补充答案" /></div>`;
-    })
-    .join("");
+function renderOpenQuestions(openQuestions = [], autoConfirmed = []) {
+  const qItem = (q, auto) => {
+    const key = `${q.req_id || "REQ"}::${q.question || ""}`;
+    const pr = q.priority || "P1";
+    const meta = [q.req_id, (q.personas || []).join("/") ? `${(q.personas || []).join("/")}评审` : ""].filter(Boolean).join(" · ");
+    const hint = q.ai_answer
+      ? `<div class="oq-ai"><span>AI ${auto ? "已采用" : "建议"}：</span>${esc(q.ai_answer)}${q.basis ? `<em>（依据：${esc(q.basis)}）</em>` : ""}</div>`
+      : "";
+    const placeholder = auto ? "如需修改，填写你的答案（留空则保持 AI 的答案）" : (q.ai_answer ? "留空则采纳 AI 建议" : "请输入你的确认/补充答案");
+    return `<div class="oq-item"><div class="oq-q"><span class="prio prio-${esc(pr.toLowerCase())}">${esc(pr)}</span>${esc(q.question || "")}</div>
+      <div class="oq-meta">${esc(meta)}</div>${hint}
+      <input class="ui-input oq-answer" data-key="${esc(key)}" type="text" placeholder="${esc(placeholder)}" /></div>`;
+  };
+  const userHtml = openQuestions.length
+    ? openQuestions.map((q) => qItem(q, false)).join("")
+    : "<p class='feature-hint'>没有必须由你确认的问题，可以直接生成测试设计稿。</p>";
+  const autoHtml = autoConfirmed.length
+    ? `<details class="fold"><summary>AI 已自行确认 ${autoConfirmed.length} 个问题（按 3GPP 默认值 / 行业惯例，可修改）</summary>${autoConfirmed
+        .map((q) => qItem(q, true))
+        .join("")}</details>`
+    : "";
+  openQuestionsPanel.innerHTML = userHtml + autoHtml;
 }
 
 function collectOpenQuestionAnswers() {
@@ -650,12 +662,12 @@ function renderDocKeyValueTable(rows = []) {
 function renderAnsweredQuestionsTable(items = []) {
   const rows = Array.isArray(items) ? items.filter((x) => x && typeof x === "object") : [];
   if (!rows.length) return "<p>无</p>";
-  return `<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>用户确认/补充</th></tr></thead><tbody>${rows
+  return `<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>确认结果</th><th>确认方</th></tr></thead><tbody>${rows
     .map(
       (it) =>
         `<tr><td>${esc(it.source_round || "")}</td><td>${esc(it.req_id || "")}</td><td>${esc(it.question || "")}</td><td>${esc(
           it.answer || ""
-        )}</td></tr>`
+        )}</td><td>${esc(it.source || "用户")}</td></tr>`
     )
     .join("")}</tbody></table>`;
 }
@@ -1307,9 +1319,9 @@ async function generateRequirementsRound(round) {
   latestStructured.requirement_review_history = stageState.requirement_review_history;
 
   applyStageOutputs();
-  renderOpenQuestions(data.open_questions || []);
+  renderOpenQuestions(data.open_questions || [], data.auto_confirmed || []);
   if ((data.open_questions || []).length) {
-    pushSystemBotMessage(`测试需求评审 v${data.round} 已完成，当前有 ${data.open_questions.length} 个待确认问题，补充后可进入下一轮。`, { actionNeeded: true });
+    pushSystemBotMessage(`测试需求评审 v${data.round} 已完成：${data.open_questions.length} 个关键问题需要你确认，另有 ${(data.auto_confirmed || []).length} 个问题 AI 已自行确认。`, { actionNeeded: true });
   } else {
     pushSystemBotMessage(`测试需求评审 v${data.round} 已完成。`);
   }
@@ -1432,8 +1444,36 @@ function renderExecutableCases(data) {
 
   execCasesBundles.innerHTML = Object.keys(EXEC_ROUTE_FILES)
     .filter((r) => data.bundles[r])
-    .map((r) => `<details class="exec-bundle"><summary>${esc(labels[r] || r)}（${esc(EXEC_ROUTE_FILES[r])}）</summary><pre class="ui-pre">${esc(JSON.stringify(data.bundles[r], null, 2))}</pre></details>`)
+    .map((r) => `<details class="exec-bundle"><summary>${esc(labels[r] || r)}（${esc(EXEC_ROUTE_FILES[r])}）</summary>${
+      r === "protocol" ? renderProtocolPreview(data.bundles[r]) : ""
+    }<details class="raw-json"><summary>JSON</summary><pre class="ui-pre">${esc(JSON.stringify(data.bundles[r], null, 2))}</pre></details></details>`)
     .join("");
+}
+
+function renderProtocolPreview(bundle) {
+  const items = Array.isArray(bundle?.items) ? bundle.items : [];
+  const fmt = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : `${v ?? ""}`);
+  const shortPath = (p) => {
+    const parts = `${p || ""}`.split(".");
+    return parts.length > 3 ? `…${parts.slice(-3).join(".")}` : `${p || ""}`;
+  };
+  return items.map((it) => {
+    const msgs = Array.isArray(it.message_configs) ? it.message_configs : [];
+    const flow = Array.isArray(it.signaling_flow) ? it.signaling_flow : [];
+    const msgHtml = msgs.length
+      ? msgs.map((m) => `<div class="msg-config"><div class="msg-config-head"><span class="tag">${esc(m.msg_id || "")}</span><strong>${esc(m.message || "")}</strong>
+          <span class="dir dir-${esc((m.direction || "").toLowerCase())}">${esc(m.direction || "")}</span><span class="feature-hint">${esc(m.purpose || "")}</span></div>
+          <table class="ui-table"><thead><tr><th>IE 路径</th><th>取值</th><th>扫描参数</th><th>说明</th></tr></thead><tbody>${
+            (m.ies || []).map((ie) => `<tr><td title="${esc(ie.path || "")}"><code>${esc(shortPath(ie.path))}</code></td><td><code>${esc(fmt(ie.value))}</code></td><td>${esc(ie.vary || "")}</td><td>${esc(ie.note || "")}</td></tr>`).join("")
+          }</tbody></table></div>`).join("")
+      : "<p class='feature-hint'>未生成关键消息配置</p>";
+    const flowHtml = flow.length
+      ? `<ol class="sig-flow">${flow.map((f) => `<li><span class="dir dir-${esc((f.direction || "").toLowerCase())}">${esc(f.direction || "")}</span> <strong>${esc(f.message || "")}</strong>${
+          f.config_ref ? ` <span class="tag">${esc(f.config_ref)}</span>` : ""}${f.timing ? ` <span class="feature-hint">${esc(f.timing)}</span>` : ""}</li>`).join("")}</ol>`
+      : "";
+    return `<div class="proto-item"><h4>${esc(it.case_id || "")} ${esc(it.title || "")}</h4><p class="feature-hint">${esc(it.scenario || "")}</p>
+      <div class="proto-grid"><div><h5>信令流程</h5>${flowHtml}</div><div><h5>关键消息配置</h5>${msgHtml}</div></div></div>`;
+  }).join("");
 }
 
 async function generateExecCases() {
@@ -2116,6 +2156,11 @@ async function sendBotMessage() {
     setSingleButtonBusy(botSendBtn, false);
   }
 }
+
+goExecCasesBtn?.addEventListener("click", () => {
+  switchSheetById("sheet5");
+  genExecCasesBtn?.click();
+});
 
 // init
 initTheme();

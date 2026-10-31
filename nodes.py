@@ -592,6 +592,39 @@ class ReqParseNode(Node):
         return "default"
 
 
+_PRIORITIES = ("P0", "P1", "P2")
+
+
+def _normalize_review_questions(review: Any) -> None:
+    """把评审输出的 open_questions 统一成两份：
+    open_questions 保持字符串列表（页面、文档、Excel 都按字符串展示），
+    question_details 保存优先级、是否需要用户确认、AI 的默认答案，供问题分级使用。"""
+    if not isinstance(review, dict):
+        return
+    for item in review.get("reviews", []) or []:
+        if not isinstance(item, dict):
+            continue
+        details = []
+        for q in item.get("open_questions", []) or []:
+            if isinstance(q, str):
+                d = {"question": q.strip(), "priority": "P1", "needs_user": True, "ai_answer": "", "basis": ""}
+            elif isinstance(q, dict):
+                pr = str(q.get("priority") or "P1").upper().strip()
+                d = {
+                    "question": str(q.get("question") or q.get("q") or "").strip(),
+                    "priority": pr if pr in _PRIORITIES else "P1",
+                    "needs_user": q.get("needs_user") is not False and str(q.get("needs_user")).lower() != "false",
+                    "ai_answer": str(q.get("ai_answer") or q.get("assumption") or "").strip(),
+                    "basis": str(q.get("basis") or "").strip(),
+                }
+            else:
+                continue
+            if d["question"]:
+                details.append(d)
+        item["question_details"] = details
+        item["open_questions"] = [d["question"] for d in details]
+
+
 class TriPersonaReviewNode(AsyncNode):
     async def prep_async(self, shared):
         _set_current_node(shared, "TriPersonaReviewNode")
@@ -606,7 +639,8 @@ class TriPersonaReviewNode(AsyncNode):
                     "rewrite_suggestion": "补充可测量阈值、状态机前置条件与日志证据",
                     "scores": {"correctness_risk": 3, "testability_gap": 3, "ambiguity_level": 3},
                     "must_observe": r.get("observability", {}).get("must_capture", []),
-                    "open_questions": ["请确认通过/失败阈值"],
+                    "open_questions": [{"question": "请确认通过/失败阈值", "priority": "P1", "needs_user": True,
+                                        "ai_answer": "", "basis": ""}],
                 }
                 for r in requirements
             ]
@@ -640,6 +674,8 @@ class TriPersonaReviewNode(AsyncNode):
         raise RuntimeError("Use AsyncFlow.run_async for TriPersonaReviewNode")
 
     async def post_async(self, shared, prep_res, exec_res):
+        for review in exec_res.values():
+            _normalize_review_questions(review)
         validate_jsonschema(exec_res["spec"], PERSONA_REVIEW_SCHEMA)
         validate_jsonschema(exec_res["carrier"], PERSONA_REVIEW_SCHEMA)
         validate_jsonschema(exec_res["ux"], PERSONA_REVIEW_SCHEMA)
@@ -703,6 +739,11 @@ class TestDesignNode(Node):
             "final_requirements": shared["requirement_spec"].get("final_requirements", []),
             "questions_to_ask": shared["requirement_spec"].get("questions_to_ask", []),
             "assumptions": shared["requirement_spec"].get("assumptions", []),
+            "confirmed_answers": [
+                {"question": q.get("question", ""), "answer": q.get("answer", ""), "source": q.get("source", "用户")}
+                for q in ((shared.get("requirement_review_history") or {}).get("answered_questions") or [])
+                if isinstance(q, dict)
+            ],
             "persona_reviews": shared.get("persona_reviews", {}),
             "product_profile": shared.get("product_profile", {}),
             "test_environments": shared.get("test_environments", {}),
@@ -728,6 +769,7 @@ class TestDesignNode(Node):
                         "time_budget": "TBD",
                         "questions_to_ask": prep_res.get("questions_to_ask", []),
                         "assumptions": prep_res.get("assumptions", []),
+                        "confirmed_answers": prep_res.get("confirmed_answers", []),
                         "persona_reviews": prep_res.get("persona_reviews", {}),
                         "product_profile": prep_res.get("product_profile", {}),
                         "available_test_environments": prep_res.get("test_environments", {}),
@@ -875,6 +917,11 @@ class TestCaseBatchGenNode(AsyncNode):
             "test_environments": shared.get("test_environments", {}),
             "questions_to_ask": shared["requirement_spec"].get("questions_to_ask", []),
             "assumptions": shared["requirement_spec"].get("assumptions", []),
+            "confirmed_answers": [
+                {"question": q.get("question", ""), "answer": q.get("answer", ""), "source": q.get("source", "用户")}
+                for q in ((shared.get("requirement_review_history") or {}).get("answered_questions") or [])
+                if isinstance(q, dict)
+            ],
             "persona_reviews": shared.get("persona_reviews", {}),
             "supervisor_feedback": shared.get("testcase_supervisor_feedback", ""),
         }

@@ -496,3 +496,28 @@ html[data-theme="dark"] .theme-icon.moon, html[data-theme="light"] .theme-icon.s
 label .feature-hint { display: inline; margin: 0; font-weight: 400; font-size: 12px; }
 .env-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 .env-grid .feature-option strong { display: block; font-size: 13.5px; }
+.oq-q { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
+.oq-meta { margin: 2px 0 0 38px; font-size: 12px; color: var(--muted-foreground); }
+.oq-ai { margin: 6px 0 0 38px; padding: 6px 10px; border-radius: 6px; background: var(--primary-soft); font-size: 13px; }
+.oq-ai span { font-weight: 600; color: var(--primary); }
+.oq-ai em { color: var(--muted-foreground); font-style: normal; font-size: 12px; }
+.oq-item .oq-answer { margin: 8px 0 0 38px; width: calc(100% - 38px); }
+.prio { flex: none; min-width: 30px; text-align: center; padding: 1px 6px; border-radius: 5px; font-size: 11px; font-weight: 700; }
+.prio-p0 { background: var(--danger-soft); color: var(--danger); }
+.prio-p1 { background: var(--warning-soft); color: var(--warning); }
+.prio-p2 { background: var(--muted); color: var(--muted-foreground); }
+.action-bar .action-hint { margin-right: auto; align-self: center; color: var(--muted-foreground); font-size: 13px; }
+.proto-item { border-top: 1px solid var(--border); padding: 12px 0; }
+.proto-item:first-of-type { border-top: 0; }
+.proto-item h5 { margin: 8px 0 6px; font-size: 12px; color: var(--muted-foreground); }
+.proto-grid { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 16px; }
+.sig-flow { margin: 0; padding-left: 22px; font-size: 13px; }
+.sig-flow li { margin: 3px 0; }
+.msg-config { margin-bottom: 12px; }
+.msg-config-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.msg-config-head .tag { margin-left: 0; }
+.msg-config-head .feature-hint { margin: 0; }
+.dir { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+.dir-dl { background: var(--primary-soft); color: var(--primary); }
+.dir-ul { background: var(--success-soft); color: var(--success); }
+@media (max-width: 1080px) { .proto-grid { grid-template-columns: 1fr; } }

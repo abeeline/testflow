@@ -4,7 +4,7 @@
 - artemis:   手机实网系统测试，导出 Artemis 用例库格式（artemis-case-library v1, profile=flash）
 - at_agent:  模组 AT 实网测试，导出 AT Agent 用例库格式（artemis-case-library v1, profile=at）
 - amarisoft: Amarisoft 模拟基站，导出给 Amarisoft Agent 的 case（关键 PHY/协议参数 + 步骤 + 期望信令）
-- protocol:  协议分析仪 / 仿真仪表，导出协议流程测试需求（信令流程、IE、检查点），供 PRTest 后续落地
+- protocol:  协议分析仪 / 仿真仪表，导出协议流程测试需求（关键消息模板 + IE 覆盖值、信令流程、检查点），供 PRTest 后续落地
 """
 import asyncio
 import datetime as dt
@@ -32,6 +32,12 @@ ROUTE_PROMPTS = {
 }
 
 ROUTE_LIST_KEY = {"artemis": "cases", "at_agent": "cases", "amarisoft": "cases", "protocol": "items"}
+
+# 每次 LLM 调用处理的用例数。协议需求要逐条展开消息 IE，输出很长，分小批并行生成。
+ROUTE_BATCH_SIZE = {"artemis": 6, "at_agent": 6, "amarisoft": 3, "protocol": 2}
+
+# 各路线 item 至少要有的字段，缺了就让 LLM 重试。
+ROUTE_ITEM_REQUIRED = {"protocol": ["source_tc_id", "message_configs", "signaling_flow"]}
 
 MODULE_FORM_FACTORS = {"通信模组", "车载模组"}
 PHONE_FORM_FACTORS = {"智能手机", "功能手机", "穿戴产品"}
@@ -157,9 +163,10 @@ def _fallback_route_items(route: str, tcs: List[Dict[str, Any]]) -> List[Dict[st
                           "expected_signaling": [], "pass_criteria": tc.get("pass_fail") or [],
                           "logs_to_capture": (tc.get("observability") or {}).get("must_capture") or []})
         else:
-            items.append({**base, "scenario": title, "layers": [], "rat": "", "cell_config": {}, "signaling_flow": [],
+            items.append({**base, "scenario": title, "layers": [], "rat": "", "preconditions": tc.get("preconditions") or [],
+                          "cell_config": {}, "message_configs": [], "signaling_flow": [],
                           "parameter_variations": [], "checkpoints": [{"item": x, "expected": ""} for x in (tc.get("expected") or [])],
-                          "pass_criteria": tc.get("pass_fail") or [], "references": [], "open_points": ["LLM 未生成，需人工补充信令流程与关键 IE。"]})
+                          "pass_criteria": tc.get("pass_fail") or [], "references": [], "open_points": ["LLM 未生成，需人工补充关键消息配置与信令流程。"]})
     return items
 
 
@@ -217,7 +224,8 @@ def build_bundle(route: str, items: List[Dict[str, Any]], tc_index: Dict[str, Di
         out_items.append(entry)
     if route == "amarisoft":
         return {"format": "testflow-amarisoft-case", "version": 1, "exported_at": exported_at, "cases": out_items}
-    return {"format": "testflow-protocol-test-requirement", "version": 1, "exported_at": exported_at, "items": out_items}
+    # v2：新增 preconditions、message_configs（消息模板 + IE 路径/取值），signaling_flow 每步可用 config_ref 引用
+    return {"format": "testflow-protocol-test-requirement", "version": 2, "exported_at": exported_at, "items": out_items}
 
 
 def build_traceability(tcs: List[Dict[str, Any]], routes: Dict[str, str], bundles: Dict[str, Dict[str, Any]],
@@ -278,17 +286,27 @@ class ExecutableCaseNode(AsyncNode):
         for tc in tcs:
             groups[routes[str(tc.get("tc_id") or "")]].append(tc)
 
-        async def run_route(route: str, route_tcs: List[Dict[str, Any]]):
+        llm_slots = asyncio.Semaphore(4)  # 限制同时进行的 LLM 请求数，避免触发接口限流
+
+        async def run_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            async with llm_slots:
+                return await _run_batch(route, batch_tcs)
+
+        async def _run_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             list_key = ROUTE_LIST_KEY[route]
+            item_schema: Dict[str, Any] = {"type": "object"}
+            if route in ROUTE_ITEM_REQUIRED:
+                item_schema = {"type": "object", "required": ROUTE_ITEM_REQUIRED[route],
+                               "properties": {"message_configs": {"type": "array"}, "signaling_flow": {"type": "array"}}}
             schema = {"type": "object", "required": [list_key],
-                      "properties": {list_key: {"type": "array", "items": {"type": "object"}}}}
-            fallback = {list_key: _fallback_route_items(route, route_tcs)}
+                      "properties": {list_key: {"type": "array", "items": item_schema}}}
+            fallback = {list_key: _fallback_route_items(route, batch_tcs)}
             data = await asyncio.to_thread(
                 run_json_agent_with_retry,
                 shared=shared,
                 template_name=ROUTE_PROMPTS[route],
                 variables={
-                    "testcases_json": json.dumps([_tc_summary(tc) for tc in route_tcs], ensure_ascii=False),
+                    "testcases_json": json.dumps([_tc_summary(tc) for tc in batch_tcs], ensure_ascii=False),
                     "requirements_json": json.dumps(requirements, ensure_ascii=False),
                     "product_profile_json": json.dumps(prep_res["product_profile"].get("selected", {}), ensure_ascii=False),
                     "last_error": "",
@@ -300,12 +318,18 @@ class ExecutableCaseNode(AsyncNode):
             items = [x for x in data.get(list_key, []) if isinstance(x, dict)]
             # LLM 漏掉的用例用降级结果补上，保证每条用例都能落地。
             covered = {str(x.get("source_tc_id") or "") for x in items}
-            missing = [tc for tc in route_tcs if str(tc.get("tc_id") or "") not in covered]
+            missing = [tc for tc in batch_tcs if str(tc.get("tc_id") or "") not in covered]
             if missing and data is not fallback:
                 shared.setdefault("warnings", []).append(
                     f"ExecutableCaseNode-{route}: {len(missing)} 条用例未被 LLM 覆盖，已用降级结果补齐")
                 items.extend(_fallback_route_items(route, missing))
-            return route, items
+            return items
+
+        async def run_route(route: str, route_tcs: List[Dict[str, Any]]):
+            size = ROUTE_BATCH_SIZE.get(route, 5)
+            batches = [route_tcs[i:i + size] for i in range(0, len(route_tcs), size)]
+            parts = await asyncio.gather(*(run_batch(route, b) for b in batches))
+            return route, [item for part in parts for item in part]
 
         jobs = [run_route(r, g) for r, g in groups.items() if g]
         results = dict(await asyncio.gather(*jobs)) if jobs else {}
