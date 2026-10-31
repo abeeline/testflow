@@ -7,13 +7,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from pocketflow import AsyncFlow, AsyncParallelBatchFlow
+from exec_cases import ExecutableCaseNode
 from nodes import (
     AssembleResultNode,
     FinalizeTestCaseNode,
-    HarnessMapperNode,
     IntakeNode,
     ReqParseNode,
-    ScriptWriterNode,
     SynthesisNode,
     TestCaseBatchGenNode,
     TestCaseSupervisorNode,
@@ -51,8 +50,7 @@ def create_system_test_flow() -> AsyncFlow:
     cases_parallel = TestCaseParallelFlow(start=TestCaseBatchGenNode())
     cases_finalize = FinalizeTestCaseNode()
     case_sup = TestCaseSupervisorNode()
-    mapper = HarnessMapperNode()
-    writer = ScriptWriterNode()
+    exec_cases = ExecutableCaseNode()
     assemble = AssembleResultNode()
 
     intake >> req_parse >> tri >> synth >> design
@@ -60,7 +58,7 @@ def create_system_test_flow() -> AsyncFlow:
     design_sup - "retry" >> design
     design_sup >> cases_parallel >> cases_finalize >> case_sup
     case_sup - "retry" >> cases_parallel
-    case_sup >> mapper >> writer >> assemble
+    case_sup >> exec_cases >> assemble
     return AsyncFlow(start=intake)
 
 
@@ -90,8 +88,5 @@ def create_test_case_flow() -> AsyncFlow:
     return AsyncFlow(start=parallel)
 
 
-def create_script_flow() -> AsyncFlow:
-    mapper = HarnessMapperNode()
-    writer = ScriptWriterNode()
-    mapper >> writer
-    return AsyncFlow(start=mapper)
+def create_exec_case_flow() -> AsyncFlow:
+    return AsyncFlow(start=ExecutableCaseNode())

@@ -2,7 +2,7 @@ const runBtn = document.getElementById("runBtn");
 const regenReqBtn = document.getElementById("regenReqBtn");
 const genDesignBtn = document.getElementById("genDesignBtn");
 const genCasesBtn = document.getElementById("genCasesBtn");
-const genScriptsBtn = document.getElementById("genScriptsBtn");
+const genExecCasesBtn = document.getElementById("genExecCasesBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsModal = document.getElementById("settingsModal");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
@@ -19,9 +19,7 @@ const themeToggle = document.getElementById("themeToggle");
 const requirementsEl = document.getElementById("requirements");
 const ragEl = document.getElementById("rag");
 const capabilityEl = document.getElementById("capability");
-const capabilitiesJsonEl = document.getElementById("capabilitiesJson");
 const actionVocabEl = document.getElementById("actionVocab");
-const assertVocabEl = document.getElementById("assertVocab");
 const testEnvironmentOptionsEl = document.getElementById("testEnvironmentOptions");
 const productProfileGroupsEl = document.getElementById("productProfileGroups");
 const ragFileEl = document.getElementById("ragFile");
@@ -41,12 +39,17 @@ const outReq = document.getElementById("outReq");
 const outReview = document.getElementById("outReview");
 const outDesign = document.getElementById("outDesign");
 const outCases = document.getElementById("outCases");
-const outCode = document.getElementById("outCode");
-const agenticScriptMessages = document.getElementById("agenticScriptMessages");
-const agenticScriptInput = document.getElementById("agenticScriptInput");
-const agenticScriptSendBtn = document.getElementById("agenticScriptSendBtn");
-const agenticScriptApplyBtn = document.getElementById("agenticScriptApplyBtn");
-const agenticScriptClearBtn = document.getElementById("agenticScriptClearBtn");
+const execCasesSummary = document.getElementById("execCasesSummary");
+const execCasesTrace = document.getElementById("execCasesTrace");
+const execCasesBundles = document.getElementById("execCasesBundles");
+const bzUrlEl = document.getElementById("bzUrl");
+const bzKeyEl = document.getElementById("bzKey");
+const bzSaveBtn = document.getElementById("bzSaveBtn");
+const bzSettingsHint = document.getElementById("bzSettingsHint");
+const bzIdsEl = document.getElementById("bzIds");
+const bzExcludedEl = document.getElementById("bzExcluded");
+const bzFetchBtn = document.getElementById("bzFetchBtn");
+const bzResult = document.getElementById("bzResult");
 
 const viewReq = document.getElementById("viewReq");
 const viewReview = document.getElementById("viewReview");
@@ -78,8 +81,6 @@ let hitlStream = null;
 let hitlStreamJobId = "";
 let activeStageStream = null;
 let activeStageJobId = "";
-let agenticScriptHistory = [];
-let latestAgenticCode = "";
 let latestDesignDocUrl = "";
 let designHistoryItems = [];
 let selectedDesignHistoryId = "";
@@ -92,7 +93,8 @@ let stageState = {
   test_case_spec: null,
   round: 0,
   hitl_job_id: "",
-  script_spec: null,
+  executable_cases: null,
+  bug_ids: [],
   design_history_record_id: "",
   design_history_doc_url: "",
 };
@@ -156,7 +158,7 @@ const TEST_ENVIRONMENT_OPTIONS = [
   },
 ];
 
-const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genScriptsBtn];
+const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genExecCasesBtn];
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -558,84 +560,6 @@ function loadLastResult() {
     return raw ? JSON.parse(raw) : null;
   } catch (_) {
     return null;
-  }
-}
-
-function normalizeScriptContextText(text, maxLen = 6000) {
-  const s = String(text || "");
-  if (!s) return "";
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, maxLen)}\n... [truncated ${s.length - maxLen} chars]`;
-}
-
-function buildAgenticScriptContext() {
-  return {
-    requirement_input: normalizeScriptContextText(requirementsEl?.value || "", 2000),
-    test_case_spec_json: normalizeScriptContextText(outCases?.textContent || "", 12000),
-    current_script_code: normalizeScriptContextText(outCode?.textContent || "", 16000),
-  };
-}
-
-function extractLatestCodeBlock(text) {
-  const t = String(text || "");
-  const matches = [...t.matchAll(/```(?:python|py)?\s*([\s\S]*?)```/gi)];
-  if (!matches.length) return "";
-  const last = matches[matches.length - 1][1] || "";
-  return last.trim();
-}
-
-function renderAgenticScriptMessages() {
-  if (!agenticScriptMessages) return;
-  if (!agenticScriptHistory.length) {
-    agenticScriptMessages.innerHTML = `<div class="agentic-msg system">Agentic Coding 已就绪。你可以让 AI 生成/修改测试脚本，右侧联机调试结果会作为上下文用于 debug。</div>`;
-    return;
-  }
-  agenticScriptMessages.innerHTML = agenticScriptHistory
-    .map((m) => `<div class="agentic-msg ${m.role === "user" ? "user" : m.role === "assistant" ? "assistant" : "system"}">${esc(m.content || "")}</div>`)
-    .join("");
-  agenticScriptMessages.scrollTop = agenticScriptMessages.scrollHeight;
-}
-
-function pushAgenticScriptMessage(role, content) {
-  agenticScriptHistory.push({ role, content: String(content || "") });
-  const code = role === "assistant" ? extractLatestCodeBlock(content) : "";
-  if (code) latestAgenticCode = code;
-  renderAgenticScriptMessages();
-  persistCurrentState();
-}
-
-async function sendAgenticScriptMessage() {
-  const msg = (agenticScriptInput?.value || "").trim();
-  if (!msg) return;
-  pushAgenticScriptMessage("user", msg);
-  agenticScriptInput.value = "";
-  setSingleButtonBusy(agenticScriptSendBtn, true, "思考中...");
-  try {
-    const resp = await fetch("/api/agentic-coding/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: msg,
-        history: agenticScriptHistory.slice(-20),
-        context: buildAgenticScriptContext(),
-      }),
-    });
-    const text = await resp.text();
-    if (!resp.ok) {
-      let detail = text;
-      try {
-        detail = JSON.parse(text)?.detail || text;
-      } catch (_) {}
-      pushAgenticScriptMessage("system", `请求失败: ${detail}`);
-      return;
-    }
-    const data = JSON.parse(text);
-    const reply = String(data.reply || "").trim() || "未收到有效回复。";
-    pushAgenticScriptMessage("assistant", reply);
-  } catch (e) {
-    pushAgenticScriptMessage("system", `请求异常: ${e.message || e}`);
-  } finally {
-    setSingleButtonBusy(agenticScriptSendBtn, false);
   }
 }
 
@@ -1163,6 +1087,7 @@ function applyHistoryRecordToCurrentSession(record) {
   stageState.requirement_review_history = record.requirement_review_history || null;
   stageState.test_design_spec = record.test_design_spec || null;
   stageState.test_case_spec = record.test_case_spec || null;
+  stageState.executable_cases = record.executable_cases || null;
   stageState.design_history_record_id = record.record_id || "";
   stageState.design_history_doc_url = record.document_url || record.summary?.document_url || "";
   latestStructured = latestStructured || {};
@@ -1200,6 +1125,7 @@ function applyStageOutputs() {
     outCases.textContent = JSON.stringify(stageState.test_case_spec, null, 2);
     renderCases(stageState.test_case_spec);
   }
+  renderExecutableCases(stageState.executable_cases);
   refreshDesignDocumentLink();
 }
 
@@ -1208,17 +1134,12 @@ function restoreLastResultUI(snapshot) {
   requirementsEl.value = snapshot.form?.requirements || "";
   ragEl.value = snapshot.form?.rag || "";
   capabilityEl.value = snapshot.form?.framework_capability_catalog || "";
-  capabilitiesJsonEl.value = snapshot.form?.capabilities_json || "";
   actionVocabEl.value = snapshot.form?.action_vocab || "";
-  assertVocabEl.value = snapshot.form?.assert_vocab || "";
+  if (bzIdsEl) bzIdsEl.value = snapshot.form?.bz_ids || "";
+  if (bzExcludedEl) bzExcludedEl.value = snapshot.form?.bz_excluded || "";
   setSelectedTestEnvironments(snapshot.form?.test_environment_selected || []);
   setSelectedProductProfile(snapshot.form?.product_profile_selected || {});
   statusEl.textContent = snapshot.status || "已恢复上次结果";
-  outCode.textContent = snapshot.outputs?.test_code_reference || "";
-  agenticScriptHistory = Array.isArray(snapshot.outputs?.agentic_script_history) ? snapshot.outputs.agentic_script_history : [];
-  latestAgenticCode = snapshot.outputs?.agentic_latest_code || "";
-  if (agenticScriptInput) agenticScriptInput.value = snapshot.outputs?.agentic_draft_input || "";
-  renderAgenticScriptMessages();
 
   latestStructured = snapshot.artifacts_structured || null;
   stageState.round = snapshot.stage_state?.round || 0;
@@ -1228,7 +1149,8 @@ function restoreLastResultUI(snapshot) {
   stageState.requirement_review_history = snapshot.stage_state?.requirement_review_history || latestStructured?.requirement_review_history || null;
   stageState.test_design_spec = snapshot.stage_state?.test_design_spec || latestStructured?.test_design_spec || null;
   stageState.test_case_spec = snapshot.stage_state?.test_case_spec || latestStructured?.test_case_spec || null;
-  stageState.script_spec = snapshot.stage_state?.script_spec || latestStructured?.script_spec || null;
+  stageState.executable_cases = snapshot.stage_state?.executable_cases || latestStructured?.executable_cases || null;
+  stageState.bug_ids = Array.isArray(snapshot.stage_state?.bug_ids) ? snapshot.stage_state.bug_ids : [];
   stageState.design_history_record_id = snapshot.stage_state?.design_history_record_id || "";
   stageState.design_history_doc_url = snapshot.stage_state?.design_history_doc_url || "";
   ensureHitlStream(stageState.hitl_job_id);
@@ -1244,19 +1166,15 @@ function persistCurrentState(customStatus) {
       review_process: outReview.textContent || "",
       test_design: outDesign.textContent || "",
       test_cases: outCases.textContent || "",
-      test_code_reference: outCode.textContent || "",
-      agentic_script_history: agenticScriptHistory || [],
-      agentic_latest_code: latestAgenticCode || "",
-      agentic_draft_input: agenticScriptInput?.value || "",
     },
     stage_state: stageState,
     form: {
       requirements: requirementsEl.value,
       rag: ragEl.value,
       framework_capability_catalog: capabilityEl.value,
-      capabilities_json: capabilitiesJsonEl.value,
       action_vocab: actionVocabEl.value,
-      assert_vocab: assertVocabEl.value,
+      bz_ids: bzIdsEl?.value || "",
+      bz_excluded: bzExcludedEl?.value || "",
       test_environment_selected: getSelectedTestEnvironments().selected_ids,
       product_profile_selected: getSelectedProductProfile().selected,
     },
@@ -1446,30 +1364,117 @@ async function generateCases() {
   persistCurrentState();
 }
 
-async function generateScripts() {
-  if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
-  const productProfile = getSelectedProductProfile();
-  const testEnvironments = getSelectedTestEnvironments();
-  let capabilities = null;
-  if (capabilitiesJsonEl.value.trim()) {
-    capabilities = JSON.parse(capabilitiesJsonEl.value);
+const EXEC_ROUTE_FILES = {
+  artemis: "artemis-cases.json",
+  at_agent: "at-agent-cases.json",
+  amarisoft: "amarisoft-cases.json",
+  protocol: "protocol-test-requirements.json",
+};
+
+const EXEC_ROUTE_HINTS = {
+  artemis: "Artemis 验收测试中心 → 用例库 → 导入（artemis-case-library v1，profile=flash）",
+  at_agent: "AT Agent 验收测试中心 → 用例库 → 导入（artemis-case-library v1，profile=at）",
+  amarisoft: "交给 Amarisoft Agent：按 case 中的关键参数生成配置并控制模拟基站执行",
+  protocol: "协议流程测试需求：供 PRTest 后续编写 XML 信令参数与 Python 流程",
+};
+
+function downloadJson(filename, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderExecutableCases(data) {
+  if (!execCasesSummary) return;
+  if (!data || !data.bundles) {
+    execCasesSummary.innerHTML = "<em>尚未生成。完成测试用例后点击“生成可执行用例”。</em>";
+    execCasesTrace.innerHTML = "";
+    execCasesBundles.innerHTML = "";
+    return;
   }
-  const assertVocab = parseCSVLine(assertVocabEl.value);
-  const data = await startStageJobAndWait("scripts", {
-    requirement_spec: stageState.requirement_spec,
+  const labels = data.route_labels || {};
+  const summary = data.summary || {};
+  execCasesSummary.innerHTML = `<table class="ui-table"><thead><tr><th>验收方案</th><th>用例数</th><th>可执行 case 数</th><th>去向</th><th></th></tr></thead><tbody>${
+    Object.keys(EXEC_ROUTE_FILES).map((r) => {
+      const bundle = data.bundles[r];
+      const n = bundle ? (bundle.cases || bundle.items || []).length : 0;
+      return `<tr><td>${esc(labels[r] || r)}</td><td>${esc(summary[r] || 0)}</td><td>${n}</td><td>${esc(EXEC_ROUTE_HINTS[r])}</td><td>${
+        bundle ? `<button class="ui-btn ui-btn-secondary" type="button" data-exec-download="${r}">下载 JSON</button>` : ""
+      }</td></tr>`;
+    }).join("")
+  }</tbody></table>
+  <div class="btn-row"><button class="ui-btn ui-btn-secondary" type="button" data-exec-download="__all">下载全部（含追溯矩阵）</button></div>`;
+
+  const rows = Array.isArray(data.traceability) ? data.traceability : [];
+  execCasesTrace.innerHTML = rows.length
+    ? `<table class="ui-table"><thead><tr><th>Bug</th><th>需求</th><th>测试目标</th><th>用例</th><th>测试环境</th><th>验收方案</th><th>可执行 case</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td>${esc((r.bug_ids || []).join(", "))}</td><td>${esc((r.req_ids || []).join(", "))}<br/><span class="feature-hint">${esc((r.req_titles || []).join("；"))}</span></td><td>${esc(r.objective_id || "")}</td><td>${esc(r.tc_id || "")}<br/><span class="feature-hint">${esc(r.tc_title || "")}</span></td><td>${esc(r.test_environment || "")}</td><td>${esc(r.route_label || r.route || "")}</td><td>${esc((r.exec_case_ids || []).join(", "))}</td></tr>`).join("")
+      }</tbody></table>`
+    : "<em>无追溯数据</em>";
+
+  execCasesBundles.innerHTML = Object.keys(EXEC_ROUTE_FILES)
+    .filter((r) => data.bundles[r])
+    .map((r) => `<details class="exec-bundle"><summary>${esc(labels[r] || r)}（${esc(EXEC_ROUTE_FILES[r])}）</summary><pre class="ui-pre">${esc(JSON.stringify(data.bundles[r], null, 2))}</pre></details>`)
+    .join("");
+}
+
+async function generateExecCases() {
+  if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
+  const data = await startStageJobAndWait("exec_cases", {
+    requirement_spec: stageState.requirement_spec || {},
     test_case_spec: stageState.test_case_spec,
-    requirement_review_history: stageState.requirement_review_history || {},
-    capabilities,
-    assertion_vocabulary: assertVocab,
-    product_profile: productProfile,
-    test_environments: testEnvironments,
+    product_profile: getSelectedProductProfile(),
+    test_environments: getSelectedTestEnvironments(),
+    bug_ids: stageState.bug_ids || [],
+    history_record_id: stageState.design_history_record_id || "",
   });
+  stageState.executable_cases = data.executable_cases || null;
   latestStructured = latestStructured || {};
-  latestStructured.script_spec = data.script_spec;
-  stageState.script_spec = data.script_spec;
-  outCode.textContent = data.test_code_reference || "";
-  pushAgenticScriptMessage("system", "右侧脚本参考已更新：已生成最新自动化脚本参考，可继续提问进行定向修改。");
-  setStatus("测试脚本参考已生成。");
+  latestStructured.executable_cases = stageState.executable_cases;
+  renderExecutableCases(stageState.executable_cases);
+  const s = stageState.executable_cases?.summary || {};
+  setStatus(`可执行用例已生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` +
+    (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : ""));
+  pushSystemBotMessage("可执行用例已生成，可在“可执行用例”页按验收方案下载。");
+  persistCurrentState();
+}
+
+async function loadBugzillaSettings() {
+  if (!bzUrlEl) return;
+  const resp = await fetch("/api/bugzilla/settings");
+  if (!resp.ok) return;
+  const data = await resp.json();
+  bzUrlEl.value = data.url || "";
+  if (bzSettingsHint) bzSettingsHint.textContent = data.url ? (data.key_configured ? "已保存地址和 API Key" : "已保存地址（未配置 API Key）") : "未配置";
+}
+
+async function saveBugzillaSettings() {
+  const data = await postJson("/api/bugzilla/settings", { url: bzUrlEl.value, api_key: bzKeyEl.value });
+  bzKeyEl.value = "";
+  if (bzSettingsHint) bzSettingsHint.textContent = data.key_configured ? "已保存地址和 API Key" : "已保存地址（未配置 API Key）";
+  setStatus("Bugzilla 设置已保存");
+}
+
+async function fetchBugzillaRequirements() {
+  const ids = (bzIdsEl?.value || "").trim();
+  if (!ids) throw new Error("请填写 Bug 编号");
+  const data = await postJson("/api/bugzilla/fetch", { ids, excluded_authors: bzExcludedEl?.value || "" });
+  const bugs = Array.isArray(data.bugs) ? data.bugs : [];
+  bzResult.innerHTML = bugs.map((b) => b.status === "ok"
+    ? `<div>✓ <a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">BZ#${esc(b.id)}</a> ${esc(b.title || "")} <span class="feature-hint">${esc(b.product || "")} / ${esc(b.component || "")} · ${esc(b.bug_status || "")} · 评论 ${(b.comments || []).length} 条</span></div>`
+    : `<div>✗ ${esc(b.requested_id)}：${esc(b.error || "读取失败")}</div>`).join("");
+  if (data.requirement_text) {
+    const current = (requirementsEl.value || "").trim();
+    requirementsEl.value = current ? `${current}\n\n${data.requirement_text}` : data.requirement_text;
+  }
+  stageState.bug_ids = Array.from(new Set([...(stageState.bug_ids || []), ...(data.bug_ids || [])]));
+  setStatus(`已从 Bugzilla 导入 ${(data.bug_ids || []).length} 条需求，内容已追加到需求描述。`);
   persistCurrentState();
 }
 
@@ -1753,6 +1758,7 @@ async function downloadExcel() {
       requirement_review_history: stageState.requirement_review_history || latestStructured?.requirement_review_history || {},
       test_design_spec: stageState.test_design_spec || latestStructured?.test_design_spec || {},
       test_case_spec: latestStructured.test_case_spec,
+      executable_cases: stageState.executable_cases || null,
     }),
   });
   if (!resp.ok) throw new Error(await resp.text());
@@ -1874,18 +1880,52 @@ genCasesBtn.addEventListener("click", async () => {
   }
 });
 
-genScriptsBtn.addEventListener("click", async () => {
-  setSingleButtonBusy(genScriptsBtn, true, "生成中...");
-  stageButtons.filter((b) => b !== genScriptsBtn).forEach((b) => b && (b.disabled = true));
+genExecCasesBtn.addEventListener("click", async () => {
+  setSingleButtonBusy(genExecCasesBtn, true, "生成中...");
+  stageButtons.filter((b) => b !== genExecCasesBtn).forEach((b) => b && (b.disabled = true));
   try {
-    setStatus("正在生成测试脚本参考 ...");
-    await generateScripts();
+    setStatus("正在生成可执行用例 ...");
+    await generateExecCases();
     switchSheetById("sheet5");
   } catch (e) {
-    setStatus(`生成脚本失败: ${e.message}`);
+    setStatus(`生成可执行用例失败: ${e.message}`);
   } finally {
-    setSingleButtonBusy(genScriptsBtn, false);
-    stageButtons.filter((b) => b !== genScriptsBtn).forEach((b) => b && (b.disabled = false));
+    setSingleButtonBusy(genExecCasesBtn, false);
+    stageButtons.filter((b) => b !== genExecCasesBtn).forEach((b) => b && (b.disabled = false));
+  }
+});
+
+execCasesSummary?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-exec-download]");
+  const data = stageState.executable_cases;
+  if (!btn || !data?.bundles) return;
+  const route = btn.dataset.execDownload;
+  if (route === "__all") {
+    downloadJson("executable-cases.json", data);
+  } else if (data.bundles[route]) {
+    downloadJson(EXEC_ROUTE_FILES[route] || `${route}.json`, data.bundles[route]);
+  }
+});
+
+bzSaveBtn?.addEventListener("click", async () => {
+  setSingleButtonBusy(bzSaveBtn, true, "保存中...");
+  try {
+    await saveBugzillaSettings();
+  } catch (e) {
+    setStatus(`保存 Bugzilla 设置失败: ${e.message}`);
+  } finally {
+    setSingleButtonBusy(bzSaveBtn, false);
+  }
+});
+
+bzFetchBtn?.addEventListener("click", async () => {
+  setSingleButtonBusy(bzFetchBtn, true, "读取中...");
+  try {
+    await fetchBugzillaRequirements();
+  } catch (e) {
+    setStatus(`读取 Bugzilla 失败: ${e.message}`);
+  } finally {
+    setSingleButtonBusy(bzFetchBtn, false);
   }
 });
 
@@ -2016,36 +2056,6 @@ botInput?.addEventListener("keydown", (e) => {
   }
 });
 
-agenticScriptSendBtn?.addEventListener("click", () => {
-  sendAgenticScriptMessage().catch((e) => setStatus(`Agentic Coding 发送失败: ${e.message || e}`));
-});
-
-agenticScriptInput?.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-    e.preventDefault();
-    agenticScriptSendBtn?.click();
-  }
-});
-
-agenticScriptApplyBtn?.addEventListener("click", () => {
-  if (!latestAgenticCode) {
-    setStatus("未检测到可应用的代码块，请让 Agent 以 ```python ... ``` 输出代码。");
-    return;
-  }
-  outCode.textContent = latestAgenticCode;
-  setStatus("已将最新 Agentic Coding 代码应用到“脚本参考”。");
-  pushAgenticScriptMessage("system", "最新代码已应用到右侧“脚本参考”。");
-});
-
-agenticScriptClearBtn?.addEventListener("click", () => {
-  agenticScriptHistory = [];
-  latestAgenticCode = "";
-  if (agenticScriptInput) agenticScriptInput.value = "";
-  renderAgenticScriptMessages();
-  persistCurrentState();
-  setStatus("Agentic Coding 对话已清空。");
-});
-
 async function sendBotMessage() {
   const q = (botInput?.value || "").trim();
   if (!q) return;
@@ -2085,7 +2095,7 @@ renderTestEnvironmentOptions();
 renderProductProfileOptions();
 renderDesignHistoryDetail(null);
 restoreLastResultUI(loadLastResult());
-renderAgenticScriptMessages();
+loadBugzillaSettings().catch(() => {});
 fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`));
 
 window.addEventListener("beforeunload", () => {

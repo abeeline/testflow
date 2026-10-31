@@ -17,12 +17,13 @@ from pydantic import BaseModel, Field
 
 from flow import (
     create_requirement_analysis_flow,
-    create_script_flow,
+    create_exec_case_flow,
     create_system_test_flow,
     create_test_case_flow,
     create_test_design_flow,
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
+from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
 from utils.llm_client import LLMClient
 from utils.rag_store import SimpleRAGStore
 
@@ -49,6 +50,7 @@ class ExportTestCasesRequest(BaseModel):
     requirement_review_history: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Dict[str, Any]
+    executable_cases: Optional[Dict[str, Any]] = None
 
 
 class RAGUploadBase64Request(BaseModel):
@@ -64,12 +66,6 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: List[ChatTurn] = Field(default_factory=list)
-
-
-class AgenticCodingChatRequest(BaseModel):
-    message: str
-    history: List[ChatTurn] = Field(default_factory=list)
-    context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class RequirementRoundRequest(BaseModel):
@@ -108,6 +104,19 @@ class StageGenerateRequest(BaseModel):
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
     history_record_id: str = ""
+    bug_ids: Optional[List[str]] = None
+    route_overrides: Optional[Dict[str, str]] = None
+
+
+class BugzillaSettingsRequest(BaseModel):
+    url: str = Field(..., min_length=1)
+    api_key: str = ""
+    clear_key: bool = False
+
+
+class BugzillaFetchRequest(BaseModel):
+    ids: str = Field(..., min_length=1)
+    excluded_authors: str = ""
 
 
 app = FastAPI(title="PocketFlow System Test Agent Web")
@@ -116,6 +125,7 @@ static_dir = os.path.join(base_dir, "static")
 prompt_dir = Path(base_dir) / "prompts"
 design_history_dir = Path(base_dir) / "history" / "designs"
 rag_store = SimpleRAGStore(Path(base_dir) / "rag_data")
+bugzilla_settings = BugzillaSettings(Path(base_dir) / "config" / "bugzilla-settings.json")
 requirement_hitl_jobs: Dict[str, Dict[str, Any]] = {}
 stage_jobs: Dict[str, Dict[str, Any]] = {}
 ALLOWED_PROMPT_FILES = {
@@ -127,8 +137,10 @@ ALLOWED_PROMPT_FILES = {
     "test_designer.txt",
     "integrated_matrix_designer.txt",
     "test_case_generator.txt",
-    "harness_mapper.txt",
-    "script_writer.txt",
+    "exec_case_artemis.txt",
+    "exec_case_at_agent.txt",
+    "exec_case_amarisoft.txt",
+    "exec_case_protocol.txt",
 }
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -669,6 +681,33 @@ def _build_effective_rag_context(requirements: List[str], manual_rag_context: st
     return merged, hits
 
 
+@app.get("/api/bugzilla/settings")
+def bugzilla_get_settings():
+    return bugzilla_settings.public()
+
+
+@app.post("/api/bugzilla/settings")
+def bugzilla_save_settings(payload: BugzillaSettingsRequest):
+    try:
+        return bugzilla_settings.save(payload.url, payload.api_key, payload.clear_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/bugzilla/fetch")
+async def bugzilla_fetch(payload: BugzillaFetchRequest):
+    cfg = bugzilla_settings.read()
+    try:
+        bugs = await asyncio.to_thread(fetch_bugs, payload.ids, cfg, payload.excluded_authors)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "bugs": bugs,
+        "bug_ids": [b["id"] for b in bugs if b.get("status") == "ok"],
+        "requirement_text": bugs_to_requirement_text(bugs),
+    }
+
+
 @app.get("/api/rag/docs")
 def rag_docs():
     return {"docs": rag_store.list_docs()}
@@ -729,45 +768,6 @@ async def chat(payload: ChatRequest):
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
     return {"reply": reply}
 
-
-@app.post("/api/agentic-coding/chat")
-async def agentic_coding_chat(payload: AgenticCodingChatRequest):
-    message = (payload.message or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="message不能为空")
-
-    client = LLMClient()
-    if not client.enabled:
-        return {"reply": "LLM未配置。请先设置 LLM_API_BASE / LLM_API_KEY / LLM_MODEL。"}
-
-    history_lines: List[str] = []
-    for turn in (payload.history or [])[-12:]:
-        role = "用户" if turn.role == "user" else "助手"
-        txt = (turn.content or "").strip()
-        if txt:
-            history_lines.append(f"{role}: {txt}")
-    history_text = "\n".join(history_lines)
-
-    ctx = payload.context or {}
-    context_text = json.dumps(ctx, ensure_ascii=False, indent=2)
-    user_prompt = (
-        "你正在协助用户做测试脚本 Agentic Coding（生成、修改、debug）。\n"
-        "请优先结合给定上下文中的最新脚本与测试用例。\n"
-        "如果需要修改代码，请输出可直接替换的代码块（```python ... ```）。\n"
-        "如果是定位问题，请给出最小改动建议和原因。\n\n"
-        + (f"对话历史:\n{history_text}\n\n" if history_text else "")
-        + f"上下文:\n{context_text}\n\n"
-        + f"用户最新问题:\n{message}"
-    )
-    try:
-        reply = client.generate(
-            system_prompt="You are a senior test automation engineer for agentic coding. Be concrete and code-first.",
-            user_prompt=user_prompt,
-            temperature=0.2,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"agentic coding chat失败: {exc}")
-    return {"reply": reply}
 
 @app.post("/api/generate")
 async def generate(payload: GenerateRequest):
@@ -1176,27 +1176,38 @@ async def _run_stage_job(job_id: str):
                 "trace": shared.get("trace", []),
                 "design_history": _history_summary(history_record),
             }
-        elif stage == "scripts":
+        elif stage == "exec_cases":
             if not payload.test_case_spec:
                 raise HTTPException(status_code=400, detail="缺少test_case_spec")
             shared = {
+                "requirement_spec": payload.requirement_spec or {},
                 "test_case_spec": payload.test_case_spec,
                 "product_profile": payload.product_profile or {},
                 "test_environments": payload.test_environments or {},
-                "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
-                "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
+                "bug_ids": payload.bug_ids or [],
+                "route_overrides": payload.route_overrides or {},
                 "llm_client": LLMClient(),
                 "warnings": [],
                 "trace": [],
                 "event_queue": queue,
             }
-            flow = create_script_flow()
+            flow = create_exec_case_flow()
             await flow.run_async(shared)
+            executable_cases = shared.get("executable_cases", {})
+            history = None
+            if payload.history_record_id and _valid_history_record_id(payload.history_record_id):
+                try:
+                    record = _load_design_history_record(payload.history_record_id)
+                    record["executable_cases"] = executable_cases
+                    record["status"] = "exec_cases_completed"
+                    history = _history_summary(_write_design_history_record(record))
+                except HTTPException:
+                    history = None
             result = {
-                "script_spec": shared.get("script_spec", {}),
-                "test_code_reference": shared.get("test_code_reference", ""),
+                "executable_cases": executable_cases,
                 "warnings": shared.get("warnings", []),
                 "trace": shared.get("trace", []),
+                "design_history": history,
             }
         else:
             raise RuntimeError(f"不支持的stage: {stage}")
@@ -1225,14 +1236,14 @@ async def _run_stage_job(job_id: str):
 @app.post("/api/stage/{stage}/start")
 async def stage_start(stage: str, payload: StageGenerateRequest):
     stage_name = (stage or "").strip().lower()
-    if stage_name not in {"design", "testcases", "scripts"}:
-        raise HTTPException(status_code=400, detail="stage必须是design/testcases/scripts")
+    if stage_name not in {"design", "testcases", "exec_cases"}:
+        raise HTTPException(status_code=400, detail="stage必须是design/testcases/exec_cases")
 
     if stage_name == "design" and not payload.requirement_spec:
         raise HTTPException(status_code=400, detail="缺少requirement_spec")
     if stage_name == "testcases" and not payload.test_design_spec:
         raise HTTPException(status_code=400, detail="缺少test_design_spec")
-    if stage_name == "scripts" and not payload.test_case_spec:
+    if stage_name == "exec_cases" and not payload.test_case_spec:
         raise HTTPException(status_code=400, detail="缺少test_case_spec")
 
     job_id = uuid.uuid4().hex[:12]
@@ -1456,41 +1467,6 @@ async def testcases_generate(payload: StageGenerateRequest):
     }
 
 
-@app.post("/api/scripts/generate")
-async def scripts_generate(payload: StageGenerateRequest):
-    if not payload.test_case_spec:
-        raise HTTPException(status_code=400, detail="缺少test_case_spec")
-    shared = {
-        "test_case_spec": payload.test_case_spec,
-        "product_profile": payload.product_profile or {},
-        "test_environments": payload.test_environments or {},
-        "capabilities": payload.capabilities or DEFAULT_CAPABILITIES,
-        "assertion_vocabulary": payload.assertion_vocabulary or DEFAULT_ASSERTION_VOCABULARY,
-        "llm_client": LLMClient(),
-        "warnings": [],
-        "trace": [],
-    }
-    flow = create_script_flow()
-    try:
-        await flow.run_async(shared)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": str(exc),
-                "failed_node": shared.get("current_node"),
-                "trace": shared.get("trace", []),
-                "warnings": shared.get("warnings", []),
-            },
-        )
-    return {
-        "script_spec": shared.get("script_spec", {}),
-        "test_code_reference": shared.get("test_code_reference", ""),
-        "warnings": shared.get("warnings", []),
-        "trace": shared.get("trace", []),
-    }
-
-
 @app.post("/api/generate/stream")
 async def generate_stream(payload: GenerateRequest):
     reqs = [item.strip() for item in payload.requirements if item.strip()]
@@ -1617,8 +1593,10 @@ def _prompt_role_mapping() -> List[Dict[str, Any]]:
         {"role": "Test Designer", "node": "TestDesignNode", "prompt": "test_designer.txt"},
         {"role": "Integrated Matrix Designer", "node": "TestDesignNode", "prompt": "integrated_matrix_designer.txt"},
         {"role": "Test Case Generator", "node": "TestCaseGeneratorNode", "prompt": "test_case_generator.txt"},
-        {"role": "Harness Mapper", "node": "HarnessMapperNode", "prompt": "harness_mapper.txt"},
-        {"role": "Script Writer", "node": "ScriptWriterNode", "prompt": "script_writer.txt"},
+        {"role": "Artemis Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_artemis.txt"},
+        {"role": "AT Agent Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_at_agent.txt"},
+        {"role": "Amarisoft Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_amarisoft.txt"},
+        {"role": "Protocol Flow Requirement Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_protocol.txt"},
     ]
     out: List[Dict[str, Any]] = []
     for item in role_map:
@@ -1830,6 +1808,18 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                 continue
             ws_steps.append([tc_id, idx, step.get("action", ""), _safe_json(step.get("params", {}))])
 
+    executable_cases = payload.executable_cases or {}
+    trace_rows = executable_cases.get("traceability") or []
+    if trace_rows:
+        ws_trace = wb.create_sheet("追溯矩阵")
+        ws_trace.append(["Bug ID", "需求 ID", "需求标题", "测试目标", "矩阵行", "用例 ID", "用例标题", "测试环境", "验收方案", "可执行 case"])
+        for r in trace_rows:
+            ws_trace.append([
+                _list_to_text(r.get("bug_ids")), _list_to_text(r.get("req_ids")), _list_to_text(r.get("req_titles")),
+                r.get("objective_id", ""), _list_to_text(r.get("row_ids")), r.get("tc_id", ""), r.get("tc_title", ""),
+                r.get("test_environment", ""), r.get("route_label", ""), _list_to_text(r.get("exec_case_ids")),
+            ])
+
     ws_raw = wb.create_sheet("RawJSON")
     ws_raw.append(["section", "json"])
     ws_raw.append(["requirement_spec", _safe_json(requirement_spec)])
@@ -1837,6 +1827,8 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     ws_raw.append(["requirement_review_history", _safe_json(requirement_review_history)])
     ws_raw.append(["test_design_spec", _safe_json(test_design_spec)])
     ws_raw.append(["test_case_spec", _safe_json(test_case_spec)])
+    if executable_cases:
+        ws_raw.append(["executable_cases", _safe_json(executable_cases)])
 
     stream = BytesIO()
     wb.save(stream)
