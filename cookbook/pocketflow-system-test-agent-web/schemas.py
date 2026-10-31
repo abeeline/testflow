@@ -99,17 +99,6 @@ TESTCASE_REQUIRED_KEYS = [
     "trace",
 ]
 
-SCRIPTSPEC_REQUIRED_KEYS = [
-    "script_id",
-    "tc_id",
-    "harness",
-    "dependencies",
-    "inputs",
-    "actions_mapping",
-    "artifacts",
-    "timeouts",
-]
-
 DEFAULT_ACTION_VOCABULARY = [
     "SET_DEVICE_STATE",
     "SET_NETWORK_PROFILE",
@@ -130,7 +119,7 @@ DEFAULT_ASSERTION_VOCABULARY = [
 ]
 
 DEFAULT_CAPABILITIES = {
-    "harnesses": ["ANDROID_UIA", "PY_AT", "QXDM", "AMARISOFT_API"],
+    "harnesses": ["ARTEMIS", "AT_AGENT", "AMARISOFT_AGENT", "PROTOCOL_ANALYZER"],
     "actions_supported": {
         "SET_DEVICE_STATE": ["adb", "uia"],
         "TRIGGER_REGISTRATION": ["at", "adb"],
@@ -220,16 +209,6 @@ TESTCASE_SCHEMA = {
     "type": "object",
     "required": ["testcases"],
     "properties": {"testcases": {"type": "array", "items": {"type": "object"}}},
-}
-
-SCRIPT_PLAN_SCHEMA = {
-    "type": "object",
-    "required": ["scripts", "gaps", "recommended_framework_extensions"],
-    "properties": {
-        "scripts": {"type": "array", "items": {"type": "object"}},
-        "gaps": {"type": "array", "items": {"type": "string"}},
-        "recommended_framework_extensions": {"type": "array", "items": {"type": "string"}},
-    },
 }
 
 INTEGRATED_MATRIX_SCHEMA = {

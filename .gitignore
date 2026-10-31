@@ -85,4 +85,5 @@ usage.md
 cookbook/pocketflow-minimal-example/viz/flow_visualization.html
 cookbook/pocketflow-minimal-example/viz/flow_visualization.json
 cookbook/pocketflow-system-test-agent-web/history/
+cookbook/pocketflow-system-test-agent-web/config/
 .claude/

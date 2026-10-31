@@ -504,52 +504,14 @@ html[data-theme="light"] .theme-icon.sun {
   max-height: 220px;
 }
 
-.script-split {
-  display: grid;
-  grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
-  gap: 12px;
-}
-
-.script-left,
-.script-right {
-  min-width: 0;
-}
-
-.agentic-thread {
-  min-height: 320px;
-  max-height: 56vh;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
-  background: color-mix(in srgb, var(--muted) 30%, var(--card));
-}
-
-.agentic-msg {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 10px;
+.exec-bundle {
   margin-bottom: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.5;
 }
 
-.agentic-msg.user {
-  background: color-mix(in srgb, #93c5fd 18%, var(--card));
-}
-
-.agentic-msg.assistant {
-  background: color-mix(in srgb, #86efac 14%, var(--card));
-}
-
-.agentic-msg.system {
-  background: color-mix(in srgb, #fbbf24 16%, var(--card));
-}
-
-.agentic-msg code {
-  font-family: "Geist Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+.exec-bundle summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 6px 0;
 }
 
 @media (max-width: 1080px) {
@@ -569,10 +531,6 @@ html[data-theme="light"] .theme-icon.sun {
   .sheet-tabs {
     display: grid;
     grid-template-columns: 1fr 1fr;
-  }
-
-  .script-split {
-    grid-template-columns: 1fr;
   }
 }
 
@@ -949,10 +907,6 @@ html[data-theme="light"] .theme-icon.sun {
   .design-history-meta-grid {
     grid-template-columns: 1fr;
   }
-}
-
-.mbt-canvas {
-  height: 420px;
 }
 
 .split-editor {

@@ -6,12 +6,13 @@
 
 TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心目标：
 
-- 输入需求（单条完整需求描述）
+- 输入需求（需求描述、需求文档/RAG 资料、Bugzilla 研发需求/Bug）
 - 自动生成测试需求稿（含三人评审）
 - 生成测试设计稿（目标 + 覆盖矩阵 + 整合矩阵）
-- 生成测试用例稿与脚本参考
-- 支持 ADB / AT 串口联机调试与在线执行
-- 支持 ATSpec / Profile / EFSM/MBT 的配置编译与可视化
+- 生成测试用例稿
+- 按验收方案生成可直接执行的 JSON case，并输出追溯矩阵（Bug → 需求 → 用例 → 可执行 case）
+
+> AT 指令测试建模（ATSpec/EFSM/MBT）与 ADB/串口联机执行已移除，相关能力由独立的 AT agent 项目承担。
 
 ---
 
@@ -33,18 +34,24 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 - 自动生成标准测试设计文档（HTML），支持固定 URL 查看与分享
 - 可从历史记录重新载入当前会话，或继续生成测试用例
 
-### 3) 测试脚本与联机调试
+### 3) Bugzilla 需求接入
 
-- Agentic Coding 对话生成/修改脚本
-- Web ADB / Web Serial AT 两种自动化方式
-- 在线调试与在线执行
-- 设备发现接口：ADB 设备列表、串口列表
+- 需求准备页填写 Bugzilla 地址和 API Key（兼容 Bugzilla 5.x，带 key 时走 JSON-RPC，不把 key 放进 URL）
+- 按 Bug 编号读取标题、状态、描述和评论，可排除机器人等评论作者，内容追加到需求描述，Bug 编号进入追溯矩阵
+- 接口：`GET/POST /api/bugzilla/settings`、`POST /api/bugzilla/fetch`
 
-### 4) AT 测试 Agent
+### 4) 可执行用例（按验收方案分流）
 
-- 基准：3GPP 27.007 + 27.005（ATSpec）
-- 支持 Manifest（删减/策略）与 Extension（厂商自定义AT）
-- EFSM/MBT 编译输出 active 模型并可视化
+每条测试用例按测试环境自动分流（`/api/stage/exec_cases/start`）：
+
+| 验收方案 | 判定 | 导出格式 | 去向 |
+| --- | --- | --- | --- |
+| 实网手机 | 实网环境 + 手机类产品 | `artemis-case-library` v1，`profile=flash` | Artemis 用例库导入 |
+| 实网模组 / AT 指令 | 实网环境 + 模组类产品，或用例含 AT 指令 | `artemis-case-library` v1，`profile=at` | AT Agent 用例库导入 |
+| 模拟基站 | Amarisoft 环境 | `testflow-amarisoft-case` v1：关键 PHY/小区/核心网参数、步骤、期望信令、通过标准 | Amarisoft Agent 生成配置并执行 |
+| 协议流程 | 协议分析仪环境 | `testflow-protocol-test-requirement` v1：信令流程、关键 IE、参数组合、检查点、规范条款 | PRTest 后续编写 XML + Python |
+
+各路线提示词在 `prompts/exec_case_*.txt`，可在 Prompt Settings 中调整。LLM 不可用时会按用例内容生成降级 case，保证每条用例都有落地结果。
 
 ### 5) 数据导出
 
@@ -54,6 +61,7 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
   - 三人评审
   - 测试设计目标/矩阵
   - 测试用例/步骤
+  - 追溯矩阵（生成可执行用例后）
   - RawJSON
 
 ### 6) 测试设计历史目录

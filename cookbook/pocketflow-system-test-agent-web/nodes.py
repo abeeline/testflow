@@ -12,8 +12,6 @@ from schemas import (
     PERSONA_REVIEW_SCHEMA,
     REQUIREMENT_ITEM_SCHEMA,
     REQUIREMENT_LIST_SCHEMA,
-    SCRIPT_PLAN_SCHEMA,
-    SCRIPTSPEC_REQUIRED_KEYS,
     SYNTHESIS_SCHEMA,
     TESTCASE_REQUIRED_KEYS,
     TESTCASE_SCHEMA,
@@ -21,7 +19,7 @@ from schemas import (
     TEST_OBJECTIVE_REQUIRED_KEYS,
     INTEGRATED_MATRIX_SCHEMA,
 )
-from utils.agent_runner import run_json_agent_strict_with_retry, run_json_agent_with_retry, run_text_agent
+from utils.agent_runner import run_json_agent_strict_with_retry, run_json_agent_with_retry
 from utils.schema_validation import ensure_actions_in_vocabulary, validate_jsonschema, validate_list_of_dict
 
 
@@ -469,47 +467,6 @@ def _fallback_testcases_from_integrated(rows: List[Dict[str, Any]], available_en
             }
         )
     return out
-
-
-def _normalize_scripts(data: Dict[str, Any]) -> Dict[str, Any]:
-    scripts = data.get("scripts", [])
-    norm = []
-    for idx, sc in enumerate(scripts, start=1):
-        if not isinstance(sc, dict):
-            continue
-        mapping = sc.get("actions_mapping")
-        if not mapping:
-            raw_steps = (sc.get("mapping") or {}).get("steps", [])
-            mapping = []
-            for st in raw_steps:
-                if isinstance(st, dict):
-                    mapping.append(
-                        {
-                            "action": st.get("action", "CHECK"),
-                            "impl": st.get("method") or st.get("provider") or "framework_adapter",
-                        }
-                    )
-        harness_val = sc.get("harness")
-        if not harness_val:
-            harnesses = sc.get("harnesses") or []
-            harness_val = {"type": "+".join(harnesses) if harnesses else "ANDROID_UIA+PY_AT", "version": "v2"}
-        norm.append(
-            {
-                "script_id": sc.get("script_id") or f"SC-{idx:03d}",
-                "tc_id": sc.get("tc_id") or f"TC-{idx:03d}",
-                "harness": harness_val,
-                "dependencies": sc.get("dependencies") or ["adb", "uiautomator2", "pyserial"],
-                "inputs": sc.get("inputs") or {"device_id": "adb-serial", "at_port": "/dev/ttyUSB0"},
-                "actions_mapping": mapping or [],
-                "artifacts": sc.get("artifacts")
-                or {"collect": ["logcat.txt", "modem.log"], "naming": "by_tc_id_timestamp"},
-                "timeouts": sc.get("timeouts") or {"global_s": 900, "step_s": 60},
-            }
-        )
-    data["scripts"] = norm
-    data.setdefault("gaps", [])
-    data.setdefault("recommended_framework_extensions", [])
-    return data
 
 
 class IntakeNode(Node):
@@ -1177,116 +1134,6 @@ class TestCaseSupervisorNode(Node):
         return "default"
 
 
-class HarnessMapperNode(Node):
-    def prep(self, shared):
-        _set_current_node(shared, "HarnessMapperNode")
-        return {"testcases": shared["test_case_spec"].get("testcases", []), "capabilities": shared["capabilities"]}
-
-    def exec(self, prep_res):
-        fallback_scripts = []
-        for tc in prep_res["testcases"]:
-            fallback_scripts.append(
-                {
-                    "script_id": f"SC-{tc['tc_id']}",
-                    "tc_id": tc["tc_id"],
-                    "harness": {"type": "ANDROID_UIA+PY_AT", "version": "v2"},
-                    "dependencies": ["adb", "uiautomator2", "pyserial"],
-                    "inputs": {"device_id": "adb-serial", "at_port": "/dev/ttyUSB0"},
-                    "actions_mapping": [
-                        {"action": s["action"], "impl": "framework_adapter"} for s in tc.get("steps", [])
-                    ],
-                    "artifacts": {"collect": ["logcat.txt", "modem.log"], "naming": "by_tc_id_timestamp"},
-                    "timeouts": {"global_s": 900, "step_s": 60},
-                }
-            )
-        fallback = {"scripts": fallback_scripts, "gaps": [], "recommended_framework_extensions": []}
-
-        def _custom(data: Any):
-            if not isinstance(data.get("scripts", []), list):
-                raise ValueError("scripts must be a list")
-
-        data = run_json_agent_with_retry(
-            shared=self._shared,
-            template_name="harness_mapper.txt",
-            variables={
-                "testcases_json": json.dumps(prep_res["testcases"], ensure_ascii=False),
-                "capabilities_json": json.dumps(prep_res["capabilities"], ensure_ascii=False),
-                "return_schema": json.dumps(SCRIPT_PLAN_SCHEMA, ensure_ascii=False),
-                "output_schema": json.dumps(SCRIPT_PLAN_SCHEMA, ensure_ascii=False),
-            },
-            schema=SCRIPT_PLAN_SCHEMA,
-            fallback=fallback,
-            warn_tag="HarnessMapperNode",
-            custom_validator=_custom,
-        )
-        return _normalize_scripts(data)
-
-    def _run(self, shared):
-        self._shared = shared
-        return super()._run(shared)
-
-    def post(self, shared, prep_res, exec_res):
-        scripts = exec_res.get("scripts", [])
-        validate_list_of_dict(scripts, SCRIPTSPEC_REQUIRED_KEYS, "scripts")
-        shared["script_spec"] = exec_res
-        _trace(shared, "HarnessMapperNode")
-        _emit(shared, "module_result", {"module": "script_spec", "data": exec_res})
-        return "default"
-
-
-class ScriptWriterNode(Node):
-    def prep(self, shared):
-        _set_current_node(shared, "ScriptWriterNode")
-        return {"script_spec": shared["script_spec"], "assertion_vocabulary": shared["assertion_vocabulary"]}
-
-    def exec(self, prep_res):
-        fallback = """
-# 测试代码（参考）
-```python
-import json
-import time
-
-
-def run_case(inputs):
-    result = {"pass": True, "artifacts": []}
-    try:
-        time.sleep(1)
-        result["artifacts"].extend(["logcat.txt", "modem.log"])
-    except Exception as exc:
-        result["pass"] = False
-        result["error"] = str(exc)
-
-    with open("run_result.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-
-
-if __name__ == "__main__":
-    run_case({})
-```
-""".strip()
-
-        return run_text_agent(
-            shared=self._shared,
-            template_name="script_writer.txt",
-            variables={
-                "script_spec_json": json.dumps(prep_res["script_spec"], ensure_ascii=False),
-                "code_template": "Python pytest runner with adapters",
-            },
-            fallback=fallback,
-            warn_tag="ScriptWriterNode",
-        )
-
-    def _run(self, shared):
-        self._shared = shared
-        return super()._run(shared)
-
-    def post(self, shared, prep_res, exec_res):
-        shared["test_code_reference"] = exec_res
-        _trace(shared, "ScriptWriterNode")
-        _emit(shared, "module_result", {"module": "test_code_reference", "data": exec_res})
-        return "default"
-
-
 class AssembleResultNode(Node):
     def prep(self, shared):
         _set_current_node(shared, "AssembleResultNode")
@@ -1296,7 +1143,7 @@ class AssembleResultNode(Node):
         req_spec = prep_res.get("requirement_spec", {})
         design = prep_res.get("test_design_spec", {})
         case_spec = prep_res.get("test_case_spec", {})
-        script_spec = prep_res.get("script_spec", {})
+        executable_cases = prep_res.get("executable_cases", {})
         persona_reviews = prep_res.get("persona_reviews", {})
         questions = req_spec.get("questions_to_ask", [])
         assumptions = req_spec.get("assumptions", [])
@@ -1319,8 +1166,7 @@ class AssembleResultNode(Node):
                 "Synthesis & Decision",
                 "Test Design",
                 "Test Case Generation",
-                "Script Planning",
-                "Script Generation",
+                "Executable Case Export",
             ],
             "input": {
                 "requirements": [r.get("title", "") for r in req_spec.get("final_requirements", [])],
@@ -1334,14 +1180,14 @@ class AssembleResultNode(Node):
                 "persona_reviews": persona_reviews,
                 "test_design_spec": design,
                 "test_case_spec": case_spec,
-                "script_spec": script_spec,
+                "executable_cases": executable_cases,
             },
             "artifacts": {
                 "test_requirements": "\n".join(req_lines),
                 "review_process": json.dumps(persona_reviews, ensure_ascii=False, indent=2),
                 "test_design": json.dumps(design, ensure_ascii=False, indent=2),
                 "test_cases": json.dumps(case_spec, ensure_ascii=False, indent=2),
-                "test_code_reference": prep_res.get("test_code_reference", ""),
+                "executable_cases": json.dumps(executable_cases, ensure_ascii=False, indent=2),
             },
             "trace": prep_res.get("trace", []),
         }
