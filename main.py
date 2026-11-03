@@ -25,7 +25,8 @@ from flow import (
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
 from utils.llm_client import LLMClient, LLMSettings
-from utils.paths import CONFIG_DIR, HISTORY_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
+from utils.paths import CONFIG_DIR, HISTORY_DIR, PROJECTS_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
+from utils.project_store import DEFAULT_PROJECT_ID, ProjectStore, valid_project_id
 from utils.rag_store import SimpleRAGStore
 
 
@@ -48,6 +49,18 @@ class RAGUploadBase64Request(BaseModel):
     content_base64: str
 
 
+class ProjectRequest(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    product_profile_selected: Optional[Dict[str, List[str]]] = None
+    test_environment_ids: Optional[List[str]] = None
+
+
+class MoveHistoryRequest(BaseModel):
+    project_id: str = Field(..., min_length=1)
+
+
 class ChatTurn(BaseModel):
     role: str
     content: str
@@ -64,6 +77,7 @@ class RequirementHITLStartRequest(BaseModel):
     framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
     test_environments: Optional[Dict[str, Any]] = None
+    project_id: str = ""
 
 
 class RequirementHITLNextRequest(BaseModel):
@@ -83,6 +97,7 @@ class StageGenerateRequest(BaseModel):
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
     history_record_id: str = ""
+    project_id: str = ""
     bug_ids: Optional[List[str]] = None
     route_overrides: Optional[Dict[str, str]] = None
 
@@ -109,7 +124,8 @@ class BugzillaFetchRequest(BaseModel):
 app = FastAPI(title="TestFlow")
 static_dir = str(STATIC_DIR)
 design_history_dir = HISTORY_DIR
-rag_store = SimpleRAGStore(RAG_DIR)
+rag_store = SimpleRAGStore(RAG_DIR)  # 公共资料：所有项目共享
+project_store = ProjectStore(PROJECTS_DIR)
 bugzilla_settings = BugzillaSettings(CONFIG_DIR / "bugzilla-settings.json")
 requirement_hitl_jobs: Dict[str, Dict[str, Any]] = {}
 stage_jobs: Dict[str, Dict[str, Any]] = {}
@@ -187,11 +203,18 @@ def _history_meta_counts(record: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _record_project_id(record: Dict[str, Any]) -> str:
+    """升级前的历史记录没有 project_id，统一视为默认项目。"""
+    return project_store.resolve_id(str(record.get("project_id", "") or ""))
+
+
 def _history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
     counts = _history_meta_counts(record)
     record_id = str(record.get("record_id", ""))
     return {
         "record_id": record_id,
+        "project_id": _record_project_id(record),
+        "project_name": project_store.name_of(_record_project_id(record)),
         "title": record.get("title", "未命名测试设计"),
         "status": record.get("status", "design_completed"),
         "created_at": record.get("created_at", ""),
@@ -375,6 +398,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     integrated = test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec.get("integrated_matrix"), list) else []
     title = record.get("title") or _history_title(requirement_input, requirement_spec)
     updated_at = record.get("updated_at", "")
+    project_name = project_store.name_of(_record_project_id(record))
 
     req_rows = []
     for item in reqs:
@@ -506,7 +530,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
       </section>
       <section class="section">
         <h2>一、文档信息</h2>
-        {_render_html_kv_table([["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
+        {_render_html_kv_table([["项目/Product", project_name], ["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
       </section>
       <section class="section">
         <h2>二、需求输入与产品背景</h2>
@@ -573,6 +597,7 @@ def _upsert_design_history_record(
     warnings: Optional[Dict[str, Any]] = None,
     trace: Optional[Dict[str, Any]] = None,
     status: Optional[str] = None,
+    project_id: str = "",
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {}
     if record_id:
@@ -580,6 +605,8 @@ def _upsert_design_history_record(
             record = _load_design_history_record(record_id)
         except HTTPException:
             record = {"record_id": record_id}
+    # 已归档的记录保持原项目；新记录归到请求里的项目（未指定时为默认项目）
+    record["project_id"] = project_store.resolve_id(record.get("project_id") or project_id)
     record["requirement_input"] = requirement_input or record.get("requirement_input", []) or []
     record["requirement_spec"] = requirement_spec or record.get("requirement_spec", {}) or {}
     record["persona_reviews"] = persona_reviews or record.get("persona_reviews", {}) or {}
@@ -608,14 +635,17 @@ def _upsert_design_history_record(
     return _write_design_history_record(record)
 
 
-def _list_design_history_records() -> List[Dict[str, Any]]:
+def _list_design_history_records(project_id: str = "") -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for path in sorted(design_history_dir.glob("*/record.json"), reverse=True):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            items.append(_history_summary(record))
+            summary = _history_summary(record)
         except Exception:
             continue
+        if project_id and summary["project_id"] != project_id:
+            continue
+        items.append(summary)
     items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
     return items
 
@@ -626,8 +656,106 @@ def index():
 
 
 @app.get("/api/design-history")
-def list_design_history():
-    return {"items": _list_design_history_records()}
+def list_design_history(project_id: str = ""):
+    return {"items": _list_design_history_records(project_id.strip())}
+
+
+@app.post("/api/design-history/{record_id}/project")
+def move_design_history(record_id: str, payload: MoveHistoryRequest):
+    if not project_store.get(payload.project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    record = _load_design_history_record(record_id)
+    record["project_id"] = payload.project_id
+    return {"summary": _history_summary(_write_design_history_record(record))}
+
+
+# ---------- 项目 / Product ----------
+
+def _project_payload(project: Dict[str, Any], counts: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+    pid = project["project_id"]
+    return {
+        **project,
+        "design_count": (counts or {}).get(pid, 0),
+        "doc_count": len(project_store.rag_store(pid).list_docs()),
+    }
+
+
+def _design_counts_by_project() -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in _list_design_history_records():
+        counts[item["project_id"]] = counts.get(item["project_id"], 0) + 1
+    return counts
+
+
+def _require_project(project_id: str) -> Dict[str, Any]:
+    project = project_store.get(project_id) if valid_project_id(project_id) else None
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return project
+
+
+@app.get("/api/projects")
+def list_projects():
+    counts = _design_counts_by_project()
+    return {"items": [_project_payload(p, counts) for p in project_store.list()], "default_project_id": DEFAULT_PROJECT_ID}
+
+
+@app.post("/api/projects")
+def create_project(payload: ProjectRequest):
+    try:
+        project = project_store.create(payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"project": _project_payload(project)}
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str):
+    project = _require_project(project_id)
+    return {"project": _project_payload(project, _design_counts_by_project())}
+
+
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectRequest):
+    _require_project(project_id)
+    try:
+        project = project_store.update(project_id, payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"project": _project_payload(project, _design_counts_by_project())}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str):
+    _require_project(project_id)
+    count = _design_counts_by_project().get(project_id, 0)
+    if count:
+        raise HTTPException(status_code=409, detail=f"该项目下还有 {count} 条测试设计，请先移到其他项目再删除")
+    try:
+        project_store.delete(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"deleted": project_id}
+
+
+@app.get("/api/projects/{project_id}/docs")
+def list_project_docs(project_id: str):
+    _require_project(project_id)
+    return {"docs": project_store.rag_store(project_id).list_docs()}
+
+
+@app.post("/api/projects/{project_id}/docs")
+async def upload_project_doc(project_id: str, payload: RAGUploadBase64Request):
+    _require_project(project_id)
+    return {"uploaded": _ingest_upload(project_store.rag_store(project_id), payload)}
+
+
+@app.delete("/api/projects/{project_id}/docs/{doc_id}")
+def delete_project_doc(project_id: str, doc_id: str):
+    _require_project(project_id)
+    if not project_store.rag_store(project_id).delete_doc(doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"deleted": doc_id}
 
 
 @app.get("/api/design-history/{record_id}")
@@ -649,9 +777,17 @@ def get_design_history_document(record_id: str):
     return FileResponse(html_path, media_type="text/html", filename=f"{record.get('title', record_id)}-测试设计文档.html")
 
 
-def _build_effective_rag_context(requirements: List[str], manual_rag_context: str) -> tuple[str, List[Dict[str, Any]]]:
+def _build_effective_rag_context(
+    requirements: List[str], manual_rag_context: str, project_id: str = ""
+) -> tuple[str, List[Dict[str, Any]]]:
+    """检索范围 = 当前项目资料 + 公共资料，按得分合并取前 6 条。"""
     query = "\n".join(requirements).strip()
-    hits = rag_store.retrieve(query, top_k=6)
+    hits: List[Dict[str, Any]] = []
+    for scope, store in (("project", project_store.rag_store(project_id)), ("public", rag_store)):
+        for h in store.retrieve(query, top_k=6):
+            hits.append({**h, "scope": scope})
+    hits.sort(key=lambda x: x["score"], reverse=True)
+    hits = hits[:6]
     auto_context = ""
     if hits:
         lines = []
@@ -659,7 +795,7 @@ def _build_effective_rag_context(requirements: List[str], manual_rag_context: st
             text = (h.get("text", "") or "").strip()
             excerpt = text[:700]
             lines.append(
-                f"[RAG-{i}] doc={h.get('filename')} chunk={h.get('chunk_id')} score={h.get('score')}\n{excerpt}"
+                f"[RAG-{i}] {'项目资料' if h.get('scope') == 'project' else '公共资料'} doc={h.get('filename')} chunk={h.get('chunk_id')} score={h.get('score')}\n{excerpt}"
             )
         auto_context = "\n\n".join(lines)
 
@@ -733,8 +869,7 @@ def rag_docs():
     return {"docs": rag_store.list_docs()}
 
 
-@app.post("/api/rag/upload")
-async def rag_upload(payload: RAGUploadBase64Request):
+def _ingest_upload(store: SimpleRAGStore, payload: RAGUploadBase64Request) -> Dict[str, Any]:
     filename = (payload.filename or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="filename不能为空")
@@ -745,10 +880,21 @@ async def rag_upload(payload: RAGUploadBase64Request):
     if not content:
         raise HTTPException(status_code=400, detail="文件内容为空")
     try:
-        meta = rag_store.ingest_file(filename, content)
-        return {"uploaded": meta}
+        return store.ingest_file(filename, content)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"文档入库失败: {exc}")
+
+
+@app.post("/api/rag/upload")
+async def rag_upload(payload: RAGUploadBase64Request):
+    return {"uploaded": _ingest_upload(rag_store, payload)}
+
+
+@app.delete("/api/rag/docs/{doc_id}")
+def rag_delete(doc_id: str):
+    if not rag_store.delete_doc(doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"deleted": doc_id}
 
 
 @app.post("/api/chat")
@@ -908,7 +1054,7 @@ async def _run_requirement_hitl_job(job_id: str):
 
     try:
         for round_no in range(1, 4):
-            effective_rag_context, rag_hits = _build_effective_rag_context(reqs, rag_context)
+            effective_rag_context, rag_hits = _build_effective_rag_context(reqs, rag_context, job.get("project_id", ""))
             shared = {
                 "input_requirements": reqs,
                 "rag_context": effective_rag_context,
@@ -1051,6 +1197,7 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "round": 0,
         "requirements": reqs,
         "rag_context": payload.rag_context.strip(),
+        "project_id": project_store.resolve_id(payload.project_id),
         "framework_capability_catalog": framework_capability_catalog,
         "product_profile": payload.product_profile or {},
         "test_environments": payload.test_environments or {},
@@ -1170,6 +1317,7 @@ async def _run_stage_job(job_id: str):
                 warnings={"design": shared.get("warnings", [])},
                 trace={"design": shared.get("trace", [])},
                 status="design_completed",
+                project_id=payload.project_id,
             )
             result = {
                 "test_design_spec": shared.get("test_design_spec", {}),
@@ -1208,6 +1356,7 @@ async def _run_stage_job(job_id: str):
                 warnings={"testcases": shared.get("warnings", [])},
                 trace={"testcases": shared.get("trace", [])},
                 status="testcases_completed",
+                project_id=payload.project_id,
             )
             result = {
                 "test_case_spec": shared.get("test_case_spec", {}),
