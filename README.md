@@ -71,6 +71,7 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 - 项目资料：每个项目有自己的资料库，生成测试需求时自动检索“当前项目资料 + 公共资料”，命中片段标明来源
 - 测试设计历史默认只显示当前项目，可勾选“显示全部项目”，也可以把记录移到其他项目
 - 升级前的历史记录自动归到“默认项目”；默认项目不能删除，有测试设计的项目需先移走记录再删除
+- Dify 知识库：“系统设置 → 知识库”填 Dify 接口地址和公共知识库 App Key；每个项目可在项目页另配自己知识库的 App Key。生成测试需求时同时检索项目知识库、公共知识库和本地资料，某个知识库连不上不影响其他来源（接口：`GET/POST /api/settings/kb`、`POST /api/settings/kb/test`）
 - 接口：`GET/POST /api/projects`、`GET/PUT/DELETE /api/projects/{id}`、`GET/POST /api/projects/{id}/docs`、`DELETE /api/projects/{id}/docs/{doc_id}`、`POST /api/design-history/{id}/project`
 
 ### 7) 测试设计历史目录

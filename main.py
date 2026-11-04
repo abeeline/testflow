@@ -24,6 +24,7 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
+from utils.dify_kb import KBSettings, query_app as kb_query_app, retrieve as kb_retrieve
 from utils.llm_client import LLMClient, LLMSettings
 from utils.paths import CONFIG_DIR, HISTORY_DIR, PROJECTS_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
 from utils.project_store import DEFAULT_PROJECT_ID, ProjectStore, valid_project_id
@@ -55,6 +56,21 @@ class ProjectRequest(BaseModel):
     description: Optional[str] = None
     product_profile_selected: Optional[Dict[str, List[str]]] = None
     test_environment_ids: Optional[List[str]] = None
+    kb_api_key: Optional[str] = None
+    kb_clear_key: bool = False
+
+
+class KBSettingsRequest(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+    clear_key: bool = False
+    timeout: Optional[int] = None
+    max_query_chars: Optional[int] = None
+
+
+class KBTestRequest(KBSettingsRequest):
+    query: str = "测试连接"
+    project_id: str = ""
 
 
 class MoveHistoryRequest(BaseModel):
@@ -673,8 +689,10 @@ def move_design_history(record_id: str, payload: MoveHistoryRequest):
 
 def _project_payload(project: Dict[str, Any], counts: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     pid = project["project_id"]
+    public = {k: v for k, v in project.items() if k != "kb_api_key"}
     return {
-        **project,
+        **public,
+        "kb_key_configured": bool(project.get("kb_api_key")),
         "design_count": (counts or {}).get(pid, 0),
         "doc_count": len(project_store.rag_store(pid).list_docs()),
     }
@@ -777,6 +795,9 @@ def get_design_history_document(record_id: str):
     return FileResponse(html_path, media_type="text/html", filename=f"{record.get('title', record_id)}-测试设计文档.html")
 
 
+_SCOPE_LABELS = {"project": "项目资料", "public": "公共资料", "kb_project": "项目知识库", "kb_public": "公共知识库"}
+
+
 def _build_effective_rag_context(
     requirements: List[str], manual_rag_context: str, project_id: str = ""
 ) -> tuple[str, List[Dict[str, Any]]]:
@@ -788,6 +809,15 @@ def _build_effective_rag_context(
             hits.append({**h, "scope": scope})
     hits.sort(key=lambda x: x["score"], reverse=True)
     hits = hits[:6]
+    # Dify 知识库：项目知识库 + 公共知识库（未配置时跳过；失败不影响本地检索）
+    kb_cfg = KBSettings().read()
+    kb_hits, kb_errors = kb_retrieve(query, [
+        {"scope": "kb_project", "label": "项目知识库", "api_key": project_store.kb_api_key(project_id)},
+        {"scope": "kb_public", "label": "公共知识库", "api_key": kb_cfg["api_key"]},
+    ], cfg=kb_cfg, top_k=4)
+    hits.extend(kb_hits)
+    for err in kb_errors:
+        print(f"[kb] {err}")
     auto_context = ""
     if hits:
         lines = []
@@ -795,7 +825,7 @@ def _build_effective_rag_context(
             text = (h.get("text", "") or "").strip()
             excerpt = text[:700]
             lines.append(
-                f"[RAG-{i}] {'项目资料' if h.get('scope') == 'project' else '公共资料'} doc={h.get('filename')} chunk={h.get('chunk_id')} score={h.get('score')}\n{excerpt}"
+                f"[RAG-{i}] {_SCOPE_LABELS.get(h.get('scope'), '公共资料')} doc={h.get('filename')} chunk={h.get('chunk_id')} score={h.get('score')}\n{excerpt}"
             )
         auto_context = "\n\n".join(lines)
 
@@ -862,6 +892,44 @@ def llm_test_settings(payload: LLMSettingsRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True, "reply": reply[:80], "latency_ms": int((time.time() - started) * 1000)}
+
+
+@app.get("/api/settings/kb")
+def kb_get_settings():
+    return KBSettings().public()
+
+
+@app.post("/api/settings/kb")
+def kb_save_settings(payload: KBSettingsRequest):
+    settings = KBSettings()
+    try:
+        cfg = settings.merged(payload.base_url, payload.api_key, payload.clear_key, payload.timeout, payload.max_query_chars)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return settings.save(cfg)
+
+
+@app.post("/api/settings/kb/test")
+def kb_test_settings(payload: KBTestRequest):
+    """用表单里的值（未保存也可以）查一次；指定项目时查该项目的知识库，否则查公共知识库。"""
+    try:
+        cfg = KBSettings().merged(payload.base_url, payload.api_key, payload.clear_key, payload.timeout, payload.max_query_chars)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    key = project_store.kb_api_key(payload.project_id) if payload.project_id else cfg["api_key"]
+    if not cfg["base_url"] or not key:
+        raise HTTPException(status_code=400, detail="请填写接口地址和 App Key（项目测试需先在项目里配置 App Key）。")
+    started = time.time()
+    try:
+        res = kb_query_app(cfg["base_url"], key, (payload.query or "测试连接")[: cfg["max_query_chars"]], timeout=cfg["timeout"])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {
+        "ok": True,
+        "latency_ms": int((time.time() - started) * 1000),
+        "answer": res["answer"][:300],
+        "documents": sorted({str(r.get("document_name") or "") for r in res["resources"] if r.get("document_name")}),
+    }
 
 
 @app.get("/api/rag/docs")
@@ -1054,7 +1122,9 @@ async def _run_requirement_hitl_job(job_id: str):
 
     try:
         for round_no in range(1, 4):
-            effective_rag_context, rag_hits = _build_effective_rag_context(reqs, rag_context, job.get("project_id", ""))
+            effective_rag_context, rag_hits = await asyncio.to_thread(
+                _build_effective_rag_context, reqs, rag_context, job.get("project_id", "")
+            )
             shared = {
                 "input_requirements": reqs,
                 "rag_context": effective_rag_context,
