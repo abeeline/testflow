@@ -1,6 +1,6 @@
 """程序目录与数据目录。
 
-数据目录保存用户配置、设计历史、RAG 文档和修改过的 Prompt。默认就是程序目录；
+数据目录保存用户配置、项目、设计历史、RAG 文档和修改过的 Prompt。默认就是程序目录；
 Windows 发布包里 start.bat 会把它指到包内的 data\\ 目录，升级时整体拷走 data 即可。
 """
 import os
@@ -15,6 +15,7 @@ PROMPT_OVERRIDE_DIR = DATA_DIR / "config" / "prompts"
 CONFIG_DIR = DATA_DIR / "config"
 HISTORY_DIR = DATA_DIR / "history" / "designs"
 RAG_DIR = DATA_DIR / "rag_data"
+PROJECTS_DIR = DATA_DIR / "projects"
 
 
 def prompt_path(name: str) -> Path:

@@ -23,6 +23,11 @@
           <span id="llmStatusText">大模型未配置</span>
         </button>
 
+        <div class="project-switch">
+          <label for="projectSelect">当前项目 / Product</label>
+          <select id="projectSelect" class="project-select" title="新的测试设计会归到这个项目下"></select>
+        </div>
+
         <nav class="sheet-tabs" id="sheetTabs">
           <div class="nav-group-label">测试流程</div>
           <button class="sheet-tab active" data-sheet="sheet1"><span class="step-no">1</span>需求准备</button>
@@ -31,6 +36,7 @@
           <button class="sheet-tab" data-sheet="sheet4"><span class="step-no">4</span>测试用例</button>
           <button class="sheet-tab" data-sheet="sheet5"><span class="step-no">5</span>可执行用例</button>
           <div class="nav-group-label">资料</div>
+          <button class="sheet-tab" data-sheet="sheet9"><span class="step-no step-icon">▣</span>项目 / Product</button>
           <button class="sheet-tab" data-sheet="sheet8"><span class="step-no step-icon">◷</span>测试设计历史</button>
           <button class="sheet-tab" data-sheet="sheet6"><span class="step-no step-icon">⇢</span>流程可视化</button>
         </nav>
@@ -59,8 +65,8 @@
         <section class="sheet active" id="sheet1">
           <header class="page-head">
             <div>
-              <h2>需求准备</h2>
-              <p>填写一个完整需求（或从 Bugzilla 导入），勾选产品形态和可用测试环境后生成测试需求。</p>
+              <h2>需求准备 <span class="tag project-tag" id="currentProjectTag"></span></h2>
+              <p>填写一个完整需求（或从 Bugzilla 导入），勾选产品形态和可用测试环境后生成测试需求。测试设计会归档到当前项目，并自动检索该项目资料。</p>
             </div>
           </header>
 
@@ -97,10 +103,15 @@
 
             <details class="fold">
               <summary>参考资料（RAG）<span class="tag">可选</span></summary>
+              <p class="feature-hint">生成测试需求时会自动检索“当前项目资料 + 公共资料”，命中片段带入评审上下文。</p>
               <label for="rag">直接粘贴上下文</label>
               <textarea class="ui-input" id="rag" placeholder="例如：3GPP 条款、运营商验收口径、历史缺陷知识"></textarea>
               <label for="ragFile">或上传文档（txt / md / pdf）</label>
               <div class="btn-row">
+                <select id="ragTarget" class="ui-input rag-target">
+                  <option value="project">存入当前项目资料</option>
+                  <option value="public">存入公共资料（所有项目共享）</option>
+                </select>
                 <input id="ragFile" class="ui-input" type="file" multiple />
                 <button id="uploadRagBtn" class="ui-btn ui-btn-secondary" type="button">上传入库</button>
               </div>
@@ -201,9 +212,12 @@
           <header class="page-head">
             <div>
               <h2>测试设计历史</h2>
-              <p>每次完成测试设计都会归档，可查看固定链接文档、载入会话或继续生成用例。</p>
+              <p>每次完成测试设计都会归档到所属项目，可查看固定链接文档、载入会话或继续生成用例。</p>
             </div>
-            <button id="refreshDesignHistoryBtn" class="ui-btn ui-btn-secondary">刷新</button>
+            <div class="btn-row compact-row">
+              <label class="inline-check"><input id="designHistoryAllProjects" type="checkbox" /> 显示全部项目</label>
+              <button id="refreshDesignHistoryBtn" class="ui-btn ui-btn-secondary">刷新</button>
+            </div>
           </header>
           <div class="card ui-card">
             <div class="design-history-layout">
@@ -222,6 +236,79 @@
                 <div id="designHistoryMeta" class="visual"></div>
                 <div id="designHistoryVisual" class="visual"></div>
                 <details class="raw-json"><summary>原始 JSON</summary><pre id="designHistoryJson" class="ui-pre"></pre></details>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheet9">
+          <header class="page-head">
+            <div>
+              <h2>项目 / Product</h2>
+              <p>每个测试设计都归属一个项目。项目保存默认的产品特性和测试环境，并有自己的资料库，测试设计时自动检索。</p>
+            </div>
+            <button id="newProjectBtn" class="ui-btn">＋ 新建项目</button>
+          </header>
+          <div class="card ui-card">
+            <div class="design-history-layout">
+              <div class="design-history-list-panel">
+                <div id="projectList" class="visual"></div>
+              </div>
+              <div class="design-history-detail-panel">
+                <div class="row-head">
+                  <h4 id="projectFormTitle">新建项目</h4>
+                  <div class="btn-row compact-row">
+                    <button id="useProjectBtn" class="ui-btn ui-btn-secondary" type="button">设为当前项目</button>
+                    <button id="deleteProjectBtn" class="ui-btn ui-btn-ghost danger-text" type="button">删除</button>
+                  </div>
+                </div>
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="projectName">项目 / Product 名称</label>
+                    <input id="projectName" class="ui-input" type="text" maxlength="80" placeholder="例如：X55 5G 模组" />
+                  </div>
+                  <div class="field">
+                    <label for="projectCode">编号 <span class="feature-hint">可选，如型号或项目代号</span></label>
+                    <input id="projectCode" class="ui-input" type="text" maxlength="40" placeholder="例如：X55-EU" />
+                  </div>
+                </div>
+                <label for="projectDesc">说明</label>
+                <textarea id="projectDesc" class="ui-input" maxlength="2000" placeholder="产品定位、目标运营商、版本、平台芯片等"></textarea>
+                <div class="field">
+                  <label for="projectKbKey">项目知识库 App Key <span id="projectKbHint" class="feature-hint">可选，Dify 里该项目知识库对应的应用</span></label>
+                  <div class="btn-row compact-row">
+                    <input id="projectKbKey" class="ui-input" type="password" placeholder="app-...（留空则沿用已保存的）" autocomplete="off" />
+                    <button id="projectKbTestBtn" class="ui-btn ui-btn-secondary" type="button">测试</button>
+                    <button id="projectKbClearBtn" class="ui-btn ui-btn-ghost" type="button">清除</button>
+                  </div>
+                  <div id="projectKbResult" class="test-result hidden"></div>
+                </div>
+                <div class="field">
+                  <label>默认产品特性与测试环境 <span class="feature-hint">切换到该项目时自动勾选到“需求准备”页</span></label>
+                  <div id="projectDefaults" class="visual"></div>
+                  <label class="inline-check"><input id="projectCaptureDefaults" type="checkbox" /> 保存时用“需求准备”页当前的勾选作为默认值</label>
+                </div>
+                <div class="btn-row">
+                  <button id="saveProjectBtn" class="ui-btn" type="button">保存</button>
+                </div>
+
+                <div id="projectDocsSection" class="settings-section">
+                  <div class="row-head">
+                    <h4>项目资料</h4>
+                    <span id="projectDocsHint" class="feature-hint"></span>
+                  </div>
+                  <p class="feature-hint">放这个项目相关的规格书、运营商需求、Feature List、历史问题等（txt / md / csv / json / pdf）。测试设计时自动检索。</p>
+                  <div class="btn-row">
+                    <input id="projectDocFile" class="ui-input" type="file" multiple />
+                    <button id="uploadProjectDocBtn" class="ui-btn ui-btn-secondary" type="button">上传入库</button>
+                  </div>
+                  <div id="projectDocs" class="visual"></div>
+                </div>
+
+                <div id="projectDesignsSection" class="settings-section">
+                  <h4>该项目的测试设计</h4>
+                  <div id="projectDesigns" class="visual"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -277,6 +364,7 @@
         </div>
         <div class="settings-tabs" role="tablist">
           <button class="settings-tab active" data-settings-tab="llm" type="button">大模型</button>
+          <button class="settings-tab" data-settings-tab="kb" type="button">知识库</button>
           <button class="settings-tab" data-settings-tab="bugzilla" type="button">Bugzilla</button>
           <button class="settings-tab" data-settings-tab="prompts" type="button">Prompt 模板</button>
         </div>
@@ -306,6 +394,38 @@
             <button id="llmSaveBtn" class="ui-btn" type="button">保存</button>
             <button id="llmTestBtn" class="ui-btn ui-btn-secondary" type="button">测试连接</button>
             <button id="llmClearKeyBtn" class="ui-btn ui-btn-ghost" type="button">清除 API Key</button>
+          </div>
+        </div>
+
+        <div class="settings-pane" data-settings-pane="kb">
+          <p class="feature-hint">接入内网 Dify 知识库（文本生成应用，输入变量名 <code>query</code>）。这里的 App Key 对应公共知识库；每个项目可在“项目 / Product”页另配自己知识库的 App Key。生成测试需求时同时检索“项目知识库 + 公共知识库 + 本地资料”。</p>
+          <div class="field">
+            <label for="kbBaseUrl">Dify 接口地址</label>
+            <input id="kbBaseUrl" class="ui-input" type="text" placeholder="http://dify.example.com/v1" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="kbApiKey">公共知识库 App Key <span id="kbKeyHint" class="feature-hint"></span></label>
+            <input id="kbApiKey" class="ui-input" type="password" placeholder="app-...（留空则沿用已保存的）" autocomplete="off" />
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="kbTimeout">超时（秒）</label>
+              <input id="kbTimeout" class="ui-input" type="number" min="5" max="300" step="5" value="60" />
+            </div>
+            <div class="field">
+              <label for="kbMaxQuery">查询最大字数 <span class="feature-hint">需求太长时截断，需不超过 Dify 应用里 query 变量的长度上限</span></label>
+              <input id="kbMaxQuery" class="ui-input" type="number" min="20" max="8000" step="50" value="500" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="kbTestQuery">测试查询</label>
+            <input id="kbTestQuery" class="ui-input" type="text" value="查询移动性测试场景" />
+          </div>
+          <div id="kbTestResult" class="test-result hidden"></div>
+          <div class="btn-row">
+            <button id="kbSaveBtn" class="ui-btn" type="button">保存</button>
+            <button id="kbTestBtn" class="ui-btn ui-btn-secondary" type="button">测试公共知识库</button>
+            <button id="kbClearKeyBtn" class="ui-btn ui-btn-ghost" type="button">清除 App Key</button>
           </div>
         </div>
 

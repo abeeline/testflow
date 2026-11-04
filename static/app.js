@@ -81,9 +81,51 @@ const designHistoryJson = document.getElementById("designHistoryJson");
 const designHistoryDocLink = document.getElementById("designHistoryDocLink");
 const designHistoryLoadBtn = document.getElementById("designHistoryLoadBtn");
 const designHistoryCasesBtn = document.getElementById("designHistoryCasesBtn");
+const designHistoryAllProjects = document.getElementById("designHistoryAllProjects");
+const ragTargetEl = document.getElementById("ragTarget");
+const projectSelect = document.getElementById("projectSelect");
+const currentProjectTag = document.getElementById("currentProjectTag");
+const projectListEl = document.getElementById("projectList");
+const projectFormTitle = document.getElementById("projectFormTitle");
+const projectNameEl = document.getElementById("projectName");
+const projectCodeEl = document.getElementById("projectCode");
+const projectDescEl = document.getElementById("projectDesc");
+const projectDefaultsEl = document.getElementById("projectDefaults");
+const projectCaptureDefaultsEl = document.getElementById("projectCaptureDefaults");
+const newProjectBtn = document.getElementById("newProjectBtn");
+const saveProjectBtn = document.getElementById("saveProjectBtn");
+const useProjectBtn = document.getElementById("useProjectBtn");
+const deleteProjectBtn = document.getElementById("deleteProjectBtn");
+const projectDocsSection = document.getElementById("projectDocsSection");
+const projectDocsHint = document.getElementById("projectDocsHint");
+const projectDocFileEl = document.getElementById("projectDocFile");
+const uploadProjectDocBtn = document.getElementById("uploadProjectDocBtn");
+const projectDocsEl = document.getElementById("projectDocs");
+const projectDesignsSection = document.getElementById("projectDesignsSection");
+const projectDesignsEl = document.getElementById("projectDesigns");
+const projectKbKeyEl = document.getElementById("projectKbKey");
+const projectKbHint = document.getElementById("projectKbHint");
+const projectKbTestBtn = document.getElementById("projectKbTestBtn");
+const projectKbClearBtn = document.getElementById("projectKbClearBtn");
+const projectKbResult = document.getElementById("projectKbResult");
+const kbBaseUrlEl = document.getElementById("kbBaseUrl");
+const kbApiKeyEl = document.getElementById("kbApiKey");
+const kbKeyHint = document.getElementById("kbKeyHint");
+const kbTimeoutEl = document.getElementById("kbTimeout");
+const kbMaxQueryEl = document.getElementById("kbMaxQuery");
+const kbTestQueryEl = document.getElementById("kbTestQuery");
+const kbTestResult = document.getElementById("kbTestResult");
+const kbSaveBtn = document.getElementById("kbSaveBtn");
+const kbTestBtn = document.getElementById("kbTestBtn");
+const kbClearKeyBtn = document.getElementById("kbClearKeyBtn");
 
 const LAST_RESULT_KEY = "pocketflow_last_result_v2";
 const THEME_KEY = "pocketflow_theme";
+const CURRENT_PROJECT_KEY = "testflow_current_project";
+const DEFAULT_PROJECT_ID = "default";
+let projects = [];
+let currentProjectId = DEFAULT_PROJECT_ID;
+let editingProjectId = "";
 let promptCache = {};
 let latestStructured = null;
 let botHistory = [];
@@ -610,7 +652,8 @@ function renderOpenQuestions(openQuestions = [], autoConfirmed = []) {
   const qItem = (q, auto) => {
     const key = `${q.req_id || "REQ"}::${q.question || ""}`;
     const pr = q.priority || "P1";
-    const meta = [q.req_id, (q.personas || []).join("/") ? `${(q.personas || []).join("/")}评审` : ""].filter(Boolean).join(" · ");
+    const kbTag = q.kb_status === "resolved" ? "知识库已确认" : q.kb_status === "conflict" ? "资料冲突，需确认" : "";
+    const meta = [q.req_id, (q.personas || []).join("/") ? `${(q.personas || []).join("/")}评审` : "", kbTag].filter(Boolean).join(" · ");
     const hint = q.ai_answer
       ? `<div class="oq-ai"><span>AI ${auto ? "已采用" : "建议"}：</span>${esc(q.ai_answer)}${q.basis ? `<em>（依据：${esc(q.basis)}）</em>` : ""}</div>`
       : "";
@@ -623,7 +666,7 @@ function renderOpenQuestions(openQuestions = [], autoConfirmed = []) {
     ? openQuestions.map((q) => qItem(q, false)).join("")
     : "<p class='feature-hint'>没有必须由你确认的问题，可以直接生成测试设计稿。</p>";
   const autoHtml = autoConfirmed.length
-    ? `<details class="fold"><summary>AI 已自行确认 ${autoConfirmed.length} 个问题（按 3GPP 默认值 / 行业惯例，可修改）</summary>${autoConfirmed
+    ? `<details class="fold"><summary>AI 已自行确认 ${autoConfirmed.length} 个问题（${autoConfirmed.filter((q) => q.kb_status === "resolved").length} 个有知识库依据，其余按 3GPP 默认值 / 行业惯例，可修改）</summary>${autoConfirmed
         .map((q) => qItem(q, true))
         .join("")}</details>`
     : "";
@@ -970,16 +1013,19 @@ function renderCases(spec) {
 function renderDesignHistoryList() {
   if (!designHistoryList) return;
   if (!designHistoryItems.length) {
-    designHistoryList.innerHTML = "<em>暂无历史测试设计记录。</em>";
+    designHistoryList.innerHTML = designHistoryAllProjects?.checked
+      ? "<em>暂无历史测试设计记录。</em>"
+      : `<em>项目“${esc(currentProject()?.name || "")}”下暂无测试设计记录。勾选右上角“显示全部项目”可查看其他项目。</em>`;
     return;
   }
   designHistoryList.innerHTML = `<div class="design-history-list">${designHistoryItems
     .map((item) => {
       const active = item.record_id === selectedDesignHistoryId ? "active" : "";
       const status = item.has_testcases ? "已生成测试用例" : "仅完成测试设计";
+      const projectLine = designHistoryAllProjects?.checked ? `项目：${esc(item.project_name || "")} · ` : "";
       return `<button class="design-history-item ${active}" data-record-id="${esc(item.record_id)}" type="button">
         <h4>${esc(item.title || item.record_id)}</h4>
-        <p>更新时间：${esc(item.updated_at || "")}</p>
+        <p>${projectLine}更新时间：${esc(item.updated_at || "")}</p>
         <div class="design-history-chips">
           <span class="design-history-chip">${esc(status)}</span>
           <span class="design-history-chip">需求 ${esc(item.requirement_count || 0)}</span>
@@ -1021,6 +1067,10 @@ function renderDesignHistoryDetail(record) {
   if (designHistoryMeta) {
     designHistoryMeta.innerHTML = `
       <div class="design-history-meta-grid">
+        <div class="design-history-meta-card"><strong>所属项目</strong>
+          <select class="ui-input" id="designHistoryProjectSelect" data-record-id="${esc(record.record_id || "")}">${projects
+            .map((p) => `<option value="${esc(p.project_id)}" ${p.project_id === (summary.project_id || DEFAULT_PROJECT_ID) ? "selected" : ""}>${esc(projectLabel(p))}</option>`)
+            .join("")}</select></div>
         <div class="design-history-meta-card"><strong>记录ID</strong><span>${esc(record.record_id || "")}</span></div>
         <div class="design-history-meta-card"><strong>最近更新时间</strong><span>${esc(record.updated_at || "")}</span></div>
         <div class="design-history-meta-card"><strong>当前状态</strong><span>${esc(record.status || "")}</span></div>
@@ -1073,15 +1123,15 @@ function renderDesignHistoryDetail(record) {
 }
 
 async function loadDesignHistory(preferredId = "") {
-  const resp = await fetch("/api/design-history");
+  const query = designHistoryAllProjects?.checked ? "" : `?project_id=${encodeURIComponent(currentProjectId)}`;
+  const resp = await fetch(`/api/design-history${query}`);
   if (!resp.ok) throw new Error(await resp.text() || "加载历史目录失败");
   const data = await resp.json();
   designHistoryItems = Array.isArray(data.items) ? data.items : [];
+  const inList = (id) => id && designHistoryItems.some((x) => x.record_id === id);
   renderDesignHistoryList();
   const targetId =
-    preferredId ||
-    selectedDesignHistoryId ||
-    stageState.design_history_record_id ||
+    [preferredId, selectedDesignHistoryId, stageState.design_history_record_id].find(inList) ||
     (designHistoryItems[0] ? designHistoryItems[0].record_id : "");
   if (targetId) {
     await openDesignHistory(targetId);
@@ -1102,6 +1152,8 @@ async function openDesignHistory(recordId) {
 
 function applyHistoryRecordToCurrentSession(record) {
   if (!record) return;
+  const recordProjectId = record.summary?.project_id || record.project_id || DEFAULT_PROJECT_ID;
+  setCurrentProject(recordProjectId, { applyDefaults: false, askReset: false });
   const reqInput = Array.isArray(record.requirement_input) ? record.requirement_input : [];
   if (requirementsEl) requirementsEl.value = reqInput[0] || "";
   setSelectedTestEnvironments(record.test_environments?.selected_ids || record.test_environments?.selected || []);
@@ -1229,39 +1281,26 @@ async function postJson(url, payload) {
   return await resp.json();
 }
 
-async function fetchRagDocs() {
-  const resp = await fetch("/api/rag/docs");
-  if (!resp.ok) throw new Error(await resp.text());
-  const data = await resp.json();
-  const docs = data.docs || [];
-  if (!docs.length) {
-    ragDocsEl.innerHTML = "<em>当前无已上传RAG文档</em>";
-    return;
-  }
-  const items = docs
-    .map((d) => `<li>${esc(d.filename)}（chunks: ${esc(String(d.chunk_count || 0))}）</li>`)
-    .join("");
-  ragDocsEl.innerHTML = `<ul class="rag-doc-list">${items}</ul>`;
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const raw = String(reader.result || "");
+      const idx = raw.indexOf("base64,");
+      resolve(idx >= 0 ? raw.slice(idx + 7) : "");
+    };
+    reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
 }
 
-async function uploadRagDocs() {
-  const files = Array.from(ragFileEl.files || []);
-  if (!files.length) throw new Error("请先选择至少一个文件");
+async function uploadDocsTo(url, files) {
   let ok = 0;
   const errors = [];
   for (const f of files) {
     try {
-      const b64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const raw = String(reader.result || "");
-          const idx = raw.indexOf("base64,");
-          resolve(idx >= 0 ? raw.slice(idx + 7) : "");
-        };
-        reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
-        reader.readAsDataURL(f);
-      });
-      const resp = await fetch("/api/rag/upload", {
+      const b64 = await readFileBase64(f);
+      const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: f.name, content_base64: b64 }),
@@ -1275,12 +1314,290 @@ async function uploadRagDocs() {
       errors.push(`${f.name}: ${e.message || e}`);
     }
   }
+  return { ok, errors };
+}
+
+function projectDocsUrl(projectId) {
+  return `/api/projects/${encodeURIComponent(projectId)}/docs`;
+}
+
+function renderDocRows(docs, scope, projectId = "") {
+  if (!docs.length) return "<em>暂无文档</em>";
+  return docs
+    .map((d) => `<div class="doc-row"><span>${esc(d.filename)}<span class="feature-hint">${esc(String(d.chunk_count || 0))} 段 · ${esc(d.created_at || "")}</span></span>
+      <button class="ui-btn ui-btn-ghost ui-btn-sm danger-text" type="button" data-doc-delete="${esc(d.doc_id)}" data-doc-scope="${scope}" data-project-id="${esc(projectId)}">删除</button></div>`)
+    .join("");
+}
+
+async function fetchJson(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(await resp.text());
+  return await resp.json();
+}
+
+async function fetchRagDocs() {
+  const [projectData, publicData] = await Promise.all([
+    fetchJson(projectDocsUrl(currentProjectId)).catch(() => ({ docs: [] })),
+    fetchJson("/api/rag/docs"),
+  ]);
+  ragDocsEl.innerHTML = `
+    <div class="rag-scope-title">当前项目资料（${esc(currentProject()?.name || "")}）</div>
+    ${renderDocRows(projectData.docs || [], "project", currentProjectId)}
+    <div class="rag-scope-title">公共资料</div>
+    ${renderDocRows(publicData.docs || [], "public")}`;
+}
+
+async function deleteDoc(scope, docId, projectId) {
+  if (!confirm("确定删除这份资料？删除后不再参与检索。")) return;
+  const url = scope === "public"
+    ? `/api/rag/docs/${encodeURIComponent(docId)}`
+    : `${projectDocsUrl(projectId)}/${encodeURIComponent(docId)}`;
+  const resp = await fetch(url, { method: "DELETE" });
+  if (!resp.ok) throw new Error(await resp.text());
+  await fetchRagDocs().catch(() => {});
+  if (scope === "project") await loadProjects().catch(() => {});
+}
+
+async function uploadRagDocs() {
+  const files = Array.from(ragFileEl.files || []);
+  if (!files.length) throw new Error("请先选择至少一个文件");
+  const toPublic = ragTargetEl?.value === "public";
+  const { ok, errors } = await uploadDocsTo(toPublic ? "/api/rag/upload" : projectDocsUrl(currentProjectId), files);
+  ragFileEl.value = "";
   await fetchRagDocs();
+  if (!toPublic) await loadProjects().catch(() => {});
+  const where = toPublic ? "公共资料" : `项目资料（${currentProject()?.name || ""}）`;
   if (errors.length) {
-    setStatus(`RAG上传完成：成功 ${ok}，失败 ${errors.length}\n- ${errors.join("\n- ")}`);
+    setStatus(`${where}上传完成：成功 ${ok}，失败 ${errors.length}\n- ${errors.join("\n- ")}`);
   } else {
-    setStatus(`RAG上传完成：成功 ${ok}`);
+    setStatus(`${where}上传完成：成功 ${ok}`);
   }
+}
+
+// ---------- 项目 / Product ----------
+
+function currentProject() {
+  return projects.find((p) => p.project_id === currentProjectId) || null;
+}
+
+function projectLabel(p) {
+  if (!p) return "";
+  return p.code ? `${p.name}（${p.code}）` : p.name;
+}
+
+function renderProjectSelect() {
+  if (projectSelect) {
+    projectSelect.innerHTML = projects
+      .map((p) => `<option value="${esc(p.project_id)}" ${p.project_id === currentProjectId ? "selected" : ""}>${esc(projectLabel(p))}</option>`)
+      .join("");
+  }
+  if (currentProjectTag) currentProjectTag.textContent = projectLabel(currentProject());
+}
+
+async function loadProjects() {
+  const data = await fetchJson("/api/projects");
+  projects = Array.isArray(data.items) ? data.items : [];
+  if (!projects.some((p) => p.project_id === currentProjectId)) {
+    currentProjectId = projects.some((p) => p.project_id === DEFAULT_PROJECT_ID) ? DEFAULT_PROJECT_ID : projects[0]?.project_id || DEFAULT_PROJECT_ID;
+  }
+  renderProjectSelect();
+  renderProjectList();
+  if (editingProjectId && !projects.some((p) => p.project_id === editingProjectId)) editingProjectId = "";
+}
+
+function hasSessionWork() {
+  return Boolean(stageState.requirement_spec || stageState.test_design_spec || stageState.test_case_spec || stageState.hitl_job_id);
+}
+
+function resetSession() {
+  closeHitlStream();
+  closeStageStream();
+  stageState = {
+    requirement_spec: null,
+    persona_reviews: null,
+    requirement_review_history: null,
+    test_design_spec: null,
+    test_case_spec: null,
+    round: 0,
+    hitl_job_id: "",
+    executable_cases: null,
+    bug_ids: [],
+    design_history_record_id: "",
+    design_history_doc_url: "",
+  };
+  latestStructured = null;
+  [outReq, outReview, outDesign, outCases].forEach((el) => el && (el.textContent = ""));
+  [viewReq, viewReview, viewDesign, viewCases, openQuestionsPanel].forEach((el) => el && (el.innerHTML = ""));
+  if (requirementsEl) requirementsEl.value = "";
+  if (bzIdsEl) bzIdsEl.value = "";
+  renderExecutableCases(null);
+  refreshDesignDocumentLink();
+}
+
+function applyProjectDefaults(project) {
+  if (!project) return;
+  const hasProfile = project.product_profile_selected && Object.keys(project.product_profile_selected).length;
+  const hasEnvs = Array.isArray(project.test_environment_ids) && project.test_environment_ids.length;
+  if (hasProfile) setSelectedProductProfile(project.product_profile_selected);
+  if (hasEnvs) setSelectedTestEnvironments(project.test_environment_ids);
+}
+
+// 切换项目：当前会话属于旧项目，切换后开始新会话（已完成的设计已归档在历史里）。
+function setCurrentProject(projectId, { applyDefaults = true, askReset = true } = {}) {
+  if (!projects.some((p) => p.project_id === projectId)) return false;
+  if (projectId === currentProjectId) return true;
+  if (askReset && hasSessionWork()) {
+    const ok = confirm("切换项目会开始新的测试设计会话（已完成的测试设计已归档在原项目的历史里）。继续？");
+    if (!ok) {
+      renderProjectSelect();
+      return false;
+    }
+    resetSession();
+  }
+  currentProjectId = projectId;
+  try { localStorage.setItem(CURRENT_PROJECT_KEY, projectId); } catch (_) {}
+  if (applyDefaults) applyProjectDefaults(currentProject());
+  renderProjectSelect();
+  renderProjectList();
+  fetchRagDocs().catch(() => {});
+  if (designHistoryLoaded) loadDesignHistory().catch(() => {});
+  persistCurrentState(`当前项目：${projectLabel(currentProject())}`);
+  setStatus(`当前项目：${projectLabel(currentProject())}`);
+  return true;
+}
+
+function renderProjectList() {
+  if (!projectListEl) return;
+  if (!projects.length) {
+    projectListEl.innerHTML = "<em>暂无项目</em>";
+    return;
+  }
+  projectListEl.innerHTML = `<div class="design-history-list">${projects
+    .map((p) => {
+      const active = p.project_id === editingProjectId ? "active" : "";
+      const current = p.project_id === currentProjectId ? `<span class="design-history-chip current-chip">当前项目</span>` : "";
+      return `<button class="design-history-item ${active}" data-project-id="${esc(p.project_id)}" type="button">
+        <h4>${esc(projectLabel(p))}</h4>
+        <p>${esc((p.description || "").slice(0, 60) || "无说明")}</p>
+        <div class="design-history-chips">
+          ${current}
+          <span class="design-history-chip">测试设计 ${esc(p.design_count || 0)}</span>
+          <span class="design-history-chip">资料 ${esc(p.doc_count || 0)}</span>
+        </div>
+      </button>`;
+    })
+    .join("")}</div>`;
+}
+
+function describeProjectDefaults(project) {
+  const lines = [];
+  const sel = project?.product_profile_selected || {};
+  PRODUCT_PROFILE_GROUPS.forEach((g) => {
+    if (Array.isArray(sel[g.key]) && sel[g.key].length) lines.push(`${g.label}: ${sel[g.key].join("、")}`);
+  });
+  const envIds = new Set(project?.test_environment_ids || []);
+  const envs = TEST_ENVIRONMENT_OPTIONS.filter((e) => envIds.has(e.id)).map((e) => e.label);
+  if (envs.length) lines.push(`测试环境: ${envs.join("、")}`);
+  return lines.length ? renderDocList(lines) : "<em>未设置默认值</em>";
+}
+
+async function renderProjectForm(projectId) {
+  editingProjectId = projectId || "";
+  const p = projects.find((x) => x.project_id === editingProjectId) || null;
+  renderProjectList();
+  if (projectFormTitle) projectFormTitle.textContent = p ? `编辑：${projectLabel(p)}` : "新建项目";
+  if (projectNameEl) projectNameEl.value = p?.name || "";
+  if (projectCodeEl) projectCodeEl.value = p?.code || "";
+  if (projectDescEl) projectDescEl.value = p?.description || "";
+  if (projectKbKeyEl) projectKbKeyEl.value = "";
+  if (projectKbHint) projectKbHint.textContent = p?.kb_key_configured ? "（已保存，留空则沿用）" : "可选，Dify 里该项目知识库对应的应用";
+  projectKbResult?.classList.add("hidden");
+  projectKbTestBtn?.classList.toggle("hidden", !p?.kb_key_configured);
+  projectKbClearBtn?.classList.toggle("hidden", !p?.kb_key_configured);
+  if (projectDefaultsEl) projectDefaultsEl.innerHTML = p ? describeProjectDefaults(p) : "<em>勾选下方选项，保存时把“需求准备”页当前的勾选设为默认值</em>";
+  if (projectCaptureDefaultsEl) projectCaptureDefaultsEl.checked = !p;
+  useProjectBtn?.classList.toggle("hidden", !p || p.project_id === currentProjectId);
+  deleteProjectBtn?.classList.toggle("hidden", !p || p.project_id === DEFAULT_PROJECT_ID);
+  projectDocsSection?.classList.toggle("hidden", !p);
+  projectDesignsSection?.classList.toggle("hidden", !p);
+  if (!p) return;
+  const [docData, historyData] = await Promise.all([
+    fetchJson(projectDocsUrl(p.project_id)).catch(() => ({ docs: [] })),
+    fetchJson(`/api/design-history?project_id=${encodeURIComponent(p.project_id)}`).catch(() => ({ items: [] })),
+  ]);
+  const docs = docData.docs || [];
+  if (projectDocsHint) projectDocsHint.textContent = `共 ${docs.length} 份`;
+  if (projectDocsEl) projectDocsEl.innerHTML = renderDocRows(docs, "project", p.project_id);
+  const items = historyData.items || [];
+  if (projectDesignsEl) {
+    projectDesignsEl.innerHTML = items.length
+      ? `<table><thead><tr><th>标题</th><th>状态</th><th>用例</th><th>更新时间</th><th></th></tr></thead><tbody>${items
+          .map((it) => `<tr><td>${esc(it.title || it.record_id)}</td><td>${esc(it.has_testcases ? "已生成测试用例" : "仅完成测试设计")}</td><td>${esc(it.testcase_count || 0)}</td><td>${esc(it.updated_at || "")}</td>
+            <td><button class="ui-btn ui-btn-ghost ui-btn-sm" type="button" data-open-history="${esc(it.record_id)}">打开</button></td></tr>`)
+          .join("")}</tbody></table>`
+      : "<em>还没有测试设计</em>";
+  }
+}
+
+async function saveProject() {
+  const body = {
+    name: (projectNameEl?.value || "").trim(),
+    code: (projectCodeEl?.value || "").trim(),
+    description: (projectDescEl?.value || "").trim(),
+  };
+  const kbKey = (projectKbKeyEl?.value || "").trim();
+  if (kbKey) body.kb_api_key = kbKey;
+  if (!body.name) throw new Error("请填写项目名称");
+  if (projectCaptureDefaultsEl?.checked) {
+    body.product_profile_selected = getSelectedProductProfile().selected;
+    body.test_environment_ids = getSelectedTestEnvironments().selected_ids;
+  }
+  const isNew = !editingProjectId;
+  const resp = await fetch(isNew ? "/api/projects" : `/api/projects/${encodeURIComponent(editingProjectId)}`, {
+    method: isNew ? "POST" : "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await resp.text();
+  if (!resp.ok) {
+    let msg = text;
+    try { msg = JSON.parse(text).detail || text; } catch (_) {}
+    throw new Error(msg);
+  }
+  const saved = JSON.parse(text).project;
+  await loadProjects();
+  await renderProjectForm(saved.project_id);
+  if (saved.project_id === currentProjectId) renderProjectSelect();
+  setStatus(`项目已保存：${projectLabel(saved)}`);
+  if (isNew && confirm(`已创建“${saved.name}”。现在切换到这个项目吗？`)) {
+    setCurrentProject(saved.project_id);
+    await renderProjectForm(saved.project_id);
+  }
+}
+
+async function deleteProject() {
+  const p = projects.find((x) => x.project_id === editingProjectId);
+  if (!p) return;
+  if (!confirm(`确定删除项目“${p.name}”？项目资料会一并删除。`)) return;
+  const resp = await fetch(`/api/projects/${encodeURIComponent(p.project_id)}`, { method: "DELETE" });
+  const text = await resp.text();
+  if (!resp.ok) {
+    let msg = text;
+    try { msg = JSON.parse(text).detail || text; } catch (_) {}
+    throw new Error(msg);
+  }
+  if (p.project_id === currentProjectId) setCurrentProject(DEFAULT_PROJECT_ID, { askReset: false });
+  await loadProjects();
+  await renderProjectForm("");
+  setStatus(`项目已删除：${p.name}`);
+}
+
+async function moveHistoryToProject(recordId, projectId) {
+  await postJson(`/api/design-history/${encodeURIComponent(recordId)}/project`, { project_id: projectId });
+  await loadProjects().catch(() => {});
+  await loadDesignHistory(designHistoryAllProjects?.checked ? recordId : "");
+  const target = projects.find((p) => p.project_id === projectId);
+  setStatus(`测试设计已移到项目：${projectLabel(target)}`);
 }
 
 async function generateRequirementsRound(round) {
@@ -1301,6 +1618,7 @@ async function generateRequirementsRound(round) {
       framework_capability_catalog: buildFrameworkCapabilityCatalog(),
       product_profile: productProfile,
       test_environments: testEnvironments,
+      project_id: currentProjectId,
     });
   } else {
     data = await postJson(`/api/hitl/requirements/${stageState.hitl_job_id}/next`, {
@@ -1327,7 +1645,8 @@ async function generateRequirementsRound(round) {
   }
   setStatus(
     `测试需求评审完成：v${data.round}${data.is_final_round ? "（终稿）" : ""}` +
-      (data.rag?.hits?.length ? `\nRAG命中: ${data.rag.hits.length} 条片段` : "\nRAG命中: 0") +
+      (data.rag?.hits?.length ? `\n资料命中: ${data.rag.hits.length} 条片段（${[...new Set(data.rag.hits.map((h) => h.scope_label || h.scope))].join("、")}）` : "\n资料命中: 0") +
+      (data.rag?.errors?.length ? `\n知识库异常:\n- ${data.rag.errors.join("\n- ")}` : "") +
       (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : "")
   );
   persistCurrentState();
@@ -1345,6 +1664,7 @@ async function generateDesign() {
     product_profile: productProfile,
     test_environments: testEnvironments,
     history_record_id: stageState.design_history_record_id || "",
+    project_id: currentProjectId,
   });
   stageState.test_design_spec = data.test_design_spec;
   stageState.design_history_record_id = data.design_history?.record_id || stageState.design_history_record_id || "";
@@ -1374,6 +1694,7 @@ async function generateCases() {
     product_profile: productProfile,
     test_environments: testEnvironments,
     history_record_id: stageState.design_history_record_id || "",
+    project_id: currentProjectId,
   });
   stageState.test_case_spec = data.test_case_spec;
   stageState.design_history_record_id = data.design_history?.record_id || stageState.design_history_record_id || "";
@@ -1786,6 +2107,11 @@ function switchSheetById(id) {
       .then(() => { flowVizLoaded = true; })
       .catch((e) => setStatus(`流程可视化加载失败: ${e.message}`));
   }
+  if (id === "sheet9") {
+    loadProjects()
+      .then(() => renderProjectForm(editingProjectId || currentProjectId))
+      .catch((e) => setStatus(`项目列表加载失败: ${e.message}`));
+  }
   if (id === "sheet8" && !designHistoryLoaded) {
     loadDesignHistory()
       .then(() => { designHistoryLoaded = true; })
@@ -1967,6 +2293,199 @@ designHistoryCasesBtn?.addEventListener("click", async () => {
   }
 });
 
+designHistoryAllProjects?.addEventListener("change", () => {
+  loadDesignHistory().catch((e) => setStatus(`测试设计历史加载失败: ${e.message}`));
+});
+
+designHistoryMeta?.addEventListener("change", (ev) => {
+  const sel = ev.target.closest("#designHistoryProjectSelect");
+  if (!sel) return;
+  moveHistoryToProject(sel.dataset.recordId, sel.value).catch((e) => setStatus(`移动测试设计失败: ${e.message}`));
+});
+
+projectSelect?.addEventListener("change", () => {
+  setCurrentProject(projectSelect.value);
+});
+
+projectListEl?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-project-id]");
+  if (!btn) return;
+  renderProjectForm(btn.getAttribute("data-project-id")).catch((e) => setStatus(`加载项目失败: ${e.message}`));
+});
+
+newProjectBtn?.addEventListener("click", () => {
+  renderProjectForm("").catch(() => {});
+  projectNameEl?.focus();
+});
+
+saveProjectBtn?.addEventListener("click", async () => {
+  setSingleButtonBusy(saveProjectBtn, true, "保存中...");
+  try {
+    await saveProject();
+  } catch (e) {
+    setStatus(`保存项目失败: ${e.message}`);
+    alert(`保存项目失败：${e.message}`);
+  } finally {
+    setSingleButtonBusy(saveProjectBtn, false);
+  }
+});
+
+useProjectBtn?.addEventListener("click", () => {
+  if (editingProjectId && setCurrentProject(editingProjectId)) renderProjectForm(editingProjectId).catch(() => {});
+});
+
+deleteProjectBtn?.addEventListener("click", () => {
+  deleteProject().catch((e) => {
+    setStatus(`删除项目失败: ${e.message}`);
+    alert(`删除项目失败：${e.message}`);
+  });
+});
+
+uploadProjectDocBtn?.addEventListener("click", async () => {
+  const files = Array.from(projectDocFileEl?.files || []);
+  if (!editingProjectId || !files.length) {
+    setStatus("请先选择项目和至少一个文件");
+    return;
+  }
+  setSingleButtonBusy(uploadProjectDocBtn, true, "上传中...");
+  try {
+    const { ok, errors } = await uploadDocsTo(projectDocsUrl(editingProjectId), files);
+    projectDocFileEl.value = "";
+    await loadProjects();
+    await renderProjectForm(editingProjectId);
+    if (editingProjectId === currentProjectId) fetchRagDocs().catch(() => {});
+    setStatus(`项目资料上传完成：成功 ${ok}` + (errors.length ? `，失败 ${errors.length}\n- ${errors.join("\n- ")}` : ""));
+  } finally {
+    setSingleButtonBusy(uploadProjectDocBtn, false);
+  }
+});
+
+document.addEventListener("click", (ev) => {
+  const del = ev.target.closest("[data-doc-delete]");
+  if (del) {
+    deleteDoc(del.dataset.docScope, del.dataset.docDelete, del.dataset.projectId)
+      .then(() => { if (del.dataset.docScope === "project" && editingProjectId) return renderProjectForm(editingProjectId); })
+      .catch((e) => setStatus(`删除资料失败: ${e.message}`));
+    return;
+  }
+  const open = ev.target.closest("[data-open-history]");
+  if (open) {
+    switchSheetById("sheet8");
+    loadDesignHistory(open.dataset.openHistory)
+      .then(() => { designHistoryLoaded = true; })
+      .catch((e) => setStatus(`测试设计历史加载失败: ${e.message}`));
+  }
+});
+
+function showTestResult(el, ok, text) {
+  if (!el) return;
+  el.classList.remove("hidden");
+  el.classList.toggle("ok", ok);
+  el.classList.toggle("err", !ok);
+  el.textContent = text;
+}
+
+function kbFormPayload(extra = {}) {
+  return {
+    base_url: (kbBaseUrlEl?.value || "").trim(),
+    api_key: (kbApiKeyEl?.value || "").trim(),
+    timeout: Number(kbTimeoutEl?.value) || null,
+    max_query_chars: Number(kbMaxQueryEl?.value) || null,
+    ...extra,
+  };
+}
+
+// 配置了公共知识库后，公共资料统一放知识库，本地不再提供“存入公共资料”
+function applyKbAvailability(data) {
+  const publicOpt = ragTargetEl?.querySelector('option[value="public"]');
+  const usePublicKb = !!(data?.enabled && data?.key_configured);
+  if (publicOpt) publicOpt.hidden = usePublicKb;
+  if (usePublicKb && ragTargetEl) ragTargetEl.value = "project";
+}
+
+async function loadKbSettings() {
+  const data = await fetchJson("/api/settings/kb");
+  applyKbAvailability(data);
+  if (kbBaseUrlEl) kbBaseUrlEl.value = data.base_url || "";
+  if (kbTimeoutEl) kbTimeoutEl.value = data.timeout || 60;
+  if (kbMaxQueryEl) kbMaxQueryEl.value = data.max_query_chars || 500;
+  if (kbApiKeyEl) kbApiKeyEl.value = "";
+  if (kbKeyHint) kbKeyHint.textContent = data.key_configured ? "（已保存，留空则沿用）" : "（未配置）";
+  return data;
+}
+
+function describeKbTest(data) {
+  const docs = (data.documents || []).slice(0, 5).join("、");
+  return `连接成功（${data.latency_ms} ms）` + (docs ? `，引用文档：${docs}` : "，未返回引用文档（可在 Dify 应用里开启“引用和归属”）");
+}
+
+async function testKb(projectId = "") {
+  const query = (kbTestQueryEl?.value || "").trim() || "测试连接";
+  return await postJson("/api/settings/kb/test", kbFormPayload({ query, project_id: projectId }));
+}
+
+kbSaveBtn?.addEventListener("click", async () => {
+  setSingleButtonBusy(kbSaveBtn, true, "保存中...");
+  try {
+    await postJson("/api/settings/kb", kbFormPayload());
+    await loadKbSettings();
+    showTestResult(kbTestResult, true, "知识库设置已保存");
+  } catch (e) {
+    showTestResult(kbTestResult, false, `保存失败：${e.message}`);
+  } finally {
+    setSingleButtonBusy(kbSaveBtn, false);
+  }
+});
+kbTestBtn?.addEventListener("click", async () => {
+  setSingleButtonBusy(kbTestBtn, true, "测试中...");
+  try {
+    showTestResult(kbTestResult, true, describeKbTest(await testKb()));
+  } catch (e) {
+    showTestResult(kbTestResult, false, `连接失败：${e.message}`);
+  } finally {
+    setSingleButtonBusy(kbTestBtn, false);
+  }
+});
+kbClearKeyBtn?.addEventListener("click", async () => {
+  if (!confirm("确定清除公共知识库的 App Key？")) return;
+  try {
+    await postJson("/api/settings/kb", kbFormPayload({ api_key: "", clear_key: true }));
+    await loadKbSettings();
+    showTestResult(kbTestResult, true, "App Key 已清除");
+  } catch (e) {
+    showTestResult(kbTestResult, false, `清除失败：${e.message}`);
+  }
+});
+projectKbTestBtn?.addEventListener("click", async () => {
+  if (!editingProjectId) return;
+  setSingleButtonBusy(projectKbTestBtn, true, "测试中...");
+  try {
+    // 用已保存的连接设置测试该项目的 App Key
+    const cfg = await fetchJson("/api/settings/kb");
+    const data = await postJson("/api/settings/kb/test", { base_url: cfg.base_url || "", query: "测试连接", project_id: editingProjectId });
+    showTestResult(projectKbResult, true, describeKbTest(data));
+  } catch (e) {
+    showTestResult(projectKbResult, false, `连接失败：${e.message}`);
+  } finally {
+    setSingleButtonBusy(projectKbTestBtn, false);
+  }
+});
+projectKbClearBtn?.addEventListener("click", async () => {
+  if (!editingProjectId || !confirm("确定清除该项目的知识库 App Key？")) return;
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(editingProjectId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kb_clear_key: true }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    await loadProjects();
+    await renderProjectForm(editingProjectId);
+  } catch (e) {
+    showTestResult(projectKbResult, false, `清除失败：${e.message}`);
+  }
+});
+
 function switchSettingsTab(name) {
   document.querySelectorAll(".settings-tab").forEach((b) => b.classList.toggle("active", b.dataset.settingsTab === name));
   document.querySelectorAll(".settings-pane").forEach((p) => p.classList.toggle("active", p.dataset.settingsPane === name));
@@ -1978,6 +2497,7 @@ async function openSettings(tab = "llm") {
   await Promise.all([
     loadLlmSettings().catch((e) => setStatus(`加载大模型设置失败: ${e.message}`)),
     loadBugzillaSettings().catch(() => {}),
+    loadKbSettings().catch((e) => setStatus(`加载知识库设置失败: ${e.message}`)),
     loadPrompts().catch((e) => setStatus(`加载模板失败: ${e.message}`)),
   ]);
 }
@@ -2169,10 +2689,14 @@ resetBotConversation();
 renderTestEnvironmentOptions();
 renderProductProfileOptions();
 renderDesignHistoryDetail(null);
+try { currentProjectId = localStorage.getItem(CURRENT_PROJECT_KEY) || DEFAULT_PROJECT_ID; } catch (_) {}
 restoreLastResultUI(loadLastResult());
 loadBugzillaSettings().catch(() => {});
 loadLlmSettings().catch(() => {});
-fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`));
+loadKbSettings().catch(() => {});
+loadProjects()
+  .catch((e) => setStatus(`加载项目列表失败: ${e.message}`))
+  .finally(() => fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`)));
 
 window.addEventListener("beforeunload", () => {
   revokeDesignDocUrl();

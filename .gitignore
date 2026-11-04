@@ -88,5 +88,6 @@ data/
 config/
 history/
 rag_data/
+/projects/
 release/
 .venv/

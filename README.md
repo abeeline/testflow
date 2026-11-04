@@ -64,7 +64,24 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
   - 追溯矩阵（生成可执行用例后）
   - RawJSON
 
-### 6) 测试设计历史目录
+### 6) 项目 / Product
+
+- 每个测试设计都归属一个项目（Product），左侧边栏顶部切换“当前项目”，新生成的测试设计归档到当前项目
+- “项目 / Product”页：新建、编辑、删除项目；可把“需求准备”页的产品特性和测试环境勾选保存为项目默认值，切换项目时自动勾选
+- 项目资料：每个项目有自己的资料库，生成测试需求时自动检索“当前项目资料 + 公共资料”，命中片段标明来源
+- 测试设计历史默认只显示当前项目，可勾选“显示全部项目”，也可以把记录移到其他项目
+- 升级前的历史记录自动归到“默认项目”；默认项目不能删除，有测试设计的项目需先移走记录再删除
+- Dify 知识库：“系统设置 → 知识库”填 Dify 接口地址和公共知识库 App Key；每个项目可在项目页另配自己知识库的 App Key。生成测试需求时同时检索项目知识库、公共知识库和本地资料，某个知识库连不上不影响其他来源（接口：`GET/POST /api/settings/kb`、`POST /api/settings/kb/test`）
+- 资料检索规则（`utils/knowledge.py`）：
+  - 可信度：用户粘贴 > 项目知识库 > 项目本地资料 > 公共知识库 > 公共本地资料，冲突时以项目资料为准；每个来源有条数上限，总字数不超过 6000，片段编号 `[K-n]`
+  - 查询词：项目来源用需求原文；公共知识库用从需求里提取的协议关键词（流程、消息、定时器、条款号、频段）
+  - 测试需求评审：三人评审后，最多 8 个问题先查知识库（产品行为类查项目知识库，协议类查公共知识库），有明确依据的由 AI 改答案并标出处，资料矛盾的留给用户确认
+  - 测试设计：每条需求单独查项目和公共知识库，用于参数取值、定时器、信令流程和条款引用
+  - 用到的资料写进设计历史和测试设计文档的“参考资料”
+  - 配置了公共知识库后，需求准备页不再提供“存入公共资料”
+- 接口：`GET/POST /api/projects`、`GET/PUT/DELETE /api/projects/{id}`、`GET/POST /api/projects/{id}/docs`、`DELETE /api/projects/{id}/docs/{doc_id}`、`POST /api/design-history/{id}/project`
+
+### 7) 测试设计历史目录
 
 - 左侧菜单提供“测试设计历史”
 - 每次完成“测试设计稿”都会自动生成一条历史记录
@@ -91,7 +108,7 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 
 发布包内置 Python，不需要另外安装。可选参数：`start.bat --port 9000`、`start.bat --host 0.0.0.0`（局域网访问）、`start.bat --no-browser`。
 
-配置、设计历史、RAG 文档和网页上改过的 Prompt 都在发布包的 `data\` 目录；升级时把旧版本的 `data\` 复制到新版本即可。
+配置、项目、设计历史、RAG 文档和网页上改过的 Prompt 都在发布包的 `data\` 目录；升级时把旧版本的 `data\` 复制到新版本即可。
 
 ### 从源码运行
 
@@ -141,7 +158,8 @@ packaging/windows/ 发布包附带的使用说明
 ## 关键接口
 
 ```
-GET  /api/design-history                     历史测试设计列表
+GET  /api/projects                           项目 / Product 列表
+GET  /api/design-history?project_id=         历史测试设计列表（可按项目筛选）
 GET  /api/design-history/{record_id}         历史测试设计详情
 GET  /api/design-history/{record_id}/document 固定 URL 测试设计文档
 POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases）

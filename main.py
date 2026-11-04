@@ -6,6 +6,7 @@ import uuid
 import time
 import re
 import html
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,8 +25,18 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
+from utils.dify_kb import KBSettings, query_app as kb_query_app, retrieve as kb_retrieve
+from utils.knowledge import (
+    SCOPE_LABELS,
+    format_context,
+    is_product_question,
+    protocol_query,
+    ref_summary,
+    resolve_question,
+)
 from utils.llm_client import LLMClient, LLMSettings
-from utils.paths import CONFIG_DIR, HISTORY_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
+from utils.paths import CONFIG_DIR, HISTORY_DIR, PROJECTS_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
+from utils.project_store import DEFAULT_PROJECT_ID, ProjectStore, valid_project_id
 from utils.rag_store import SimpleRAGStore
 
 
@@ -48,6 +59,33 @@ class RAGUploadBase64Request(BaseModel):
     content_base64: str
 
 
+class ProjectRequest(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    description: Optional[str] = None
+    product_profile_selected: Optional[Dict[str, List[str]]] = None
+    test_environment_ids: Optional[List[str]] = None
+    kb_api_key: Optional[str] = None
+    kb_clear_key: bool = False
+
+
+class KBSettingsRequest(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+    clear_key: bool = False
+    timeout: Optional[int] = None
+    max_query_chars: Optional[int] = None
+
+
+class KBTestRequest(KBSettingsRequest):
+    query: str = "测试连接"
+    project_id: str = ""
+
+
+class MoveHistoryRequest(BaseModel):
+    project_id: str = Field(..., min_length=1)
+
+
 class ChatTurn(BaseModel):
     role: str
     content: str
@@ -64,6 +102,7 @@ class RequirementHITLStartRequest(BaseModel):
     framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
     test_environments: Optional[Dict[str, Any]] = None
+    project_id: str = ""
 
 
 class RequirementHITLNextRequest(BaseModel):
@@ -83,6 +122,7 @@ class StageGenerateRequest(BaseModel):
     action_vocabulary: Optional[List[str]] = None
     assertion_vocabulary: Optional[List[str]] = None
     history_record_id: str = ""
+    project_id: str = ""
     bug_ids: Optional[List[str]] = None
     route_overrides: Optional[Dict[str, str]] = None
 
@@ -109,7 +149,8 @@ class BugzillaFetchRequest(BaseModel):
 app = FastAPI(title="TestFlow")
 static_dir = str(STATIC_DIR)
 design_history_dir = HISTORY_DIR
-rag_store = SimpleRAGStore(RAG_DIR)
+rag_store = SimpleRAGStore(RAG_DIR)  # 公共资料：所有项目共享
+project_store = ProjectStore(PROJECTS_DIR)
 bugzilla_settings = BugzillaSettings(CONFIG_DIR / "bugzilla-settings.json")
 requirement_hitl_jobs: Dict[str, Dict[str, Any]] = {}
 stage_jobs: Dict[str, Dict[str, Any]] = {}
@@ -187,11 +228,18 @@ def _history_meta_counts(record: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _record_project_id(record: Dict[str, Any]) -> str:
+    """升级前的历史记录没有 project_id，统一视为默认项目。"""
+    return project_store.resolve_id(str(record.get("project_id", "") or ""))
+
+
 def _history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
     counts = _history_meta_counts(record)
     record_id = str(record.get("record_id", ""))
     return {
         "record_id": record_id,
+        "project_id": _record_project_id(record),
+        "project_name": project_store.name_of(_record_project_id(record)),
         "title": record.get("title", "未命名测试设计"),
         "status": record.get("status", "design_completed"),
         "created_at": record.get("created_at", ""),
@@ -308,6 +356,8 @@ def _merge_answered_questions(existing: Any, additions: Any) -> List[Dict[str, A
             "answer": answer,
             "source": str(item.get("source") or "用户"),
         }
+        if str(item.get("basis") or "").strip():
+            merged[(req_id, question)]["basis"] = str(item["basis"]).strip()
     return list(merged.values())
 
 
@@ -353,12 +403,36 @@ def _render_answered_question_table(items: Any) -> str:
             f"<td>{html.escape(str(item.get('question', '')))}</td>"
             f"<td>{html.escape(str(item.get('answer', '')))}</td>"
             f"<td>{html.escape(str(item.get('source', '用户')))}</td>"
+            f"<td>{html.escape(str(item.get('basis', '')))}</td>"
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>确认结果</th><th>确认方</th></tr></thead>"
+        "<table><thead><tr><th>来源轮次</th><th>需求ID</th><th>已确认问题</th><th>确认结果</th><th>确认方</th><th>依据</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
     )
+
+
+def _render_knowledge_refs_table(record: Dict[str, Any]) -> str:
+    """参考资料：测试需求分析（最后一轮）和测试设计阶段用到的资料片段。"""
+    rows: List[tuple] = []
+    rounds = ((record.get("requirement_review_history") or {}).get("rounds") or []) if isinstance(record.get("requirement_review_history"), dict) else []
+    last_round = rounds[-1] if rounds and isinstance(rounds[-1], dict) else {}
+    for item in last_round.get("knowledge_refs", []) or []:
+        rows.append(("测试需求分析", item))
+    for item in ((record.get("knowledge_refs") or {}).get("design") or []) if isinstance(record.get("knowledge_refs"), dict) else []:
+        rows.append(("测试设计", item))
+    if not rows:
+        return "<p>无</p>"
+    body = "".join(
+        "<tr>"
+        f"<td>{html.escape(stage)}</td>"
+        f"<td>{html.escape(str(it.get('ref', '')))}</td>"
+        f"<td>{html.escape(str(it.get('scope_label', '')))}</td>"
+        f"<td>{html.escape(str(it.get('filename', '')))}</td>"
+        "</tr>"
+        for stage, it in rows if isinstance(it, dict)
+    )
+    return f"<table><thead><tr><th>阶段</th><th>编号</th><th>来源</th><th>文档</th></tr></thead><tbody>{body}</tbody></table>"
 
 
 def _render_design_document_html(record: Dict[str, Any]) -> str:
@@ -375,6 +449,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     integrated = test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec.get("integrated_matrix"), list) else []
     title = record.get("title") or _history_title(requirement_input, requirement_spec)
     updated_at = record.get("updated_at", "")
+    project_name = project_store.name_of(_record_project_id(record))
 
     req_rows = []
     for item in reqs:
@@ -470,6 +545,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
                 profile_lines.append(f"{group}: {'、'.join(str(x) for x in values)}")
     test_environment_lines = _render_test_environment_lines(test_environments)
     answered_question_table = _render_answered_question_table(requirement_review_history.get("answered_questions", []))
+    knowledge_table = _render_knowledge_refs_table(record)
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -506,7 +582,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
       </section>
       <section class="section">
         <h2>一、文档信息</h2>
-        {_render_html_kv_table([["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
+        {_render_html_kv_table([["项目/Product", project_name], ["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
       </section>
       <section class="section">
         <h2>二、需求输入与产品背景</h2>
@@ -517,7 +593,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
         </div>
       </section>
       <section class="section"><h2>三、测试需求解读稿</h2>{req_table}</section>
-      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}<section><h3>用户已确认问题</h3>{answered_question_table}</section></section>
+      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}<section><h3>用户已确认问题</h3>{answered_question_table}</section><section><h3>参考资料</h3>{knowledge_table}</section></section>
       <section class="section"><h2>五、测试目标</h2>{objective_table}</section>
       <section class="section"><h2>六、覆盖矩阵</h2>{matrix_html}</section>
       <section class="section"><h2>七、整合覆盖矩阵</h2>{integrated_table}</section>
@@ -573,6 +649,8 @@ def _upsert_design_history_record(
     warnings: Optional[Dict[str, Any]] = None,
     trace: Optional[Dict[str, Any]] = None,
     status: Optional[str] = None,
+    project_id: str = "",
+    knowledge_refs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {}
     if record_id:
@@ -580,6 +658,8 @@ def _upsert_design_history_record(
             record = _load_design_history_record(record_id)
         except HTTPException:
             record = {"record_id": record_id}
+    # 已归档的记录保持原项目；新记录归到请求里的项目（未指定时为默认项目）
+    record["project_id"] = project_store.resolve_id(record.get("project_id") or project_id)
     record["requirement_input"] = requirement_input or record.get("requirement_input", []) or []
     record["requirement_spec"] = requirement_spec or record.get("requirement_spec", {}) or {}
     record["persona_reviews"] = persona_reviews or record.get("persona_reviews", {}) or {}
@@ -603,19 +683,26 @@ def _upsert_design_history_record(
         record["trace"] = merged
     else:
         record.setdefault("trace", {})
+    if knowledge_refs:
+        merged_refs = record.get("knowledge_refs", {}) if isinstance(record.get("knowledge_refs"), dict) else {}
+        merged_refs.update(knowledge_refs)
+        record["knowledge_refs"] = merged_refs
     if status:
         record["status"] = status
     return _write_design_history_record(record)
 
 
-def _list_design_history_records() -> List[Dict[str, Any]]:
+def _list_design_history_records(project_id: str = "") -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for path in sorted(design_history_dir.glob("*/record.json"), reverse=True):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            items.append(_history_summary(record))
+            summary = _history_summary(record)
         except Exception:
             continue
+        if project_id and summary["project_id"] != project_id:
+            continue
+        items.append(summary)
     items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
     return items
 
@@ -626,8 +713,108 @@ def index():
 
 
 @app.get("/api/design-history")
-def list_design_history():
-    return {"items": _list_design_history_records()}
+def list_design_history(project_id: str = ""):
+    return {"items": _list_design_history_records(project_id.strip())}
+
+
+@app.post("/api/design-history/{record_id}/project")
+def move_design_history(record_id: str, payload: MoveHistoryRequest):
+    if not project_store.get(payload.project_id):
+        raise HTTPException(status_code=404, detail="项目不存在")
+    record = _load_design_history_record(record_id)
+    record["project_id"] = payload.project_id
+    return {"summary": _history_summary(_write_design_history_record(record))}
+
+
+# ---------- 项目 / Product ----------
+
+def _project_payload(project: Dict[str, Any], counts: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+    pid = project["project_id"]
+    public = {k: v for k, v in project.items() if k != "kb_api_key"}
+    return {
+        **public,
+        "kb_key_configured": bool(project.get("kb_api_key")),
+        "design_count": (counts or {}).get(pid, 0),
+        "doc_count": len(project_store.rag_store(pid).list_docs()),
+    }
+
+
+def _design_counts_by_project() -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in _list_design_history_records():
+        counts[item["project_id"]] = counts.get(item["project_id"], 0) + 1
+    return counts
+
+
+def _require_project(project_id: str) -> Dict[str, Any]:
+    project = project_store.get(project_id) if valid_project_id(project_id) else None
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return project
+
+
+@app.get("/api/projects")
+def list_projects():
+    counts = _design_counts_by_project()
+    return {"items": [_project_payload(p, counts) for p in project_store.list()], "default_project_id": DEFAULT_PROJECT_ID}
+
+
+@app.post("/api/projects")
+def create_project(payload: ProjectRequest):
+    try:
+        project = project_store.create(payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"project": _project_payload(project)}
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str):
+    project = _require_project(project_id)
+    return {"project": _project_payload(project, _design_counts_by_project())}
+
+
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectRequest):
+    _require_project(project_id)
+    try:
+        project = project_store.update(project_id, payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"project": _project_payload(project, _design_counts_by_project())}
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str):
+    _require_project(project_id)
+    count = _design_counts_by_project().get(project_id, 0)
+    if count:
+        raise HTTPException(status_code=409, detail=f"该项目下还有 {count} 条测试设计，请先移到其他项目再删除")
+    try:
+        project_store.delete(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"deleted": project_id}
+
+
+@app.get("/api/projects/{project_id}/docs")
+def list_project_docs(project_id: str):
+    _require_project(project_id)
+    return {"docs": project_store.rag_store(project_id).list_docs()}
+
+
+@app.post("/api/projects/{project_id}/docs")
+async def upload_project_doc(project_id: str, payload: RAGUploadBase64Request):
+    _require_project(project_id)
+    return {"uploaded": _ingest_upload(project_store.rag_store(project_id), payload)}
+
+
+@app.delete("/api/projects/{project_id}/docs/{doc_id}")
+def delete_project_doc(project_id: str, doc_id: str):
+    _require_project(project_id)
+    if not project_store.rag_store(project_id).delete_doc(doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"deleted": doc_id}
 
 
 @app.get("/api/design-history/{record_id}")
@@ -649,23 +836,123 @@ def get_design_history_document(record_id: str):
     return FileResponse(html_path, media_type="text/html", filename=f"{record.get('title', record_id)}-测试设计文档.html")
 
 
-def _build_effective_rag_context(requirements: List[str], manual_rag_context: str) -> tuple[str, List[Dict[str, Any]]]:
-    query = "\n".join(requirements).strip()
-    hits = rag_store.retrieve(query, top_k=6)
-    auto_context = ""
-    if hits:
-        lines = []
-        for i, h in enumerate(hits, start=1):
-            text = (h.get("text", "") or "").strip()
-            excerpt = text[:700]
-            lines.append(
-                f"[RAG-{i}] doc={h.get('filename')} chunk={h.get('chunk_id')} score={h.get('score')}\n{excerpt}"
-            )
-        auto_context = "\n\n".join(lines)
+def _kb_sources(project_id: str) -> Dict[str, str]:
+    """各 Dify 知识库的 App Key（为空表示未配置）。"""
+    return {"kb_project": project_store.kb_api_key(project_id), "kb_public": KBSettings().read()["api_key"]}
 
-    parts = [manual_rag_context.strip(), auto_context.strip()]
-    merged = "\n\n".join([p for p in parts if p])
-    return merged, hits
+
+def _query_kb(scope: str, api_key: str, query: str, top_k: int, cfg: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[str]]:
+    return kb_retrieve(query, [{"scope": scope, "label": SCOPE_LABELS[scope], "api_key": api_key}], cfg=cfg, top_k=top_k)
+
+
+def _gather_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[Dict[str, Any]], List[str]]:
+    """查全部来源：本地项目/公共资料用原文；项目知识库用原文；公共知识库用协议关键词。"""
+    hits: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    for scope, store in (("project", project_store.rag_store(project_id)), ("public", rag_store)):
+        for h in store.retrieve(text, top_k=top_k):
+            hits.append({**h, "scope": scope})
+    cfg = KBSettings().read()
+    keys = _kb_sources(project_id)
+    jobs = [("kb_project", text), ("kb_public", protocol_query(text))]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_query_kb, scope, keys[scope], q, top_k, cfg) for scope, q in jobs]
+        for f in futures:
+            h, e = f.result()
+            hits.extend(h)
+            errors.extend(e)
+    return hits, errors
+
+
+def _build_effective_rag_context(
+    requirements: List[str], manual_rag_context: str, project_id: str = ""
+) -> tuple[str, List[Dict[str, Any]], List[str]]:
+    """测试需求分析的资料上下文：用户粘贴 + 按优先级排好的各来源检索结果。返回 (上下文, 用到的片段, 错误)。"""
+    query = "\n".join(requirements).strip()
+    hits, errors = _gather_knowledge(query, project_id)
+    for err in errors:
+        print(f"[kb] {err}")
+    context, used = format_context(manual_rag_context or "", hits)
+    return context, used, errors
+
+
+def _requirement_text(req: Dict[str, Any]) -> str:
+    parts = [str(req.get(k) or "") for k in ("title", "description", "statement", "scenario", "detail")]
+    parts.append(" ".join(str(x) for x in (req.get("rat_scope") or []) if x))
+    return " ".join(p for p in parts if p).strip()
+
+
+def _build_design_knowledge(requirement_spec: Dict[str, Any], project_id: str) -> tuple[str, List[Dict[str, Any]]]:
+    """测试设计阶段：每条需求单独查知识库（公共知识库用协议关键词补参数、定时器、流程和条款；项目知识库查产品行为）。"""
+    reqs = [r for r in (requirement_spec or {}).get("final_requirements", []) or [] if isinstance(r, dict)][:8]
+    cfg = KBSettings().read()
+    keys = _kb_sources(project_id)
+    if not reqs or not cfg["base_url"] or not any(keys.values()):
+        return "", []
+    jobs = []
+    for r in reqs:
+        text = _requirement_text(r)
+        if not text:
+            continue
+        jobs.append((r.get("req_id", ""), "kb_public", protocol_query(text)))
+        jobs.append((r.get("req_id", ""), "kb_project", str(r.get("title") or text)))
+    hits: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [(rid, pool.submit(_query_kb, scope, keys[scope], q, 2, cfg)) for rid, scope, q in jobs if keys[scope]]
+        for rid, f in futures:
+            h, errs = f.result()
+            hits.extend({**x, "req_id": rid, "filename": f"{x['filename']}（{rid}）" if rid else x["filename"]} for x in h)
+            for err in errs:
+                print(f"[kb] {err}")
+    return format_context("", hits, max_hits={"kb_project": 8, "kb_public": 10}, max_total=9000)
+
+
+def _kb_resolve_questions(user_qs: List[Dict[str, Any]], auto_qs: List[Dict[str, Any]], project_id: str,
+                          llm: Any, limit: int = 8) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """评审问题先查知识库：有明确依据的由 AI 改答案并不再问用户；资料矛盾的留给用户；查不到的保持原样。"""
+    cfg = KBSettings().read()
+    keys = _kb_sources(project_id)
+    if not cfg["base_url"] or not any(keys.values()) or not getattr(llm, "enabled", False):
+        return user_qs, auto_qs
+    # 先查要问用户的，再查没有依据的 AI 默认答案
+    candidates = (user_qs + [q for q in auto_qs if not q.get("basis")])[:limit]
+
+    def work(q: Dict[str, Any]):
+        scope = "kb_project" if is_product_question(q["question"]) else "kb_public"
+        if not keys[scope]:
+            scope = "kb_public" if scope == "kb_project" else "kb_project"
+        query = q["question"] if scope == "kb_project" else protocol_query(q["question"], q["question"])
+        try:
+            res = kb_query_app(cfg["base_url"], keys[scope], query[: cfg["max_query_chars"]], timeout=cfg["timeout"])
+        except Exception as exc:
+            print(f"[kb] 评审问题检索失败: {exc}")
+            return q, scope, None, []
+        docs = sorted({str(r.get("document_name") or "") for r in res["resources"] if r.get("document_name")})
+        evidence = "\n".join(f"《{r.get('document_name', '')}》{str(r.get('content') or '')[:600]}" for r in res["resources"][:4])
+        return q, scope, resolve_question(llm, q["question"], q.get("ai_answer", ""), scope, evidence, res["answer"]), docs
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(work, candidates))
+
+    user_out = list(user_qs)
+    auto_out = list(auto_qs)
+    for q, scope, verdict, docs in results:
+        if not verdict or verdict["status"] == "not_found":
+            continue
+        basis = f"{SCOPE_LABELS[scope]}：{verdict['basis'] or '、'.join(docs) or '知识库'}"
+        if verdict["status"] == "resolved" and verdict["answer"]:
+            q.update(ai_answer=verdict["answer"], basis=basis, kb_status="resolved")
+            if q in user_out:
+                user_out.remove(q)
+                auto_out.insert(0, q)
+        elif verdict["status"] == "conflict":
+            q.update(basis=f"{basis}（资料与默认答案不一致，需确认）", kb_status="conflict")
+            if verdict["answer"]:
+                q["ai_answer"] = verdict["answer"]
+            if q in auto_out and len(user_out) < MAX_USER_QUESTIONS:
+                auto_out.remove(q)
+                user_out.append(q)
+    return user_out, auto_out
 
 
 @app.get("/api/bugzilla/settings")
@@ -728,13 +1015,50 @@ def llm_test_settings(payload: LLMSettingsRequest):
     return {"ok": True, "reply": reply[:80], "latency_ms": int((time.time() - started) * 1000)}
 
 
+@app.get("/api/settings/kb")
+def kb_get_settings():
+    return KBSettings().public()
+
+
+@app.post("/api/settings/kb")
+def kb_save_settings(payload: KBSettingsRequest):
+    settings = KBSettings()
+    try:
+        cfg = settings.merged(payload.base_url, payload.api_key, payload.clear_key, payload.timeout, payload.max_query_chars)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return settings.save(cfg)
+
+
+@app.post("/api/settings/kb/test")
+def kb_test_settings(payload: KBTestRequest):
+    """用表单里的值（未保存也可以）查一次；指定项目时查该项目的知识库，否则查公共知识库。"""
+    try:
+        cfg = KBSettings().merged(payload.base_url, payload.api_key, payload.clear_key, payload.timeout, payload.max_query_chars)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    key = project_store.kb_api_key(payload.project_id) if payload.project_id else cfg["api_key"]
+    if not cfg["base_url"] or not key:
+        raise HTTPException(status_code=400, detail="请填写接口地址和 App Key（项目测试需先在项目里配置 App Key）。")
+    started = time.time()
+    try:
+        res = kb_query_app(cfg["base_url"], key, (payload.query or "测试连接")[: cfg["max_query_chars"]], timeout=cfg["timeout"])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {
+        "ok": True,
+        "latency_ms": int((time.time() - started) * 1000),
+        "answer": res["answer"][:300],
+        "documents": sorted({str(r.get("document_name") or "") for r in res["resources"] if r.get("document_name")}),
+    }
+
+
 @app.get("/api/rag/docs")
 def rag_docs():
     return {"docs": rag_store.list_docs()}
 
 
-@app.post("/api/rag/upload")
-async def rag_upload(payload: RAGUploadBase64Request):
+def _ingest_upload(store: SimpleRAGStore, payload: RAGUploadBase64Request) -> Dict[str, Any]:
     filename = (payload.filename or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="filename不能为空")
@@ -745,10 +1069,21 @@ async def rag_upload(payload: RAGUploadBase64Request):
     if not content:
         raise HTTPException(status_code=400, detail="文件内容为空")
     try:
-        meta = rag_store.ingest_file(filename, content)
-        return {"uploaded": meta}
+        return store.ingest_file(filename, content)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"文档入库失败: {exc}")
+
+
+@app.post("/api/rag/upload")
+async def rag_upload(payload: RAGUploadBase64Request):
+    return {"uploaded": _ingest_upload(rag_store, payload)}
+
+
+@app.delete("/api/rag/docs/{doc_id}")
+def rag_delete(doc_id: str):
+    if not rag_store.delete_doc(doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"deleted": doc_id}
 
 
 @app.post("/api/chat")
@@ -908,7 +1243,9 @@ async def _run_requirement_hitl_job(job_id: str):
 
     try:
         for round_no in range(1, 4):
-            effective_rag_context, rag_hits = _build_effective_rag_context(reqs, rag_context)
+            effective_rag_context, rag_hits, rag_errors = await asyncio.to_thread(
+                _build_effective_rag_context, reqs, rag_context, job.get("project_id", "")
+            )
             shared = {
                 "input_requirements": reqs,
                 "rag_context": effective_rag_context,
@@ -930,11 +1267,16 @@ async def _run_requirement_hitl_job(job_id: str):
             requirement_spec = shared.get("requirement_spec", {})
             persona_reviews = shared.get("persona_reviews", {})
             user_questions, auto_confirmed = _triage_open_questions(persona_reviews, job.get("answered_questions", []))
+            user_questions, auto_confirmed = await asyncio.to_thread(
+                _kb_resolve_questions, user_questions, auto_confirmed, job.get("project_id", ""), shared["llm_client"]
+            )
             # AI 自行确认的问题直接记入已确认列表，用户跳过后续轮次直接生成设计时也能带上这些假设
             job["answered_questions"] = _merge_answered_questions(
                 job.get("answered_questions", []),
                 [{"source_round": round_no, "req_id": q["req_id"], "question": q["question"],
-                  "answer": q["ai_answer"], "source": "AI 自行确认"} for q in auto_confirmed],
+                  "answer": q["ai_answer"],
+                  "source": "知识库确认" if q.get("kb_status") == "resolved" else "AI 自行确认",
+                  "basis": q.get("basis", "")} for q in auto_confirmed],
             )
             job["pending_questions"] = user_questions
             round_summary = {
@@ -943,6 +1285,7 @@ async def _run_requirement_hitl_job(job_id: str):
                 "issues": _collect_review_issues(persona_reviews),
                 "open_questions": user_questions,
                 "auto_confirmed": auto_confirmed,
+                "knowledge_refs": ref_summary(rag_hits),
             }
             round_summaries = [item for item in (job.get("round_summaries", []) or []) if item.get("round") != round_no]
             round_summaries.append(round_summary)
@@ -961,7 +1304,7 @@ async def _run_requirement_hitl_job(job_id: str):
                 "requirement_review_history": review_history,
                 "warnings": shared.get("warnings", []),
                 "trace": shared.get("trace", []),
-                "rag": {"hits": rag_hits, "context_used": bool(effective_rag_context)},
+                "rag": {"hits": rag_hits, "context_used": bool(effective_rag_context), "errors": rag_errors},
             }
             job["last_payload"] = round_payload
             job["round"] = round_no
@@ -1051,6 +1394,7 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "round": 0,
         "requirements": reqs,
         "rag_context": payload.rag_context.strip(),
+        "project_id": project_store.resolve_id(payload.project_id),
         "framework_capability_catalog": framework_capability_catalog,
         "product_profile": payload.product_profile or {},
         "test_environments": payload.test_environments or {},
@@ -1144,6 +1488,9 @@ async def _run_stage_job(job_id: str):
 
     try:
         if stage == "design":
+            knowledge_context, knowledge_hits = await asyncio.to_thread(
+                _build_design_knowledge, payload.requirement_spec or {}, payload.project_id
+            )
             shared = {
                 "input_requirements": payload.requirement_input or [],
                 "requirement_spec": payload.requirement_spec,
@@ -1151,6 +1498,7 @@ async def _run_stage_job(job_id: str):
                 "requirement_review_history": payload.requirement_review_history or {},
                 "product_profile": payload.product_profile or {},
                 "test_environments": payload.test_environments or {},
+                "knowledge_context": knowledge_context,
                 "llm_client": LLMClient(),
                 "warnings": [],
                 "trace": [],
@@ -1170,6 +1518,8 @@ async def _run_stage_job(job_id: str):
                 warnings={"design": shared.get("warnings", [])},
                 trace={"design": shared.get("trace", [])},
                 status="design_completed",
+                project_id=payload.project_id,
+                knowledge_refs={"design": ref_summary(knowledge_hits)},
             )
             result = {
                 "test_design_spec": shared.get("test_design_spec", {}),
@@ -1208,6 +1558,7 @@ async def _run_stage_job(job_id: str):
                 warnings={"testcases": shared.get("warnings", [])},
                 trace={"testcases": shared.get("trace", [])},
                 status="testcases_completed",
+                project_id=payload.project_id,
             )
             result = {
                 "test_case_spec": shared.get("test_case_spec", {}),
