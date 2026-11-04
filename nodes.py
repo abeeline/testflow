@@ -748,6 +748,7 @@ class TestDesignNode(Node):
             "product_profile": shared.get("product_profile", {}),
             "test_environments": shared.get("test_environments", {}),
             "supervisor_feedback": shared.get("design_supervisor_feedback", ""),
+            "knowledge_references": shared.get("knowledge_context", ""),
         }
 
     def exec(self, prep_res):
@@ -774,6 +775,7 @@ class TestDesignNode(Node):
                         "product_profile": prep_res.get("product_profile", {}),
                         "available_test_environments": prep_res.get("test_environments", {}),
                         "supervisor_feedback": prep_res.get("supervisor_feedback", ""),
+                        "knowledge_references": prep_res.get("knowledge_references", ""),
                     },
                     ensure_ascii=False,
                 ),

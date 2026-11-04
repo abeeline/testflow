@@ -652,7 +652,8 @@ function renderOpenQuestions(openQuestions = [], autoConfirmed = []) {
   const qItem = (q, auto) => {
     const key = `${q.req_id || "REQ"}::${q.question || ""}`;
     const pr = q.priority || "P1";
-    const meta = [q.req_id, (q.personas || []).join("/") ? `${(q.personas || []).join("/")}评审` : ""].filter(Boolean).join(" · ");
+    const kbTag = q.kb_status === "resolved" ? "知识库已确认" : q.kb_status === "conflict" ? "资料冲突，需确认" : "";
+    const meta = [q.req_id, (q.personas || []).join("/") ? `${(q.personas || []).join("/")}评审` : "", kbTag].filter(Boolean).join(" · ");
     const hint = q.ai_answer
       ? `<div class="oq-ai"><span>AI ${auto ? "已采用" : "建议"}：</span>${esc(q.ai_answer)}${q.basis ? `<em>（依据：${esc(q.basis)}）</em>` : ""}</div>`
       : "";
@@ -665,7 +666,7 @@ function renderOpenQuestions(openQuestions = [], autoConfirmed = []) {
     ? openQuestions.map((q) => qItem(q, false)).join("")
     : "<p class='feature-hint'>没有必须由你确认的问题，可以直接生成测试设计稿。</p>";
   const autoHtml = autoConfirmed.length
-    ? `<details class="fold"><summary>AI 已自行确认 ${autoConfirmed.length} 个问题（按 3GPP 默认值 / 行业惯例，可修改）</summary>${autoConfirmed
+    ? `<details class="fold"><summary>AI 已自行确认 ${autoConfirmed.length} 个问题（${autoConfirmed.filter((q) => q.kb_status === "resolved").length} 个有知识库依据，其余按 3GPP 默认值 / 行业惯例，可修改）</summary>${autoConfirmed
         .map((q) => qItem(q, true))
         .join("")}</details>`
     : "";
@@ -1644,7 +1645,8 @@ async function generateRequirementsRound(round) {
   }
   setStatus(
     `测试需求评审完成：v${data.round}${data.is_final_round ? "（终稿）" : ""}` +
-      (data.rag?.hits?.length ? `\nRAG命中: ${data.rag.hits.length} 条片段` : "\nRAG命中: 0") +
+      (data.rag?.hits?.length ? `\n资料命中: ${data.rag.hits.length} 条片段（${[...new Set(data.rag.hits.map((h) => h.scope_label || h.scope))].join("、")}）` : "\n资料命中: 0") +
+      (data.rag?.errors?.length ? `\n知识库异常:\n- ${data.rag.errors.join("\n- ")}` : "") +
       (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : "")
   );
   persistCurrentState();
@@ -2393,8 +2395,17 @@ function kbFormPayload(extra = {}) {
   };
 }
 
+// 配置了公共知识库后，公共资料统一放知识库，本地不再提供“存入公共资料”
+function applyKbAvailability(data) {
+  const publicOpt = ragTargetEl?.querySelector('option[value="public"]');
+  const usePublicKb = !!(data?.enabled && data?.key_configured);
+  if (publicOpt) publicOpt.hidden = usePublicKb;
+  if (usePublicKb && ragTargetEl) ragTargetEl.value = "project";
+}
+
 async function loadKbSettings() {
   const data = await fetchJson("/api/settings/kb");
+  applyKbAvailability(data);
   if (kbBaseUrlEl) kbBaseUrlEl.value = data.base_url || "";
   if (kbTimeoutEl) kbTimeoutEl.value = data.timeout || 60;
   if (kbMaxQueryEl) kbMaxQueryEl.value = data.max_query_chars || 500;
@@ -2682,6 +2693,7 @@ try { currentProjectId = localStorage.getItem(CURRENT_PROJECT_KEY) || DEFAULT_PR
 restoreLastResultUI(loadLastResult());
 loadBugzillaSettings().catch(() => {});
 loadLlmSettings().catch(() => {});
+loadKbSettings().catch(() => {});
 loadProjects()
   .catch((e) => setStatus(`加载项目列表失败: ${e.message}`))
   .finally(() => fetchRagDocs().catch((e) => setStatus(`加载RAG文档列表失败: ${e.message}`)));

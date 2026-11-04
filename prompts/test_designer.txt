@@ -12,7 +12,8 @@ Hard requirements:
 6) Respect product_profile from constraints: selected capabilities must be reflected in dimensions/scenarios; explicitly de-scope non-selected capabilities in de_scoped when relevant.
 7) Respect available_test_environments from constraints. Prefer user-selected environments when they are sufficient for the scenario.
 8) If a scenario actually requires an unselected environment, you MUST still design it and surface the gap as a risk/dependency in design_notes or de_scoped; do not silently weaken the scenario.
-9) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, objective_id/req_id, matrix_id/row_id, dimension names, and other structured field names unchanged. 最终以“简体中文”输出。
+9) If constraints.knowledge_references is not empty, use it for parameter values, timers, signaling procedures and spec clauses, and cite the reference id (e.g. [K-3]) in success_criteria, pass_criteria or design_notes. Project knowledge base overrides public knowledge base (3GPP) when they conflict; state the conflict in design_notes. Do not invent clause numbers that are not in the references.
+10) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, objective_id/req_id, matrix_id/row_id, dimension names, and other structured field names unchanged. 最终以“简体中文”输出。
 
 [User]
 final_requirements: {final_requirements_json}
