@@ -7,7 +7,8 @@ Hard constraints:
 2) For each integrated_matrix row, create at least one testcase.
 3) Perform parameter decomposition from key_configuration into executable step params.
 4) Preserve numeric thresholds and KPI values exactly in pass_fail (e.g. 2s, 95%, -115dBm, 30s). Do not weaken or paraphrase away numbers.
-5) Steps must use ONLY actions from action_vocabulary.
+5) Carry every concrete value in key_configuration (band, ARFCN, bandwidth, timers, IE values, cause codes, APN, etc.) into step params unchanged. Never replace a given value with a placeholder like "default" or "按配置".
+5b) Steps must use ONLY actions from action_vocabulary.
 6) Include trace to req_id and row_id for each testcase.
 7) Each testcase MUST include test_environment, inherited from the corresponding integrated_matrix row. Do not omit it.
 8) Keep test_environment.primary unchanged if the integrated_matrix row already selected one. If the environment is unavailable, keep it and preserve the risk note.

@@ -31,7 +31,13 @@
 9) checkpoints：逐项检查点，写清检查哪条消息/哪个 IE/定时器/行为及期望值；pass_criteria 保留原用例数值门限。
 10) references：相关 3GPP 规范条款（如 TS 38.331 §5.3.5.13、TS 24.501 §5.5.1.2.5），不确定的不要编造。
 11) open_points：落地前仍需确认的问题（只列真正不确定的）。
-12) 所有说明文字用简体中文，消息名、IE 名、参数名、枚举值保持英文原样。
+12) 需求写明的配置必须原样落地（最重要）：
+   - requirement_configs.per_testcase[tc_id] 是该用例关联需求原文写明的配置（name/value/source_text），每一项都要落到 cell_config 或 message_configs[].ies（或 parameter_variations）中，
+     value 与原文一字不差（数值、单位、枚举拼写都不改，不换算、不取整、不用“建议值”替换）。需求给了取值的 IE 不能再写成 open_points。
+   - requirement_configs.source_config_lines 是需求原文里的配置行，和本用例相关的也要照原文取值落地。
+   - 与 3GPP 规范冲突时仍按需求值配置，status 写 conflict 并在 note 和 open_points 说明。
+   - 输出 requirement_configs 数组逐项回报：{"req_id","name","value","source_text","applied_to"（如 message_configs.M1.ies[...].path 或 cell_config.band），"status"（applied / not_applicable / conflict），"note"}。
+13) 所有说明文字用简体中文，消息名、IE 名、参数名、枚举值保持英文原样。
 
 只输出 JSON：
 {
@@ -64,6 +70,7 @@
       "checkpoints": [{"item": "...", "expected": "..."}],
       "pass_criteria": ["..."],
       "references": ["..."],
+      "requirement_configs": [{"req_id": "REQ-...", "name": "t304", "value": "ms1000", "source_text": "...", "applied_to": "message_configs.M1", "status": "applied", "note": ""}],
       "open_points": ["..."]
     }
   ]
@@ -73,4 +80,5 @@
 testcases: {testcases_json}
 requirements: {requirements_json}
 product_profile: {product_profile_json}
+requirement_configs: {requirement_configs_json}
 last_error: {last_error}

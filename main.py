@@ -1574,6 +1574,7 @@ async def _run_stage_job(job_id: str):
             if not payload.test_case_spec:
                 raise HTTPException(status_code=400, detail="缺少test_case_spec")
             shared = {
+                "input_requirements": payload.requirement_input or [],
                 "requirement_spec": payload.requirement_spec or {},
                 "test_case_spec": payload.test_case_spec,
                 "product_profile": payload.product_profile or {},
@@ -1950,6 +1951,21 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
              r.get("test_environment", ""), r.get("route_label", ""), _list_to_text(r.get("exec_case_ids"))]
             for r in trace_rows
         ])
+
+    cfg_rows = []
+    status_label = {"applied": "已落地", "missing": "未落地", "not_applicable": "不适用", "conflict": "与规范冲突"}
+    for route, label in (("amarisoft", "Amarisoft"), ("protocol", "协议仪表")):
+        bundle = (executable_cases.get("bundles") or {}).get(route) or {}
+        for c in bundle.get("cases") or bundle.get("items") or []:
+            for rc in c.get("requirement_configs") or []:
+                if isinstance(rc, dict):
+                    cfg_rows.append([label, c.get("case_id", ""), c.get("source_tc_id", ""), rc.get("req_id", ""), rc.get("name", ""),
+                                     _list_to_text(rc.get("value")) if isinstance(rc.get("value"), list) else str(rc.get("value", "")),
+                                     status_label.get(rc.get("status", ""), rc.get("status", "")), rc.get("applied_to", ""),
+                                     rc.get("source_text", ""), rc.get("note", "")])
+    if cfg_rows:
+        _sheet("需求配置落地", [("路线", 10), ("case", 10), ("用例", 12), ("需求", 12), ("参数", 22), ("取值", 18),
+                             ("状态", 10), ("落到字段", 36), ("需求原文", 50), ("说明", 40)], cfg_rows)
 
     if requirement_input:
         _sheet("需求原文", [("序号", 8), ("需求原文", 120)], [[i, txt] for i, txt in enumerate(requirement_input, start=1)])

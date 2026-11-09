@@ -10,7 +10,8 @@ Artemis 是一个手机 UI 自动化 Agent，在真机 + 运营商实网上按�
 4) title 不超过 60 个字；group 用功能分组（如 搜选网/基本通信/数据业务/语音/短信/功耗）。
 5) preconditions：执行前需要满足的条件（SIM、网络制式、开关状态等），没有就填空字符串。
 6) priority 只能是 P0/P1/P2；redline 表示是否红线用例（基本通信能力类填 true）。
-7) 所有说明文字用简体中文。
+7) requirements[].explicit_configs 是需求原文写明的取值（网络制式、频段、APN、等待时长、门限等），与本用例相关的要原样写进 goal 或 expected_result，不换算、不改写。
+8) 所有说明文字用简体中文。
 
 只输出 JSON：
 {
