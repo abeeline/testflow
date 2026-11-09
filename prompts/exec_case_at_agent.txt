@@ -8,7 +8,8 @@ AT Agent 通过串口向模组发送 AT 指令并在实网下判定结果；用�
 3) expected_result：可判定的预期结果（期望返回码/URC/字段值/数值门限），保留原用例 pass_fail 中的数值。
 4) title 不超过 60 个字；group 用功能分组（如 网络注册/数据业务/短信/语音/SIM/功耗/厂商指令）。
 5) preconditions：执行前条件，没有填空字符串。priority 只能是 P0/P1/P2；redline 表示是否红线用例。
-6) 所有说明文字用简体中文，AT 指令原样保留。
+6) requirements[].explicit_configs 是需求原文写明的取值（AT 指令参数、APN、PSM/eDRX 定时器、频段锁定、门限等），与本用例相关的要原样写进 goal 或 expected_result，不换算、不改写。
+7) 所有说明文字用简体中文，AT 指令原样保留。
 
 只输出 JSON：
 {

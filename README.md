@@ -48,8 +48,15 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 | --- | --- | --- | --- |
 | 实网手机 | 实网环境 + 手机类产品 | `artemis-case-library` v1，`profile=flash` | Artemis 用例库导入 |
 | 实网模组 / AT 指令 | 实网环境 + 模组类产品，或用例含 AT 指令 | `artemis-case-library` v1，`profile=at` | AT Agent 用例库导入 |
-| 模拟基站 | Amarisoft 环境 | `testflow-amarisoft-case` v1：关键 PHY/小区/核心网参数、步骤、期望信令、通过标准 | Amarisoft Agent 生成配置并执行 |
-| 协议流程 | 协议分析仪环境 | `testflow-protocol-test-requirement` v1：信令流程、关键 IE、参数组合、检查点、规范条款 | PRTest 后续编写 XML + Python |
+| 模拟基站 | Amarisoft 环境 | `testflow-amarisoft-case` v2：关键 PHY/小区/核心网参数、需定制的消息 IE、步骤、期望信令、通过标准、需求配置落地情况 | Amarisoft Agent 生成配置并执行 |
+| 协议流程 | 协议分析仪环境 | `testflow-protocol-test-requirement` v3：消息模板 + IE 覆盖值、信令流程、参数组合、检查点、规范条款、需求配置落地情况 | PRTest 后续编写 XML + Python |
+
+**需求写明的配置不丢**（`utils/req_configs.py`）：
+
+- 需求解析时把原文写明的配置（频段、频点、带宽、SCS、定时器、DRX/PSM、测量门限、IE 取值、拒绝原因、APN 等）原样记到 `explicit_configs`（name / value / source_text），综合评审丢掉时按 req_id 自动补回；测试设计和用例生成要求这些值原样进 `key_configuration` 和步骤参数
+- 生成 Amarisoft / 协议仪表 case 时，把关联需求的 `explicit_configs` 和需求原文中的配置行一起交给 LLM，要求一字不改地落到 `cell_config` / `core_config` / `message_configs` 等字段
+- 生成后逐项核对：每个 case 的 `requirement_configs` 标明每项需求配置 `applied`（已落地）/ `missing`（未找到）/ `not_applicable` / `conflict`，未落地项写进 `open_points` 和告警；bundle 的 `source_requirement.config_lines` 保留需求原文配置行并标出取值是否出现在 case 中
+- bundle 顶部 `field_guide` 说明每个字段的含义，下游 Agent 无需额外文档；Excel 导出新增“需求配置落地”页
 
 各路线提示词在 `prompts/exec_case_*.txt`，可在 Prompt Settings 中调整。LLM 不可用时会按用例内容生成降级 case，保证每条用例都有落地结果。
 

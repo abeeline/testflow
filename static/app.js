@@ -1759,8 +1759,32 @@ function renderExecutableCases(data) {
     .filter((r) => data.bundles[r])
     .map((r) => `<details class="exec-bundle"><summary>${esc(labels[r] || r)}（${esc(EXEC_ROUTE_FILES[r])}）</summary>${
       r === "protocol" ? renderProtocolPreview(data.bundles[r]) : ""
-    }<details class="raw-json"><summary>JSON</summary><pre class="ui-pre">${esc(JSON.stringify(data.bundles[r], null, 2))}</pre></details></details>`)
+    }${r === "amarisoft" || r === "protocol" ? renderReqConfigPreview(data.bundles[r]) : ""}<details class="raw-json"><summary>JSON</summary><pre class="ui-pre">${esc(JSON.stringify(data.bundles[r], null, 2))}</pre></details></details>`)
     .join("");
+}
+
+const REQ_CFG_STATUS = { applied: "已落地", missing: "未落地", not_applicable: "不适用", conflict: "与规范冲突" };
+
+function renderReqConfigPreview(bundle) {
+  const items = bundle?.cases || bundle?.items || [];
+  const rows = [];
+  items.forEach((it) => (it.requirement_configs || []).forEach((rc) => rows.push({ ...rc, case_id: it.case_id })));
+  const lines = bundle?.source_requirement?.config_lines || [];
+  const missLines = lines.filter((l) => l.status !== "covered");
+  if (!rows.length && !missLines.length) return "";
+  const fmt = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : `${v ?? ""}`);
+  const table = rows.length
+    ? `<table class="ui-table"><thead><tr><th>case</th><th>参数</th><th>需求取值</th><th>状态</th><th>落到字段</th><th>需求原文</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td>${esc(r.case_id || "")}</td><td>${esc(r.name || "")}</td><td><code>${esc(fmt(r.value))}</code></td><td>${
+          esc(REQ_CFG_STATUS[r.status] || r.status || "")}</td><td><code>${esc(r.applied_to || "")}</code></td><td>${esc(r.source_text || "")}${
+          r.note ? `<br/><span class="feature-hint">${esc(r.note)}</span>` : ""}</td></tr>`).join("")
+      }</tbody></table>`
+    : "";
+  const lineHtml = missLines.length
+    ? `<p class="feature-hint">需求原文中以下配置行的取值未全部出现在本文件中，请确认是否遗漏：</p><ul>${
+        missLines.map((l) => `<li>${esc(l.text)}（未找到：${esc((l.values || []).filter((v) => !(l.matched_values || []).includes(v)).join("、"))}）</li>`).join("")}</ul>`
+    : "";
+  return `<div class="req-config"><h5>需求写明的配置落地情况</h5>${table}${lineHtml}</div>`;
 }
 
 function renderProtocolPreview(bundle) {
@@ -1792,6 +1816,7 @@ function renderProtocolPreview(bundle) {
 async function generateExecCases() {
   if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
   const data = await startStageJobAndWait("exec_cases", {
+    requirement_input: parseRequirements(requirementsEl?.value || ""),
     requirement_spec: stageState.requirement_spec || {},
     test_case_spec: stageState.test_case_spec,
     product_profile: getSelectedProductProfile(),
