@@ -275,11 +275,10 @@
                 <label for="projectDesc">说明</label>
                 <textarea id="projectDesc" class="ui-input" maxlength="2000" placeholder="产品定位、目标运营商、版本、平台芯片等"></textarea>
                 <div class="field">
-                  <label for="projectKbKey">项目知识库 App Key <span id="projectKbHint" class="feature-hint">可选，Dify 里该项目知识库对应的应用</span></label>
+                  <label for="projectKbUrl">项目知识库 MCP 地址 <span class="feature-hint">可选，留空表示不使用项目知识库</span></label>
                   <div class="btn-row compact-row">
-                    <input id="projectKbKey" class="ui-input" type="password" placeholder="app-...（留空则沿用已保存的）" autocomplete="off" />
+                    <input id="projectKbUrl" class="ui-input" type="text" placeholder="http://aifoundry.example.com:8099/mcp/server/xxxx/mcp" autocomplete="off" />
                     <button id="projectKbTestBtn" class="ui-btn ui-btn-secondary" type="button">测试</button>
-                    <button id="projectKbClearBtn" class="ui-btn ui-btn-ghost" type="button">清除</button>
                   </div>
                   <div id="projectKbResult" class="test-result hidden"></div>
                 </div>
@@ -398,14 +397,10 @@
         </div>
 
         <div class="settings-pane" data-settings-pane="kb">
-          <p class="feature-hint">接入内网 Dify 知识库（文本生成应用，输入变量名 <code>query</code>）。这里的 App Key 对应公共知识库；每个项目可在“项目 / Product”页另配自己知识库的 App Key。生成测试需求时同时检索“项目知识库 + 公共知识库 + 本地资料”。</p>
+          <p class="feature-hint">通过 MCP 接入知识库，只需填写知识库的 MCP 地址。这里填公共知识库（3GPP / 运营商通用规范）；每个项目可在“项目 / Product”页另填自己知识库的 MCP 地址。生成测试需求时同时检索“项目知识库 + 公共知识库 + 本地资料”。</p>
           <div class="field">
-            <label for="kbBaseUrl">Dify 接口地址</label>
-            <input id="kbBaseUrl" class="ui-input" type="text" placeholder="http://dify.example.com/v1" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label for="kbApiKey">公共知识库 App Key <span id="kbKeyHint" class="feature-hint"></span></label>
-            <input id="kbApiKey" class="ui-input" type="password" placeholder="app-...（留空则沿用已保存的）" autocomplete="off" />
+            <label for="kbMcpUrl">公共知识库 MCP 地址 <span class="feature-hint">留空表示不使用公共知识库</span></label>
+            <input id="kbMcpUrl" class="ui-input" type="text" placeholder="http://aifoundry.example.com:8099/mcp/server/xxxx/mcp" autocomplete="off" />
           </div>
           <div class="form-grid">
             <div class="field">
@@ -413,7 +408,7 @@
               <input id="kbTimeout" class="ui-input" type="number" min="5" max="300" step="5" value="60" />
             </div>
             <div class="field">
-              <label for="kbMaxQuery">查询最大字数 <span class="feature-hint">需求太长时截断，需不超过 Dify 应用里 query 变量的长度上限</span></label>
+              <label for="kbMaxQuery">查询最大字数 <span class="feature-hint">需求太长时截断</span></label>
               <input id="kbMaxQuery" class="ui-input" type="number" min="20" max="8000" step="50" value="500" />
             </div>
           </div>
@@ -425,7 +420,6 @@
           <div class="btn-row">
             <button id="kbSaveBtn" class="ui-btn" type="button">保存</button>
             <button id="kbTestBtn" class="ui-btn ui-btn-secondary" type="button">测试公共知识库</button>
-            <button id="kbClearKeyBtn" class="ui-btn ui-btn-ghost" type="button">清除 App Key</button>
           </div>
         </div>
 

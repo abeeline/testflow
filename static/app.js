@@ -103,21 +103,16 @@ const uploadProjectDocBtn = document.getElementById("uploadProjectDocBtn");
 const projectDocsEl = document.getElementById("projectDocs");
 const projectDesignsSection = document.getElementById("projectDesignsSection");
 const projectDesignsEl = document.getElementById("projectDesigns");
-const projectKbKeyEl = document.getElementById("projectKbKey");
-const projectKbHint = document.getElementById("projectKbHint");
+const projectKbUrlEl = document.getElementById("projectKbUrl");
 const projectKbTestBtn = document.getElementById("projectKbTestBtn");
-const projectKbClearBtn = document.getElementById("projectKbClearBtn");
 const projectKbResult = document.getElementById("projectKbResult");
-const kbBaseUrlEl = document.getElementById("kbBaseUrl");
-const kbApiKeyEl = document.getElementById("kbApiKey");
-const kbKeyHint = document.getElementById("kbKeyHint");
+const kbMcpUrlEl = document.getElementById("kbMcpUrl");
 const kbTimeoutEl = document.getElementById("kbTimeout");
 const kbMaxQueryEl = document.getElementById("kbMaxQuery");
 const kbTestQueryEl = document.getElementById("kbTestQuery");
 const kbTestResult = document.getElementById("kbTestResult");
 const kbSaveBtn = document.getElementById("kbSaveBtn");
 const kbTestBtn = document.getElementById("kbTestBtn");
-const kbClearKeyBtn = document.getElementById("kbClearKeyBtn");
 
 const LAST_RESULT_KEY = "pocketflow_last_result_v2";
 const THEME_KEY = "pocketflow_theme";
@@ -1509,11 +1504,9 @@ async function renderProjectForm(projectId) {
   if (projectNameEl) projectNameEl.value = p?.name || "";
   if (projectCodeEl) projectCodeEl.value = p?.code || "";
   if (projectDescEl) projectDescEl.value = p?.description || "";
-  if (projectKbKeyEl) projectKbKeyEl.value = "";
-  if (projectKbHint) projectKbHint.textContent = p?.kb_key_configured ? "（已保存，留空则沿用）" : "可选，Dify 里该项目知识库对应的应用";
+  if (projectKbUrlEl) projectKbUrlEl.value = p?.kb_mcp_url || "";
   projectKbResult?.classList.add("hidden");
-  projectKbTestBtn?.classList.toggle("hidden", !p?.kb_key_configured);
-  projectKbClearBtn?.classList.toggle("hidden", !p?.kb_key_configured);
+  projectKbTestBtn?.classList.toggle("hidden", !p);
   if (projectDefaultsEl) projectDefaultsEl.innerHTML = p ? describeProjectDefaults(p) : "<em>勾选下方选项，保存时把“需求准备”页当前的勾选设为默认值</em>";
   if (projectCaptureDefaultsEl) projectCaptureDefaultsEl.checked = !p;
   useProjectBtn?.classList.toggle("hidden", !p || p.project_id === currentProjectId);
@@ -1545,8 +1538,7 @@ async function saveProject() {
     code: (projectCodeEl?.value || "").trim(),
     description: (projectDescEl?.value || "").trim(),
   };
-  const kbKey = (projectKbKeyEl?.value || "").trim();
-  if (kbKey) body.kb_api_key = kbKey;
+  if (projectKbUrlEl) body.kb_mcp_url = projectKbUrlEl.value.trim();
   if (!body.name) throw new Error("请填写项目名称");
   if (projectCaptureDefaultsEl?.checked) {
     body.product_profile_selected = getSelectedProductProfile().selected;
@@ -2387,8 +2379,7 @@ function showTestResult(el, ok, text) {
 
 function kbFormPayload(extra = {}) {
   return {
-    base_url: (kbBaseUrlEl?.value || "").trim(),
-    api_key: (kbApiKeyEl?.value || "").trim(),
+    mcp_url: (kbMcpUrlEl?.value || "").trim(),
     timeout: Number(kbTimeoutEl?.value) || null,
     max_query_chars: Number(kbMaxQueryEl?.value) || null,
     ...extra,
@@ -2398,7 +2389,7 @@ function kbFormPayload(extra = {}) {
 // 配置了公共知识库后，公共资料统一放知识库，本地不再提供“存入公共资料”
 function applyKbAvailability(data) {
   const publicOpt = ragTargetEl?.querySelector('option[value="public"]');
-  const usePublicKb = !!(data?.enabled && data?.key_configured);
+  const usePublicKb = !!data?.enabled;
   if (publicOpt) publicOpt.hidden = usePublicKb;
   if (usePublicKb && ragTargetEl) ragTargetEl.value = "project";
 }
@@ -2406,17 +2397,15 @@ function applyKbAvailability(data) {
 async function loadKbSettings() {
   const data = await fetchJson("/api/settings/kb");
   applyKbAvailability(data);
-  if (kbBaseUrlEl) kbBaseUrlEl.value = data.base_url || "";
+  if (kbMcpUrlEl) kbMcpUrlEl.value = data.mcp_url || "";
   if (kbTimeoutEl) kbTimeoutEl.value = data.timeout || 60;
   if (kbMaxQueryEl) kbMaxQueryEl.value = data.max_query_chars || 500;
-  if (kbApiKeyEl) kbApiKeyEl.value = "";
-  if (kbKeyHint) kbKeyHint.textContent = data.key_configured ? "（已保存，留空则沿用）" : "（未配置）";
   return data;
 }
 
 function describeKbTest(data) {
   const docs = (data.documents || []).slice(0, 5).join("、");
-  return `连接成功（${data.latency_ms} ms）` + (docs ? `，引用文档：${docs}` : "，未返回引用文档（可在 Dify 应用里开启“引用和归属”）");
+  return `连接成功（${data.latency_ms} ms）` + (docs ? `，引用来源：${docs}` : "，回答里没有列出引用来源");
 }
 
 async function testKb(projectId = "") {
@@ -2446,23 +2435,18 @@ kbTestBtn?.addEventListener("click", async () => {
     setSingleButtonBusy(kbTestBtn, false);
   }
 });
-kbClearKeyBtn?.addEventListener("click", async () => {
-  if (!confirm("确定清除公共知识库的 App Key？")) return;
-  try {
-    await postJson("/api/settings/kb", kbFormPayload({ api_key: "", clear_key: true }));
-    await loadKbSettings();
-    showTestResult(kbTestResult, true, "App Key 已清除");
-  } catch (e) {
-    showTestResult(kbTestResult, false, `清除失败：${e.message}`);
-  }
-});
 projectKbTestBtn?.addEventListener("click", async () => {
   if (!editingProjectId) return;
   setSingleButtonBusy(projectKbTestBtn, true, "测试中...");
   try {
-    // 用已保存的连接设置测试该项目的 App Key
+    // 用输入框里的地址测试（未保存也可以）；超时等参数沿用已保存的知识库设置
     const cfg = await fetchJson("/api/settings/kb");
-    const data = await postJson("/api/settings/kb/test", { base_url: cfg.base_url || "", query: "测试连接", project_id: editingProjectId });
+    const data = await postJson("/api/settings/kb/test", {
+      mcp_url: cfg.mcp_url || "",
+      query: "测试连接",
+      project_id: editingProjectId,
+      project_mcp_url: (projectKbUrlEl?.value || "").trim(),
+    });
     showTestResult(projectKbResult, true, describeKbTest(data));
   } catch (e) {
     showTestResult(projectKbResult, false, `连接失败：${e.message}`);
@@ -2470,22 +2454,6 @@ projectKbTestBtn?.addEventListener("click", async () => {
     setSingleButtonBusy(projectKbTestBtn, false);
   }
 });
-projectKbClearBtn?.addEventListener("click", async () => {
-  if (!editingProjectId || !confirm("确定清除该项目的知识库 App Key？")) return;
-  try {
-    const resp = await fetch(`/api/projects/${encodeURIComponent(editingProjectId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kb_clear_key: true }),
-    });
-    if (!resp.ok) throw new Error(await resp.text());
-    await loadProjects();
-    await renderProjectForm(editingProjectId);
-  } catch (e) {
-    showTestResult(projectKbResult, false, `清除失败：${e.message}`);
-  }
-});
-
 function switchSettingsTab(name) {
   document.querySelectorAll(".settings-tab").forEach((b) => b.classList.toggle("active", b.dataset.settingsTab === name));
   document.querySelectorAll(".settings-pane").forEach((p) => p.classList.toggle("active", p.dataset.settingsPane === name));

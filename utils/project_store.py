@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils.mcp_kb import normalize_mcp_url
 from utils.rag_store import SimpleRAGStore
 
 DEFAULT_PROJECT_ID = "default"
@@ -85,8 +86,8 @@ class ProjectStore:
         pid = str(project_id or "").strip()
         return pid if pid and self.get(pid) else DEFAULT_PROJECT_ID
 
-    def kb_api_key(self, project_id: str) -> str:
-        return str((self.get(self.resolve_id(project_id)) or {}).get("kb_api_key") or "")
+    def kb_mcp_url(self, project_id: str) -> str:
+        return str((self.get(self.resolve_id(project_id)) or {}).get("kb_mcp_url") or "")
 
     def name_of(self, project_id: str) -> str:
         p = self.get(self.resolve_id(project_id))
@@ -108,11 +109,9 @@ class ProjectStore:
             }
         if "test_environment_ids" in fields and isinstance(fields["test_environment_ids"], list):
             out["test_environment_ids"] = [str(x) for x in fields["test_environment_ids"]]
-        # 项目知识库 App Key：留空表示沿用，kb_clear_key 才清除
-        if fields.get("kb_clear_key"):
-            out["kb_api_key"] = ""
-        elif str(fields.get("kb_api_key") or "").strip():
-            out["kb_api_key"] = str(fields["kb_api_key"]).strip()[:200]
+        # 项目知识库的 MCP 地址（空字符串表示不使用项目知识库）
+        if "kb_mcp_url" in fields and fields["kb_mcp_url"] is not None:
+            out["kb_mcp_url"] = normalize_mcp_url(str(fields["kb_mcp_url"]))[:500]
         return out
 
     def _name_taken(self, name: str, exclude_id: str = "") -> bool:
@@ -134,7 +133,7 @@ class ProjectStore:
                 "description": data.get("description", ""),
                 "product_profile_selected": data.get("product_profile_selected", {}),
                 "test_environment_ids": data.get("test_environment_ids", []),
-                "kb_api_key": data.get("kb_api_key", ""),
+                "kb_mcp_url": data.get("kb_mcp_url", ""),
                 "created_at": now,
                 "updated_at": now,
             }

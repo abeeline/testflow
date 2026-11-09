@@ -2,9 +2,9 @@
 
 来源（按可信度从高到低）：
     manual      用户在需求准备页粘贴的文字（只属于这条需求）
-    kb_project  项目知识库（Dify，按项目配置）
+    kb_project  项目知识库（MCP，按项目配置）
     project     项目本地资料（TestFlow 里上传的临时资料）
-    kb_public   公共知识库（Dify，3GPP / 运营商通用规范）
+    kb_public   公共知识库（MCP，3GPP / 运营商通用规范）
     public      公共本地资料
 
 查询词：项目来源用需求原文；公共来源用从需求里提取的协议关键词（流程、消息、定时器、条款号），
@@ -107,7 +107,7 @@ def format_context(manual: str, hits: Iterable[Dict[str, Any]], max_hits: Option
     for scope in SCOPE_ORDER[1:]:
         items = sorted(by_scope[scope], key=lambda x: x.get("score", 0), reverse=True)[: limits.get(scope, 3)]
         for h in items:
-            text = re.sub(r"\s+", " ", str(h.get("text") or "")).strip()[:MAX_HIT_CHARS]
+            text = re.sub(r"\s+", " ", str(h.get("text") or "")).strip()[: int(h.get("max_chars") or MAX_HIT_CHARS)]
             key = text[:120]
             if not text or key in seen_text:
                 continue
