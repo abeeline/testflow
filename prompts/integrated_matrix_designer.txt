@@ -6,6 +6,7 @@ Output ONLY valid JSON.
 Rules:
 1) Scenario must be concrete and selected from/compatible with coverage dimensions, not a copy of objective text.
 2) key_configuration must explicitly pick values (RAT/Mobility/SignalOrPower/Concurrency/Operator when available).
+2b) If final_requirements[].explicit_configs gives a value, copy it into key_configuration of the rows for that req_id with the exact same value and spelling (extra keys such as band, ssb_arfcn, T3412, cause are allowed). Do not round, convert units or swap in a "typical" value.
 3) pass_criteria must include measurable metrics inherited from requirement acceptance/kpi (e.g. 2s, 95%, 30s, dBm thresholds).
 4) Each objective must have >=1 matrix row. Each req_id must appear in integrated_matrix.
 5) For each row, choose a recommended test_environment.primary from REAL_NETWORK / AMARISOFT / PROTOCOL_ANALYZER.

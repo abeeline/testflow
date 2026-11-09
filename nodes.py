@@ -20,6 +20,7 @@ from schemas import (
 )
 from utils.agent_runner import run_json_agent_strict_with_retry, run_json_agent_with_retry
 from utils.schema_validation import ensure_actions_in_vocabulary, validate_jsonschema, validate_list_of_dict
+from utils.req_configs import restore_explicit_configs
 
 
 def _now() -> str:
@@ -723,6 +724,10 @@ class SynthesisNode(Node):
 
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, SYNTHESIS_SCHEMA)
+        restored = restore_explicit_configs(exec_res.get("final_requirements", []), prep_res["requirements"])
+        if restored:
+            shared.setdefault("warnings", []).append(
+                f"SynthesisNode: 综合评审丢失了 {restored} 项需求显式配置，已按 req_id 补回。")
         for req in exec_res.get("final_requirements", []):
             if isinstance(req, dict):
                 req["persona_sources"] = req.get("persona_sources") or ["PRD", "Carrier", "UX"]
@@ -748,6 +753,7 @@ class TestDesignNode(Node):
             "product_profile": shared.get("product_profile", {}),
             "test_environments": shared.get("test_environments", {}),
             "supervisor_feedback": shared.get("design_supervisor_feedback", ""),
+            "knowledge_references": shared.get("knowledge_context", ""),
         }
 
     def exec(self, prep_res):
@@ -774,6 +780,7 @@ class TestDesignNode(Node):
                         "product_profile": prep_res.get("product_profile", {}),
                         "available_test_environments": prep_res.get("test_environments", {}),
                         "supervisor_feedback": prep_res.get("supervisor_feedback", ""),
+                        "knowledge_references": prep_res.get("knowledge_references", ""),
                     },
                     ensure_ascii=False,
                 ),

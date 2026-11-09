@@ -60,6 +60,21 @@ REQUIREMENT_ITEM_SCHEMA = {
             },
         },
         "constraints": {"type": "array", "items": {"type": "string"}},
+        # 需求原文写明的配置取值（频段/频点/带宽/定时器/IE 取值/拒绝原因等），原样保留，最终落到基站/仪表 case。
+        "explicit_configs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "value"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "value": {},
+                    "layer": {"type": "string"},
+                    "target": {"type": "string"},  # cell / core / message / ue / test
+                    "source_text": {"type": "string"},
+                },
+            },
+        },
         "observability": {
             "type": "object",
             "required": ["signals", "logs", "counters"],

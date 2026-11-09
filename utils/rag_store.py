@@ -107,6 +107,19 @@ class SimpleRAGStore:
         self._save_manifest()
         return meta
 
+    def delete_doc(self, doc_id: str) -> bool:
+        docs = self.manifest.get("docs", [])
+        remaining = [d for d in docs if d.get("doc_id") != doc_id]
+        if len(remaining) == len(docs):
+            return False
+        self.manifest["docs"] = remaining
+        self.docs_cache.pop(doc_id, None)
+        path = self.docs_dir / f"{doc_id}.json"
+        if re.fullmatch(r"DOC-[0-9a-f]{12}", doc_id or "") and path.exists():
+            path.unlink()
+        self._save_manifest()
+        return True
+
     def list_docs(self) -> List[Dict[str, Any]]:
         docs = self.manifest.get("docs", [])
         return sorted(docs, key=lambda x: x.get("created_at", ""), reverse=True)
