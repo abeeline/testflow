@@ -25,7 +25,7 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
-from utils.dify_kb import KBSettings, query_app as kb_query_app, retrieve as kb_retrieve
+from utils.mcp_kb import KBSettings, normalize_mcp_url, query_kb, retrieve as kb_retrieve
 from utils.knowledge import (
     SCOPE_LABELS,
     format_context,
@@ -65,14 +65,11 @@ class ProjectRequest(BaseModel):
     description: Optional[str] = None
     product_profile_selected: Optional[Dict[str, List[str]]] = None
     test_environment_ids: Optional[List[str]] = None
-    kb_api_key: Optional[str] = None
-    kb_clear_key: bool = False
+    kb_mcp_url: Optional[str] = None
 
 
 class KBSettingsRequest(BaseModel):
-    base_url: str = ""
-    api_key: str = ""
-    clear_key: bool = False
+    mcp_url: str = ""
     timeout: Optional[int] = None
     max_query_chars: Optional[int] = None
 
@@ -80,6 +77,7 @@ class KBSettingsRequest(BaseModel):
 class KBTestRequest(KBSettingsRequest):
     query: str = "测试连接"
     project_id: str = ""
+    project_mcp_url: str = ""
 
 
 class MoveHistoryRequest(BaseModel):
@@ -730,10 +728,10 @@ def move_design_history(record_id: str, payload: MoveHistoryRequest):
 
 def _project_payload(project: Dict[str, Any], counts: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     pid = project["project_id"]
-    public = {k: v for k, v in project.items() if k != "kb_api_key"}
+    public = {k: v for k, v in project.items() if k != "kb_api_key"}  # 旧版 Dify App Key 不再使用，也不回显
     return {
         **public,
-        "kb_key_configured": bool(project.get("kb_api_key")),
+        "kb_mcp_url": project.get("kb_mcp_url", ""),
         "design_count": (counts or {}).get(pid, 0),
         "doc_count": len(project_store.rag_store(pid).list_docs()),
     }
@@ -837,12 +835,12 @@ def get_design_history_document(record_id: str):
 
 
 def _kb_sources(project_id: str) -> Dict[str, str]:
-    """各 Dify 知识库的 App Key（为空表示未配置）。"""
-    return {"kb_project": project_store.kb_api_key(project_id), "kb_public": KBSettings().read()["api_key"]}
+    """各知识库的 MCP 地址（为空表示未配置）。"""
+    return {"kb_project": project_store.kb_mcp_url(project_id), "kb_public": KBSettings().read()["mcp_url"]}
 
 
-def _query_kb(scope: str, api_key: str, query: str, top_k: int, cfg: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[str]]:
-    return kb_retrieve(query, [{"scope": scope, "label": SCOPE_LABELS[scope], "api_key": api_key}], cfg=cfg, top_k=top_k)
+def _query_kb(scope: str, mcp_url: str, query: str, cfg: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[str]]:
+    return kb_retrieve(query, [{"scope": scope, "label": SCOPE_LABELS[scope], "mcp_url": mcp_url}], cfg=cfg)
 
 
 def _gather_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[Dict[str, Any]], List[str]]:
@@ -856,7 +854,7 @@ def _gather_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[
     keys = _kb_sources(project_id)
     jobs = [("kb_project", text), ("kb_public", protocol_query(text))]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(_query_kb, scope, keys[scope], q, top_k, cfg) for scope, q in jobs]
+        futures = [pool.submit(_query_kb, scope, keys[scope], q, cfg) for scope, q in jobs]
         for f in futures:
             h, e = f.result()
             hits.extend(h)
@@ -887,7 +885,7 @@ def _build_design_knowledge(requirement_spec: Dict[str, Any], project_id: str) -
     reqs = [r for r in (requirement_spec or {}).get("final_requirements", []) or [] if isinstance(r, dict)][:8]
     cfg = KBSettings().read()
     keys = _kb_sources(project_id)
-    if not reqs or not cfg["base_url"] or not any(keys.values()):
+    if not reqs or not any(keys.values()):
         return "", []
     jobs = []
     for r in reqs:
@@ -898,7 +896,7 @@ def _build_design_knowledge(requirement_spec: Dict[str, Any], project_id: str) -
         jobs.append((r.get("req_id", ""), "kb_project", str(r.get("title") or text)))
     hits: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [(rid, pool.submit(_query_kb, scope, keys[scope], q, 2, cfg)) for rid, scope, q in jobs if keys[scope]]
+        futures = [(rid, pool.submit(_query_kb, scope, keys[scope], q, cfg)) for rid, scope, q in jobs if keys[scope]]
         for rid, f in futures:
             h, errs = f.result()
             hits.extend({**x, "req_id": rid, "filename": f"{x['filename']}（{rid}）" if rid else x["filename"]} for x in h)
@@ -912,7 +910,7 @@ def _kb_resolve_questions(user_qs: List[Dict[str, Any]], auto_qs: List[Dict[str,
     """评审问题先查知识库：有明确依据的由 AI 改答案并不再问用户；资料矛盾的留给用户；查不到的保持原样。"""
     cfg = KBSettings().read()
     keys = _kb_sources(project_id)
-    if not cfg["base_url"] or not any(keys.values()) or not getattr(llm, "enabled", False):
+    if not any(keys.values()) or not getattr(llm, "enabled", False):
         return user_qs, auto_qs
     # 先查要问用户的，再查没有依据的 AI 默认答案
     candidates = (user_qs + [q for q in auto_qs if not q.get("basis")])[:limit]
@@ -923,12 +921,12 @@ def _kb_resolve_questions(user_qs: List[Dict[str, Any]], auto_qs: List[Dict[str,
             scope = "kb_public" if scope == "kb_project" else "kb_project"
         query = q["question"] if scope == "kb_project" else protocol_query(q["question"], q["question"])
         try:
-            res = kb_query_app(cfg["base_url"], keys[scope], query[: cfg["max_query_chars"]], timeout=cfg["timeout"])
+            res = query_kb(keys[scope], query[: cfg["max_query_chars"]], timeout=cfg["timeout"])
         except Exception as exc:
             print(f"[kb] 评审问题检索失败: {exc}")
             return q, scope, None, []
-        docs = sorted({str(r.get("document_name") or "") for r in res["resources"] if r.get("document_name")})
-        evidence = "\n".join(f"《{r.get('document_name', '')}》{str(r.get('content') or '')[:600]}" for r in res["resources"][:4])
+        docs = res["citations"]
+        evidence = ("引用来源：" + "；".join(docs)) if docs else ""
         return q, scope, resolve_question(llm, q["question"], q.get("ai_answer", ""), scope, evidence, res["answer"]), docs
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -1024,7 +1022,7 @@ def kb_get_settings():
 def kb_save_settings(payload: KBSettingsRequest):
     settings = KBSettings()
     try:
-        cfg = settings.merged(payload.base_url, payload.api_key, payload.clear_key, payload.timeout, payload.max_query_chars)
+        cfg = settings.merged(payload.mcp_url, payload.timeout, payload.max_query_chars)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return settings.save(cfg)
@@ -1034,22 +1032,28 @@ def kb_save_settings(payload: KBSettingsRequest):
 def kb_test_settings(payload: KBTestRequest):
     """用表单里的值（未保存也可以）查一次；指定项目时查该项目的知识库，否则查公共知识库。"""
     try:
-        cfg = KBSettings().merged(payload.base_url, payload.api_key, payload.clear_key, payload.timeout, payload.max_query_chars)
+        cfg = KBSettings().merged(payload.mcp_url, payload.timeout, payload.max_query_chars)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    key = project_store.kb_api_key(payload.project_id) if payload.project_id else cfg["api_key"]
-    if not cfg["base_url"] or not key:
-        raise HTTPException(status_code=400, detail="请填写接口地址和 App Key（项目测试需先在项目里配置 App Key）。")
+    url = cfg["mcp_url"]
+    if payload.project_id:
+        # 项目页可以传入还没保存的地址；没传就用项目里已保存的
+        try:
+            url = normalize_mcp_url(payload.project_mcp_url) if payload.project_mcp_url else project_store.kb_mcp_url(payload.project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if not url:
+        raise HTTPException(status_code=400, detail="请先填写知识库的 MCP 地址。")
     started = time.time()
     try:
-        res = kb_query_app(cfg["base_url"], key, (payload.query or "测试连接")[: cfg["max_query_chars"]], timeout=cfg["timeout"])
+        res = query_kb(url, (payload.query or "测试连接")[: cfg["max_query_chars"]], timeout=cfg["timeout"])
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {
         "ok": True,
         "latency_ms": int((time.time() - started) * 1000),
         "answer": res["answer"][:300],
-        "documents": sorted({str(r.get("document_name") or "") for r in res["resources"] if r.get("document_name")}),
+        "documents": res["citations"],
     }
 
 
