@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from flow import (
     create_requirement_analysis_flow,
@@ -24,6 +24,8 @@ from flow import (
     create_test_design_flow,
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
+from core.llm import summarize_usage
+from core.tcd import TECHNIQUE_LABELS, purpose_text
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
 from utils.mcp_kb import KBSettings, normalize_mcp_url, query_kb, retrieve as kb_retrieve
 from utils.knowledge import (
@@ -92,6 +94,7 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: List[ChatTurn] = Field(default_factory=list)
+    context: Optional[Dict[str, Any]] = None  # 当前会话摘要（需求、设计、用例、告警），让助手能回答“为什么这样设计”
 
 
 class RequirementHITLStartRequest(BaseModel):
@@ -109,7 +112,9 @@ class RequirementHITLNextRequest(BaseModel):
 
 class StageGenerateRequest(BaseModel):
     requirement_input: Optional[List[str]] = None
-    requirement_spec: Dict[str, Any]
+    requirement_spec: Optional[Dict[str, Any]] = None
+    rag_context: str = ""  # 一键全流程（auto）用
+    framework_capability_catalog: str = ""
     persona_reviews: Optional[Dict[str, Any]] = None
     requirement_review_history: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
@@ -123,6 +128,7 @@ class StageGenerateRequest(BaseModel):
     project_id: str = ""
     bug_ids: Optional[List[str]] = None
     route_overrides: Optional[Dict[str, str]] = None
+    _last_shared: Any = PrivateAttr(default=None)  # 失败时用于报告出错节点
 
 
 class BugzillaSettingsRequest(BaseModel):
@@ -160,7 +166,7 @@ ALLOWED_PROMPT_FILES = {
     "synthesis_arbiter.txt",
     "test_designer.txt",
     "integrated_matrix_designer.txt",
-    "test_case_generator.txt",
+    "test_case_tcd.txt",
     "exec_case_artemis.txt",
     "exec_case_at_agent.txt",
     "exec_case_amarisoft.txt",
@@ -520,7 +526,9 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
             f"<td>{html.escape(str(row.get('row_id', f'ROW-{idx:03d}')))}</td>"
             f"<td>{html.escape(str(row.get('req_id', '')))}</td>"
             f"<td>{html.escape(str(row.get('objective_id', '')))}</td>"
-            f"<td>{html.escape(str(row.get('scenario', '')))}</td>"
+            f"<td>{html.escape(TECHNIQUE_LABELS.get(str(row.get('technique') or ''), str(row.get('technique') or '')))}</td>"
+            f"<td>{html.escape(str(row.get('scenario', '')))}"
+            + (f"<br/><small>{html.escape(purpose_text(row))}</small>" if purpose_text(row) else "") + "</td>"
             f"<td>{html.escape(cfg_text)}</td>"
             f"<td>{html.escape(' / '.join(str(x) for x in row.get('pass_criteria', []) or []))}</td>"
             f"<td>{html.escape(env_text)}</td>"
@@ -528,7 +536,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
             "</tr>"
         )
     integrated_table = (
-        "<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead>"
+        "<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试技术</th><th>测试场景 / 测试目的</th><th>配置选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead>"
         f"<tbody>{''.join(integrated_rows)}</tbody></table>"
         if integrated_rows
         else "<p>无</p>"
@@ -1090,6 +1098,16 @@ def rag_delete(doc_id: str):
     return {"deleted": doc_id}
 
 
+CHAT_SYSTEM_PROMPT = (
+    "你是 TestFlow 的测试设计助手，精通 3GPP LTE/NR/IMS/IoT 协议（TS 24.301/24.501/36.331/38.331/36.523/38.523/38.508 等）"
+    "和蜂窝终端/模组系统测试。用户正在用 TestFlow 做需求驱动的测试设计，流程是：需求评审 → 测试设计（测试目标 + 按测试技术导出的整合矩阵）"
+    "→ 3GPP 风格测试用例描述（TCD）→ Artemis / AT Agent / Amarisoft / 协议仪表可执行用例。\n"
+    "回答规则：结合下面的会话上下文回答，引用具体的需求、矩阵行、用例编号；涉及规范时给出条款号，没把握就说明不确定；"
+    "用户想调整结果时，告诉他在哪个页面、改什么（例如在评审问题里补充答案后再生成，或在系统设置的提示词里调整）。用简体中文，简洁、可执行。"
+)
+_CHAT_CONTEXT_CHARS = 14000
+
+
 @app.post("/api/chat")
 async def chat(payload: ChatRequest):
     message = (payload.message or "").strip()
@@ -1100,26 +1118,26 @@ async def chat(payload: ChatRequest):
     if not client.enabled:
         return {"reply": "大模型未配置。请先在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。"}
 
-    history_lines: List[str] = []
+    context_text = ""
+    if payload.context:
+        context_text = json.dumps(payload.context, ensure_ascii=False)
+        if len(context_text) > _CHAT_CONTEXT_CHARS:
+            context_text = context_text[:_CHAT_CONTEXT_CHARS] + "…（已截断）"
+    messages: List[Dict[str, str]] = [{
+        "role": "system",
+        "content": CHAT_SYSTEM_PROMPT + (f"\n\n【当前会话上下文】\n{context_text}" if context_text else "\n\n（当前还没有生成内容）"),
+    }]
     for turn in (payload.history or [])[-8:]:
-        role = "用户" if turn.role == "user" else "助手"
         txt = (turn.content or "").strip()
-        if txt:
-            history_lines.append(f"{role}: {txt}")
-    history_text = "\n".join(history_lines)
-    user_prompt = (
-        (f"对话历史:\n{history_text}\n\n" if history_text else "")
-        + f"用户最新问题:\n{message}\n\n请直接回答，简洁、准确、可执行。"
-    )
+        if txt and turn.role in ("user", "assistant"):
+            messages.append({"role": turn.role, "content": txt})
+    if not messages[-1:] or messages[-1].get("content") != message or messages[-1].get("role") != "user":
+        messages.append({"role": "user", "content": message})
     try:
-        reply = client.generate(
-            system_prompt="You are a helpful website chatbot. Be concise, accurate, and actionable.",
-            user_prompt=user_prompt,
-            temperature=0.3,
-        )
+        resp = await asyncio.to_thread(client.chat, messages, 0.3)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
-    return {"reply": reply}
+    return {"reply": resp.text}
 
 
 def _collect_review_issues(persona_reviews: Dict[str, Any]) -> List[str]:
@@ -1482,6 +1500,211 @@ async def hitl_requirements_stream(job_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+def _base_shared(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+    return {
+        "input_requirements": payload.requirement_input or [],
+        "requirement_spec": payload.requirement_spec or {},
+        "persona_reviews": payload.persona_reviews or {},
+        "requirement_review_history": payload.requirement_review_history or {},
+        "product_profile": payload.product_profile or {},
+        "test_environments": payload.test_environments or {},
+        "llm_client": LLMClient(),
+        "warnings": [],
+        "trace": [],
+        "event_queue": queue,
+    }
+
+
+def _merge_usage(*usages: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"calls": 0, "repairs": 0, "failures": 0, "prompt_tokens": 0, "completion_tokens": 0, "by_agent": {}}
+    for u in usages:
+        if not u:
+            continue
+        for k in ("calls", "repairs", "failures", "prompt_tokens", "completion_tokens"):
+            out[k] += int(u.get(k) or 0)
+        for agent, per in (u.get("by_agent") or {}).items():
+            cur = out["by_agent"].setdefault(agent, {k: 0 for k in ("calls", "repairs", "failures", "prompt_tokens", "completion_tokens")})
+            for k in cur:
+                cur[k] += int(per.get(k) or 0)
+    return out
+
+
+async def _stage_design(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+    knowledge_context, knowledge_hits = await asyncio.to_thread(
+        _build_design_knowledge, payload.requirement_spec or {}, payload.project_id
+    )
+    shared = {**_base_shared(payload, queue), "knowledge_context": knowledge_context}
+    try:
+        await create_test_design_flow().run_async(shared)
+    finally:
+        payload._last_shared = shared  # type: ignore[attr-defined]
+    history_record = _upsert_design_history_record(
+        record_id=payload.history_record_id or "",
+        requirement_input=payload.requirement_input or [],
+        requirement_spec=payload.requirement_spec or {},
+        persona_reviews=payload.persona_reviews or {},
+        requirement_review_history=payload.requirement_review_history or {},
+        test_design_spec=shared.get("test_design_spec", {}),
+        product_profile=payload.product_profile or {},
+        test_environments=payload.test_environments or {},
+        warnings={"design": shared.get("warnings", [])},
+        trace={"design": shared.get("trace", [])},
+        status="design_completed",
+        project_id=payload.project_id,
+        knowledge_refs={"design": ref_summary(knowledge_hits)},
+    )
+    return {
+        "test_design_spec": shared.get("test_design_spec", {}),
+        "warnings": shared.get("warnings", []),
+        "trace": shared.get("trace", []),
+        "llm_usage": shared.get("llm_usage", {}),
+        "design_history": _history_summary(history_record),
+    }
+
+
+async def _stage_testcases(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+    if not payload.test_design_spec:
+        raise HTTPException(status_code=400, detail="缺少test_design_spec")
+    shared = {**_base_shared(payload, queue), "test_design_spec": payload.test_design_spec,
+              "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY}
+    try:
+        await create_test_case_flow().run_async(shared)
+    finally:
+        payload._last_shared = shared  # type: ignore[attr-defined]
+    history_record = _upsert_design_history_record(
+        record_id=payload.history_record_id or "",
+        requirement_input=payload.requirement_input or [],
+        requirement_spec=payload.requirement_spec or {},
+        persona_reviews=payload.persona_reviews or {},
+        requirement_review_history=payload.requirement_review_history or {},
+        test_design_spec=payload.test_design_spec or {},
+        product_profile=payload.product_profile or {},
+        test_environments=payload.test_environments or {},
+        test_case_spec=shared.get("test_case_spec", {}),
+        warnings={"testcases": shared.get("warnings", [])},
+        trace={"testcases": shared.get("trace", [])},
+        status="testcases_completed",
+        project_id=payload.project_id,
+    )
+    return {
+        "test_case_spec": shared.get("test_case_spec", {}),
+        "warnings": shared.get("warnings", []),
+        "trace": shared.get("trace", []),
+        "llm_usage": shared.get("llm_usage", {}),
+        "design_history": _history_summary(history_record),
+    }
+
+
+async def _stage_exec_cases(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+    if not payload.test_case_spec:
+        raise HTTPException(status_code=400, detail="缺少test_case_spec")
+    shared = {**_base_shared(payload, queue), "test_case_spec": payload.test_case_spec,
+              "bug_ids": payload.bug_ids or [], "route_overrides": payload.route_overrides or {}}
+    try:
+        await create_exec_case_flow().run_async(shared)
+    finally:
+        payload._last_shared = shared  # type: ignore[attr-defined]
+    executable_cases = shared.get("executable_cases", {})
+    history = None
+    if payload.history_record_id and _valid_history_record_id(payload.history_record_id):
+        try:
+            record = _load_design_history_record(payload.history_record_id)
+            record["executable_cases"] = executable_cases
+            record["status"] = "exec_cases_completed"
+            history = _history_summary(_write_design_history_record(record))
+        except HTTPException:
+            history = None
+    return {
+        "executable_cases": executable_cases,
+        "warnings": shared.get("warnings", []),
+        "trace": shared.get("trace", []),
+        "llm_usage": shared.get("llm_usage", {}),
+        "design_history": history,
+    }
+
+
+async def _stage_requirements_auto(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+    """一键模式的需求评审：跑一轮解析 + 三方评审 + 综合定稿，所有问题采用 AI / 知识库给出的答案。"""
+    reqs = [r.strip() for r in (payload.requirement_input or []) if r and r.strip()]
+    if not reqs:
+        raise HTTPException(status_code=400, detail="requirements不能为空")
+    project_id = project_store.resolve_id(payload.project_id)
+    rag_context, rag_hits, rag_errors = await asyncio.to_thread(
+        _build_effective_rag_context, reqs, payload.rag_context or "", project_id)
+    shared = {
+        **_base_shared(payload, queue),
+        "input_requirements": reqs,
+        "rag_context": rag_context,
+        "framework_capability_catalog": payload.framework_capability_catalog or "",
+        "capabilities": DEFAULT_CAPABILITIES,
+        "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
+        "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
+        "review_feedback": "",
+    }
+    try:
+        await create_requirement_analysis_flow().run_async(shared)
+    finally:
+        payload._last_shared = shared  # type: ignore[attr-defined]
+    persona_reviews = shared.get("persona_reviews", {})
+    user_qs, auto_qs = _triage_open_questions(persona_reviews)
+    user_qs, auto_qs = await asyncio.to_thread(_kb_resolve_questions, user_qs, auto_qs, project_id, shared["llm_client"])
+    answered = _merge_answered_questions([], [
+        {"source_round": 1, "req_id": q["req_id"], "question": q["question"], "answer": q["ai_answer"],
+         "source": "知识库确认" if q.get("kb_status") == "resolved" else "AI 自行确认", "basis": q.get("basis", "")}
+        for q in auto_qs
+    ] + [
+        {"source_round": 1, "req_id": q["req_id"], "question": q["question"],
+         "answer": q.get("ai_answer") or "暂按需求原文理解，测试设计中标注为待确认风险",
+         "source": "一键模式采纳 AI 建议", "basis": q.get("basis", "")}
+        for q in user_qs
+    ])
+    summary = {"round": 1, "is_final_round": True, "issues": _collect_review_issues(persona_reviews),
+               "open_questions": [], "auto_confirmed": auto_qs + user_qs, "knowledge_refs": ref_summary(rag_hits)}
+    return {
+        "requirement_spec": shared.get("requirement_spec", {}),
+        "persona_reviews": persona_reviews,
+        "requirement_review_history": _build_requirement_review_history([summary], answered),
+        "auto_answered_user_questions": user_qs,
+        "rag": {"hits": rag_hits, "context_used": bool(rag_context), "errors": rag_errors},
+        "warnings": shared.get("warnings", []),
+        "llm_usage": shared.get("llm_usage", {}),
+    }
+
+
+AUTO_STAGES = [("requirements", "测试需求评审"), ("design", "测试设计"), ("testcases", "测试用例"), ("exec_cases", "可执行用例")]
+
+
+async def _stage_auto(job: Dict[str, Any], payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"warnings": [], "stage_warnings": {}}
+    usages = []
+    for idx, (stage, label) in enumerate(AUTO_STAGES, start=1):
+        await _emit_stage_event(job, {"type": "stage_progress", "payload": {
+            "stage": stage, "label": label, "index": idx, "total": len(AUTO_STAGES)}})
+        if stage == "requirements":
+            res = await _stage_requirements_auto(payload, queue)
+            payload.requirement_spec = res["requirement_spec"]
+            payload.persona_reviews = res["persona_reviews"]
+            payload.requirement_review_history = res["requirement_review_history"]
+        elif stage == "design":
+            res = await _stage_design(payload, queue)
+            payload.test_design_spec = res["test_design_spec"]
+            payload.history_record_id = (res.get("design_history") or {}).get("record_id") or payload.history_record_id
+        elif stage == "testcases":
+            res = await _stage_testcases(payload, queue)
+            payload.test_case_spec = res["test_case_spec"]
+        else:
+            res = await _stage_exec_cases(payload, queue)
+        usages.append(res.get("llm_usage"))
+        out["stage_warnings"][stage] = res.get("warnings", [])
+        out["warnings"].extend(res.get("warnings", []))
+        for k, v in res.items():
+            if k not in ("warnings", "trace", "llm_usage") and v is not None:
+                out[k] = v
+        await _emit_stage_event(job, {"type": "stage_result", "payload": {"stage": stage, "result": res}})
+    out["llm_usage"] = _merge_usage(*usages)
+    return out
+
+
 async def _run_stage_job(job_id: str):
     job = stage_jobs[job_id]
     stage = job["stage"]
@@ -1492,120 +1715,16 @@ async def _run_stage_job(job_id: str):
 
     try:
         if stage == "design":
-            knowledge_context, knowledge_hits = await asyncio.to_thread(
-                _build_design_knowledge, payload.requirement_spec or {}, payload.project_id
-            )
-            shared = {
-                "input_requirements": payload.requirement_input or [],
-                "requirement_spec": payload.requirement_spec,
-                "persona_reviews": payload.persona_reviews or {},
-                "requirement_review_history": payload.requirement_review_history or {},
-                "product_profile": payload.product_profile or {},
-                "test_environments": payload.test_environments or {},
-                "knowledge_context": knowledge_context,
-                "llm_client": LLMClient(),
-                "warnings": [],
-                "trace": [],
-                "event_queue": queue,
-            }
-            flow = create_test_design_flow()
-            await flow.run_async(shared)
-            history_record = _upsert_design_history_record(
-                record_id=payload.history_record_id or "",
-                requirement_input=payload.requirement_input or [],
-                requirement_spec=payload.requirement_spec or {},
-                persona_reviews=payload.persona_reviews or {},
-                requirement_review_history=payload.requirement_review_history or {},
-                test_design_spec=shared.get("test_design_spec", {}),
-                product_profile=payload.product_profile or {},
-                test_environments=payload.test_environments or {},
-                warnings={"design": shared.get("warnings", [])},
-                trace={"design": shared.get("trace", [])},
-                status="design_completed",
-                project_id=payload.project_id,
-                knowledge_refs={"design": ref_summary(knowledge_hits)},
-            )
-            result = {
-                "test_design_spec": shared.get("test_design_spec", {}),
-                "warnings": shared.get("warnings", []),
-                "trace": shared.get("trace", []),
-                "design_history": _history_summary(history_record),
-            }
+            result = await _stage_design(payload, queue)
         elif stage == "testcases":
-            if not payload.test_design_spec:
-                raise HTTPException(status_code=400, detail="缺少test_design_spec")
-            shared = {
-                "input_requirements": payload.requirement_input or [],
-                "requirement_spec": payload.requirement_spec,
-                "test_design_spec": payload.test_design_spec,
-                "requirement_review_history": payload.requirement_review_history or {},
-                "product_profile": payload.product_profile or {},
-                "test_environments": payload.test_environments or {},
-                "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
-                "llm_client": LLMClient(),
-                "warnings": [],
-                "trace": [],
-                "event_queue": queue,
-            }
-            flow = create_test_case_flow()
-            await flow.run_async(shared)
-            history_record = _upsert_design_history_record(
-                record_id=payload.history_record_id or "",
-                requirement_input=payload.requirement_input or [],
-                requirement_spec=payload.requirement_spec or {},
-                persona_reviews=payload.persona_reviews or {},
-                requirement_review_history=payload.requirement_review_history or {},
-                test_design_spec=payload.test_design_spec or {},
-                product_profile=payload.product_profile or {},
-                test_environments=payload.test_environments or {},
-                test_case_spec=shared.get("test_case_spec", {}),
-                warnings={"testcases": shared.get("warnings", [])},
-                trace={"testcases": shared.get("trace", [])},
-                status="testcases_completed",
-                project_id=payload.project_id,
-            )
-            result = {
-                "test_case_spec": shared.get("test_case_spec", {}),
-                "warnings": shared.get("warnings", []),
-                "trace": shared.get("trace", []),
-                "design_history": _history_summary(history_record),
-            }
+            result = await _stage_testcases(payload, queue)
         elif stage == "exec_cases":
-            if not payload.test_case_spec:
-                raise HTTPException(status_code=400, detail="缺少test_case_spec")
-            shared = {
-                "input_requirements": payload.requirement_input or [],
-                "requirement_spec": payload.requirement_spec or {},
-                "test_case_spec": payload.test_case_spec,
-                "product_profile": payload.product_profile or {},
-                "test_environments": payload.test_environments or {},
-                "bug_ids": payload.bug_ids or [],
-                "route_overrides": payload.route_overrides or {},
-                "llm_client": LLMClient(),
-                "warnings": [],
-                "trace": [],
-                "event_queue": queue,
-            }
-            flow = create_exec_case_flow()
-            await flow.run_async(shared)
-            executable_cases = shared.get("executable_cases", {})
-            history = None
-            if payload.history_record_id and _valid_history_record_id(payload.history_record_id):
-                try:
-                    record = _load_design_history_record(payload.history_record_id)
-                    record["executable_cases"] = executable_cases
-                    record["status"] = "exec_cases_completed"
-                    history = _history_summary(_write_design_history_record(record))
-                except HTTPException:
-                    history = None
-            result = {
-                "executable_cases": executable_cases,
-                "warnings": shared.get("warnings", []),
-                "trace": shared.get("trace", []),
-                "design_history": history,
-            }
+            result = await _stage_exec_cases(payload, queue)
+        elif stage == "auto":
+            result = await _stage_auto(job, payload, queue)
         else:
             raise RuntimeError(f"不支持的stage: {stage}")
+        result["llm_usage_text"] = summarize_usage(result.get("llm_usage"))
 
         job["status"] = "completed"
         job["result"] = result
@@ -1615,11 +1734,12 @@ async def _run_stage_job(job_id: str):
         )
     except Exception as exc:
         job["status"] = "failed"
+        shared = getattr(payload, "_last_shared", None) or {}
         detail = {
-            "error": str(exc),
-            "failed_node": (locals().get("shared") or {}).get("current_node"),
-            "trace": (locals().get("shared") or {}).get("trace", []),
-            "warnings": (locals().get("shared") or {}).get("warnings", []),
+            "error": getattr(exc, "detail", None) or str(exc),
+            "failed_node": shared.get("current_node"),
+            "trace": shared.get("trace", []),
+            "warnings": shared.get("warnings", []),
         }
         job["error"] = detail
         await _emit_stage_event(
@@ -1631,8 +1751,10 @@ async def _run_stage_job(job_id: str):
 @app.post("/api/stage/{stage}/start")
 async def stage_start(stage: str, payload: StageGenerateRequest):
     stage_name = (stage or "").strip().lower()
-    if stage_name not in {"design", "testcases", "exec_cases"}:
-        raise HTTPException(status_code=400, detail="stage必须是design/testcases/exec_cases")
+    if stage_name not in {"design", "testcases", "exec_cases", "auto"}:
+        raise HTTPException(status_code=400, detail="stage必须是design/testcases/exec_cases/auto")
+    if stage_name == "auto" and not [r for r in (payload.requirement_input or []) if r and r.strip()]:
+        raise HTTPException(status_code=400, detail="一键生成需要填写需求描述")
 
     if stage_name == "design" and not payload.requirement_spec:
         raise HTTPException(status_code=400, detail="缺少requirement_spec")
@@ -1763,8 +1885,8 @@ def _prompt_role_mapping() -> List[Dict[str, Any]]:
         {"role": "UX Advocate", "node": "TriPersonaReviewNode", "prompt": "review_ux_advocate.txt"},
         {"role": "Synthesis Arbiter", "node": "SynthesisNode", "prompt": "synthesis_arbiter.txt"},
         {"role": "Test Designer", "node": "TestDesignNode", "prompt": "test_designer.txt"},
-        {"role": "Integrated Matrix Designer", "node": "TestDesignNode", "prompt": "integrated_matrix_designer.txt"},
-        {"role": "Test Case Generator", "node": "TestCaseBatchGenNode", "prompt": "test_case_generator.txt"},
+        {"role": "Matrix Gap Filler", "node": "TestDesignNode", "prompt": "integrated_matrix_designer.txt"},
+        {"role": "3GPP Test Case Writer", "node": "TestCaseBatchGenNode", "prompt": "test_case_tcd.txt"},
         {"role": "Artemis Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_artemis.txt"},
         {"role": "AT Agent Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_at_agent.txt"},
         {"role": "Amarisoft Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_amarisoft.txt"},
@@ -1877,29 +1999,86 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     header_fill = PatternFill("solid", fgColor="2563EB")
     persona_names = {"spec": "规范评审", "carrier": "运营商评审", "ux": "体验评审"}
 
-    case_rows = []
+    def _cfg_text(cfg: Any) -> str:
+        if not isinstance(cfg, dict):
+            return ""
+        lines = []
+        for i, cell in enumerate(cfg.get("cells") or [], start=1):
+            if isinstance(cell, dict):
+                lines.append(f"[{cell.get('cell_id') or f'Cell{i}'}] " + "，".join(f"{k}={v}" for k, v in cell.items() if k != "cell_id"))
+        for part, label in (("core", "核心网"), ("ue", "UE"), ("other", "其他")):
+            if cfg.get(part):
+                lines.append(f"[{label}] " + "，".join(f"{k}={v}" for k, v in cfg[part].items()))
+        return "\n".join(lines)
+
+    def _proc_text(proc: Any) -> str:
+        out = []
+        for p in proc or []:
+            if not isinstance(p, dict):
+                continue
+            head = f"{p.get('step', '')}. [{p.get('actor', '')}] {p.get('action', '')}"
+            if p.get("message"):
+                head += f" {p.get('direction', '')} {p['message']}" + (f"（{p['msg_ref']}）" if p.get("msg_ref") else "")
+            if p.get("expected"):
+                head += f" → {p['expected']}" + ("【判定】" if p.get("verdict") else "")
+            out.append(head)
+        return "\n".join(out)
+
+    def _ic_text(ic: Any) -> str:
+        if not isinstance(ic, dict):
+            return ""
+        parts = [("网络侧", ic.get("system_simulator")), ("UE", ic.get("ue")), ("Preamble", ic.get("preamble"))]
+        return "\n".join(f"{k}：{'；'.join(v)}" for k, v in parts if v)
+
+    case_rows, step_rows, msg_rows = [], [], []
     for tc in testcases:
         if not isinstance(tc, dict):
             continue
         env_text, risk_text = _format_test_environment_cell(tc.get("test_environment"))
+        tech = str(tc.get("technique") or "")
         case_rows.append([
-            tc.get("tc_id", ""), tc.get("title", ""), tc.get("objective_id", ""),
-            _numbered(tc.get("preconditions", [])), _numbered(tc.get("expected", [])), _numbered(tc.get("pass_fail", [])),
-            env_text, risk_text, "、".join(str(x) for x in tc.get("tags", []) or []),
+            tc.get("tc_id", ""), tc.get("title", ""), TECHNIQUE_LABELS.get(tech, tech), purpose_text(tc),
+            _list_to_text(tc.get("references", [])), tc.get("objective_id", ""),
+            _ic_text(tc.get("initial_conditions")) or _numbered(tc.get("preconditions", [])),
+            _cfg_text(tc.get("configuration")), _proc_text(tc.get("procedure")) or _numbered(tc.get("expected", [])),
+            _numbered(tc.get("pass_fail", [])), env_text, risk_text, "、".join(str(x) for x in tc.get("tags", []) or []),
         ])
-    _sheet("测试用例", [("用例编号", 14), ("用例标题", 40), ("测试目标", 12), ("前置条件", 40), ("预期结果", 50),
-                        ("通过标准", 50), ("测试环境", 18), ("环境风险", 30), ("标签", 18)], case_rows, first=True)
+        for p in tc.get("procedure") or []:
+            if isinstance(p, dict):
+                step_rows.append([tc.get("tc_id", ""), p.get("step", ""), p.get("actor", ""), p.get("direction", ""),
+                                  p.get("layer", ""), p.get("message", ""), p.get("msg_ref", ""), p.get("action", ""),
+                                  _kv_text(p.get("params") or {}), p.get("expected", ""), "是" if p.get("verdict") else "",
+                                  p.get("timing", "")])
+        for m in tc.get("message_contents") or []:
+            if not isinstance(m, dict):
+                continue
+            for ie in m.get("ies") or []:
+                if isinstance(ie, dict):
+                    msg_rows.append([tc.get("tc_id", ""), m.get("msg_id", ""), m.get("message", ""), m.get("direction", ""),
+                                     ie.get("path", ""), _safe_json(ie.get("value")) if isinstance(ie.get("value"), (dict, list)) else str(ie.get("value", "")),
+                                     ie.get("vary", ""), ie.get("note", "")])
+    _sheet("测试用例", [("用例编号", 12), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
+                        ("测试目标", 10), ("初始条件", 40), ("关键配置", 40), ("测试步骤", 60), ("通过标准", 45),
+                        ("测试环境", 16), ("环境风险", 26), ("标签", 14)], case_rows, first=True)
+    if step_rows:
+        _sheet("测试步骤", [("用例", 10), ("St", 5), ("发起方", 8), ("方向", 6), ("层", 6), ("消息", 26), ("消息内容", 10),
+                          ("动作", 18), ("参数", 30), ("期望", 50), ("判定点", 7), ("时序", 18)], step_rows)
+    if msg_rows:
+        _sheet("消息内容", [("用例", 10), ("消息编号", 9), ("消息", 26), ("方向", 6), ("IE 路径", 60), ("取值", 22),
+                          ("扫描参数", 12), ("说明", 36)], msg_rows)
 
     matrix_rows = []
     for row in test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []:
         if not isinstance(row, dict):
             continue
         env_text, risk_text = _format_test_environment_cell(row.get("test_environment"))
+        tech = str(row.get("technique") or "")
         matrix_rows.append([
-            row.get("row_id", ""), row.get("req_id", ""), row.get("objective_id", ""), row.get("scenario", ""),
+            row.get("row_id", ""), row.get("req_id", ""), row.get("objective_id", ""), TECHNIQUE_LABELS.get(tech, tech),
+            row.get("scenario", ""), purpose_text(row),
             _kv_text(row.get("key_configuration", {})), _numbered(row.get("pass_criteria", [])), env_text, risk_text,
         ])
-    _sheet("测试设计矩阵", [("矩阵行", 12), ("需求", 12), ("测试目标", 12), ("测试场景", 45), ("关键配置", 40),
+    _sheet("测试设计矩阵", [("矩阵行", 12), ("需求", 12), ("测试目标", 12), ("测试技术", 12), ("测试场景", 40), ("测试目的（TP）", 50), ("关键配置", 40),
                           ("通过标准", 45), ("测试环境", 18), ("环境风险", 30)], matrix_rows)
 
     obj_rows = []

@@ -4,13 +4,16 @@
 
 ## 项目定位
 
-TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心目标：
+TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程按 3GPP 蜂窝通信软件的测试设计过程组织：
 
 - 输入需求（需求描述、需求文档/RAG 资料、Bugzilla 研发需求/Bug）
-- 自动生成测试需求稿（含三人评审）
-- 生成测试设计稿（目标 + 覆盖矩阵 + 整合矩阵）
-- 生成测试用例稿
-- 按验收方案生成可直接执行的 JSON case，并输出追溯矩阵（Bug → 需求 → 用例 → 可执行 case）
+- 测试需求分析：需求解析 → 三方评审（规范 / 运营商 / 体验）→ 综合定稿，问题大多由 AI / 知识库自行确认
+- 测试设计：测试目标 → 按测试技术（正常 / 异常 / 边界 / 定时器 / 冲突 / 移动性 / 互操作 / 能力组合 / 性能 / 长稳）导出测试点，每个测试点写 3GPP 测试目的（with / when / then）
+- 测试用例：按 TS 38.523-1 / 36.523-1 的写法生成 3GPP 风格测试用例描述（TCD）：初始条件、关键配置、特定消息内容、带方向和判定点的测试步骤
+- 可执行用例：由 TCD 直接投影成 Artemis / AT Agent / Amarisoft / 协议仪表四类 JSON 草稿，LLM 做平台适配，并输出追溯矩阵（Bug → 需求 → 测试点 → 用例 → 可执行 case）
+- 可分步评审，也可“一键生成全部”
+
+架构说明与本次重构的 review 结论见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 > AT 指令测试建模（ATSpec/EFSM/MBT）与 ADB/串口联机执行已移除，相关能力由独立的 AT agent 项目承担。
 
@@ -25,11 +28,18 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 - 支持多轮需求迭代（v1→v2→v3）
 - SSE 推送到 Bot：任务状态、异常、待确认事项
 
-### 2) 测试设计与用例
+### 2) 测试设计与用例（3GPP 对齐）
 
-- 需求到设计的可追踪映射（REQ → Objective → Matrix → TC）
-- 设计质量审查节点（Supervisor）自动回流
-- 用例生成支持批量并发与稳定产出
+- 需求到设计的可追踪映射（REQ → Objective → 测试点 ROW → TC → 可执行 case）
+- 测试设计一次生成目标 + 整合矩阵；有需求没被覆盖时只为缺口补测试点（`integrated_matrix_designer.txt`），不再整份重做
+- 每个测试点带 `technique`（测试技术）、`test_purpose`（with / when / then）、`references`（规范条款）；P0/P1 需求只有正常流程时给出设计提示
+- 测试用例是 3GPP 风格测试用例描述（TCD，`core/tcd.py`，提示词 `test_case_tcd.txt`）：
+  `test_purpose`、`applicability`、`references`、`initial_conditions`（网络侧 / UE / preamble）、`configuration`（cells / core / ue）、
+  `message_contents`（相对默认消息内容的 IE 修改）、`procedure`（St、发起方、UL/DL、层、消息、msg_ref、期望、判定点）、`parameter_variations`、`postamble`、`pass_fail`
+  旧字段 `preconditions` / `steps` / `expected` 仍然保留，旧历史记录照常可用
+- 质量门（`core/quality.py`）先做确定性修复：需求写明的配置、数值门限没进矩阵或用例时直接按原值补入（用例里标为 `patched`）；
+  结构不合格的用例（缺 when/then、没有判定步骤、模拟基站/仪表用例没有小区配置或信令步骤……）只返工对应测试点，不重跑全部
+- 用例分批并行生成，编号按矩阵行顺序统一（不同批次不再撞号）；输出被截断时自动把这一批对半拆开重试
 - 测试设计完成后自动归档到“测试设计历史”
 - 自动生成标准测试设计文档（HTML），支持固定 URL 查看与分享
 - 可从历史记录重新载入当前会话，或继续生成测试用例
@@ -58,7 +68,11 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
 - 生成后逐项核对：每个 case 的 `requirement_configs` 标明每项需求配置 `applied`（已落地）/ `missing`（未找到）/ `not_applicable` / `conflict`，未落地项写进 `open_points` 和告警；bundle 的 `source_requirement.config_lines` 保留需求原文配置行并标出取值是否出现在 case 中
 - bundle 顶部 `field_guide` 说明每个字段的含义，下游 Agent 无需额外文档；Excel 导出新增“需求配置落地”页
 
-各路线提示词在 `prompts/exec_case_*.txt`，可在 Prompt Settings 中调整。LLM 不可用时会按用例内容生成降级 case，保证每条用例都有落地结果。
+**由 TCD 投影，LLM 只做平台适配**：每条用例先由 `core/tcd.py: project()` 确定性映射出该平台的草稿（配置、消息内容、信令流程、判定点一个不少），
+草稿作为 `{draft_json}` 交给路线 LLM 补平台细节；LLM 输出缺的字段、小区/核心网配置里漏掉的键会用草稿补回。LLM 不可用或失败时直接导出草稿，内容同样完整。
+Amarisoft case 升到 v3、协议测试需求升到 v4（新增 `test_purpose`、`technique`、`references`、`procedure[].verdict`、协议路线的 `core_config`，都是新增字段，旧字段不变）。
+
+各路线提示词在 `prompts/exec_case_*.txt`，可在 Prompt Settings 中调整。自定义过旧模板的，如果模板里没有 `{draft_json}` 会给出告警，建议恢复默认模板。
 
 ### 5) 数据导出
 
@@ -66,8 +80,10 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，核心
   - 需求输入
   - 测试需求稿
   - 三人评审
-  - 测试设计目标/矩阵
-  - 测试用例/步骤
+  - 测试设计目标/矩阵（含测试技术、测试目的）
+  - 测试用例（测试目的、参考条款、初始条件、关键配置、步骤）
+  - 测试步骤（每步一行：发起方、方向、层、消息、期望、判定点）
+  - 消息内容（每个 IE 一行：消息、IE 路径、取值、扫描参数）
   - 追溯矩阵（生成可执行用例后）
   - RawJSON
 
@@ -143,8 +159,10 @@ python scripts/build_windows_release.py --version 0.1.0
 
 ```
 main.py            FastAPI 接口
-flow.py / nodes.py PocketFlow 流水线与各节点
+flow.py / nodes.py PocketFlow 流水线与各节点（只做编排）
+core/              领域层：llm.py（LLM 运行时）、tcd.py（3GPP 测试用例描述与投影）、quality.py（质量门）、environments.py（测试环境能力）
 exec_cases.py      可执行用例（按验收方案分流）
+tests/             离线测试（假 LLM）
 schemas.py         JSON Schema
 prompts/           各 agent 的默认 Prompt 模板
 static/            Web 前端
@@ -160,6 +178,26 @@ packaging/windows/ 发布包附带的使用说明
 
 只支持 OpenAI 兼容接口（`POST {base}/chat/completions`），在网页“系统设置 → 大模型”里配置，保存在数据目录的 `config/llm-settings.json`。接口只返回“是否已配置 key”，不回显 key 本身；修改接口地址时不会沿用旧 key。
 
+LLM 运行时（`core/llm.py`）：
+
+- 提示词模板的 `[System]` / `[User]` 两段分别作为 system / user 消息发送
+- 输出不是合法 JSON 或不符合 schema 时，把上次输出和具体错误回灌给模型修正（自修复），不再原样重发
+- `finish_reason=length`（输出被截断）时，批量任务自动对半拆批重试；单条任务要求模型精简后重写
+- 顶层是对象的输出自动请求 JSON 模式（`response_format=json_object`），接口不支持时自动退回
+- 每个阶段统计 LLM 调用、自修复、失败次数和 token 用量，显示在运行状态里（结果字段 `llm_usage`）
+
+## 一键生成与助手
+
+- 需求准备页“⚡ 一键生成全部”：需求评审 → 测试设计 → 测试用例 → 可执行用例一次跑完（`POST /api/stage/auto/start`），评审问题全部采用 AI / 知识库答案，各页面边跑边刷新；之后仍可回到任一页面改答案、分步重跑
+- 右下角助手能看到当前会话的需求、测试点、用例和告警摘要，可以直接问“TC-003 为什么用协议仪表”“REQ-002 还缺哪些异常场景”
+
+## 测试
+
+```bash
+pip install -r requirements.txt pytest httpx
+python -m pytest -q        # 用假 LLM 离线跑完整流水线
+```
+
 相关接口：`GET/POST /api/settings/llm`、`POST /api/settings/llm/test`。
 
 ## 关键接口
@@ -169,6 +207,6 @@ GET  /api/projects                           项目 / Product 列表
 GET  /api/design-history?project_id=         历史测试设计列表（可按项目筛选）
 GET  /api/design-history/{record_id}         历史测试设计详情
 GET  /api/design-history/{record_id}/document 固定 URL 测试设计文档
-POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases）
+POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases / auto）
 POST /api/export/testcases.xlsx              导出 Excel
 ```

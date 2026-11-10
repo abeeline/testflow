@@ -10,7 +10,7 @@ import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from utils.paths import CONFIG_DIR
@@ -96,6 +96,21 @@ class LLMSettings:
         return self.public()
 
 
+class LLMTruncated(RuntimeError):
+    """模型输出因长度上限被截断（finish_reason=length）。调用方应拆小批次重试，而不是原样重发。"""
+
+
+class LLMResponse:
+    def __init__(self, text: str, finish_reason: str = "", usage: Optional[Dict[str, Any]] = None):
+        self.text = text
+        self.finish_reason = finish_reason or ""
+        self.usage = usage or {}
+
+
+# 记住哪些接口不支持 response_format=json_object，避免每次都先失败一次
+_JSON_MODE_UNSUPPORTED: set = set()
+
+
 class LLMClient:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         cfg = config or LLMSettings().read()
@@ -108,27 +123,7 @@ class LLMClient:
     def enabled(self) -> bool:
         return bool(self.api_base and self.api_key and self.model)
 
-    def generate(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = 0.2,
-        max_tokens: Optional[int] = None,
-    ) -> str:
-        if not self.enabled:
-            raise RuntimeError("大模型未配置，请在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。")
-
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": temperature,
-        }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-
+    def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         req = urllib.request.Request(
             url=f"{self.api_base}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -138,24 +133,101 @@ class LLMClient:
             },
             method="POST",
         )
-
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+                return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             details = exc.read().decode("utf-8", errors="ignore")[:500]
-            raise RuntimeError(f"LLM HTTP 错误: {exc.code} {details}") from exc
+            err = RuntimeError(f"LLM HTTP 错误: {exc.code} {details}")
+            err.status = exc.code  # type: ignore[attr-defined]
+            raise err from exc
         except Exception as exc:
             raise RuntimeError(f"LLM 请求失败: {exc}") from exc
 
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = None,
+        json_mode: bool = False,
+    ) -> LLMResponse:
+        """多轮对话调用。json_mode=True 时请求 response_format=json_object，接口不支持则自动退回普通模式。"""
+        if not self.enabled:
+            raise RuntimeError("大模型未配置，请在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。")
+        payload: Dict[str, Any] = {"model": self.model, "messages": messages, "temperature": temperature}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        mode_key = f"{self.api_base}|{self.model}"
+        use_json = json_mode and mode_key not in _JSON_MODE_UNSUPPORTED
+        if use_json:
+            payload["response_format"] = {"type": "json_object"}
         try:
-            return (body["choices"][0]["message"]["content"] or "").strip()
+            body = self._post(payload)
+        except RuntimeError as exc:
+            if not use_json or getattr(exc, "status", 0) not in (400, 404, 415, 422, 500, 501):
+                raise
+            _JSON_MODE_UNSUPPORTED.add(mode_key)
+            payload.pop("response_format", None)
+            body = self._post(payload)
+        try:
+            choice = body["choices"][0]
+            text = (choice["message"]["content"] or "").strip()
         except Exception as exc:
             raise RuntimeError(f"LLM 响应解析失败: {str(body)[:500]}") from exc
+        return LLMResponse(text, str(choice.get("finish_reason") or ""), body.get("usage") or {})
+
+    def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        return self.chat(messages, temperature=temperature, max_tokens=max_tokens).text
 
     def generate_json(self, system_prompt: str, user_prompt: str) -> Any:
         text = self.generate(system_prompt, user_prompt)
         return parse_json_from_llm(text)
+
+
+def _balanced_blocks(text: str) -> List[str]:
+    """找出文本里所有最外层的 {...} / [...] 片段（跳过字符串内的括号）。"""
+    out, stack, start, in_str, esc = [], [], -1, False, False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            if not stack:
+                start = i
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            if ch != stack[-1]:
+                stack, start = [], -1
+                continue
+            stack.pop()
+            if not stack and start >= 0:
+                out.append(text[start : i + 1])
+                start = -1
+    return out
+
+
+def _loads_lenient(candidate: str) -> Any:
+    try:
+        return json.loads(candidate)
+    except Exception:
+        pass
+    # 常见小毛病：结尾多余逗号
+    fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+    return json.loads(fixed)
 
 
 def parse_json_from_llm(text: str) -> Any:
@@ -166,7 +238,13 @@ def parse_json_from_llm(text: str) -> Any:
     for candidate in candidates:
         candidate = candidate.strip()
         try:
-            return json.loads(candidate)
+            return _loads_lenient(candidate)
+        except Exception:
+            continue
+    blocks = sorted(_balanced_blocks(text), key=len, reverse=True)
+    for block in blocks:
+        try:
+            return _loads_lenient(block)
         except Exception:
             continue
     raise ValueError(f"No valid JSON found in LLM output: {text[:500]}")

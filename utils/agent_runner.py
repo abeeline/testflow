@@ -1,8 +1,8 @@
-import json
+"""兼容旧接口：内部统一走 core.llm 的运行时（system/user 拆分、自修复、截断识别、用量统计）。"""
 from typing import Any, Callable, Dict, Optional
 
+from core.llm import generate_json, generate_json_or_fallback, record_usage, split_prompt
 from utils.prompt_loader import render_prompt
-from utils.schema_validation import validate_jsonschema
 
 
 def run_json_agent_with_retry(
@@ -16,37 +16,10 @@ def run_json_agent_with_retry(
     max_retries: int = 2,
     custom_validator: Optional[Callable[[Any], None]] = None,
 ) -> Any:
-    client = shared["llm_client"]
-    schema_text = json.dumps(schema, ensure_ascii=False)
-    last_error = None
-
-    for attempt in range(max_retries + 1):
-        run_vars = dict(variables)
-        run_vars.setdefault("output_schema", schema_text)
-        if last_error:
-            run_vars["last_error"] = str(last_error)
-
-        try:
-            prompt = render_prompt(template_name, run_vars)
-        except Exception as exc:
-            last_error = exc
-            continue
-
-        if not client.enabled:
-            shared.setdefault("warnings", []).append(f"{warn_tag}: LLM未配置，使用降级结果")
-            return fallback
-
-        try:
-            data = client.generate_json("Return strictly valid JSON only.", prompt)
-            validate_jsonschema(data, schema)
-            if custom_validator:
-                custom_validator(data)
-            return data
-        except Exception as exc:
-            last_error = exc
-
-    shared.setdefault("warnings", []).append(f"{warn_tag}: JSON schema校验失败，使用降级结果: {last_error}")
-    return fallback
+    return generate_json_or_fallback(
+        shared=shared, fallback=fallback, warn_tag=warn_tag, template_name=template_name,
+        variables=variables, schema=schema, max_retries=max_retries, custom_validator=custom_validator,
+    )
 
 
 def run_json_agent_strict_with_retry(
@@ -59,34 +32,10 @@ def run_json_agent_strict_with_retry(
     max_retries: int = 2,
     custom_validator: Optional[Callable[[Any], None]] = None,
 ) -> Any:
-    client = shared["llm_client"]
-    schema_text = json.dumps(schema, ensure_ascii=False)
-    last_error = None
-
-    for _ in range(max_retries + 1):
-        run_vars = dict(variables)
-        run_vars.setdefault("output_schema", schema_text)
-        if last_error:
-            run_vars["last_error"] = str(last_error)
-        try:
-            prompt = render_prompt(template_name, run_vars)
-        except Exception as exc:
-            last_error = exc
-            continue
-
-        if not client.enabled:
-            raise RuntimeError(f"{warn_tag}: LLM未配置，无法执行严格生成")
-
-        try:
-            data = client.generate_json("Return strictly valid JSON only.", prompt)
-            validate_jsonschema(data, schema)
-            if custom_validator:
-                custom_validator(data)
-            return data
-        except Exception as exc:
-            last_error = exc
-
-    raise RuntimeError(f"{warn_tag}: LLM严格生成失败: {last_error}")
+    return generate_json(
+        shared=shared, template_name=template_name, variables=variables, schema=schema,
+        warn_tag=warn_tag, max_retries=max_retries, custom_validator=custom_validator,
+    )
 
 
 def run_text_agent(
@@ -102,8 +51,11 @@ def run_text_agent(
         shared.setdefault("warnings", []).append(f"{warn_tag}: LLM未配置，使用降级结果")
         return fallback
     try:
-        prompt = render_prompt(template_name, variables)
-        return client.generate("Return practical content only.", prompt)
+        system, user = split_prompt(render_prompt(template_name, variables))
+        resp = client.chat([{"role": "system", "content": system or "Return practical content only."},
+                            {"role": "user", "content": user}])
+        record_usage(shared, warn_tag, resp.usage)
+        return resp.text
     except Exception as exc:
         shared.setdefault("warnings", []).append(f"{warn_tag}: LLM调用失败，使用降级结果: {exc}")
         return fallback

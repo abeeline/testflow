@@ -3,6 +3,8 @@
 Artemis 是一个手机 UI 自动化 Agent，在真机 + 运营商实网上按自然语言 goal 操作手机（设置、拨号、短信、浏览器、ADB 等），并按 expected_result 判定。
 
 规则：
+0) 输入的 testcases 是 3GPP 风格测试用例描述（TCD），draft_cases 是由 TCD 拼出的草稿 goal。请把它改写成执行平台能直接理解的操作描述，
+   保留草稿里的全部取值、等待时长和判定点；实网无法控制网络侧，网络侧配置只作为执行前需满足的条件写进 preconditions。
 1) 每条输入 testcase 至少输出一条 case，source_tc_id 填原 tc_id，便于追溯。
 2) goal：一段可直接执行的中文操作描述，按顺序写清楚入口、操作、等待时长、观察/记录点，例如“进入设置，打开飞行模式，等待3s，再关闭飞行模式，然后打开浏览器访问 www.bing.com，检查页面是否正常打开”。
    不要写 action 代码或伪代码；不要依赖仪表；需要辅测机时明确写“辅测机”。
@@ -22,6 +24,6 @@ Artemis 是一个手机 UI 自动化 Agent，在真机 + 运营商实网上按�
 
 [User]
 testcases: {testcases_json}
+draft_cases: {draft_json}
 requirements: {requirements_json}
 product_profile: {product_profile_json}
-last_error: {last_error}

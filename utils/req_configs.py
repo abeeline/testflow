@@ -27,7 +27,7 @@ _KEYWORDS = re.compile(
     r"sib\d*|SIB\d*|MIB|measConfig|reportConfig|RRC|NAS|5GMM|EMM|bandwidth|带宽|子载波|频点|频段|门限|定时器|功率|拒绝原因",
     re.IGNORECASE,
 )
-_ASSIGN = re.compile(r"([A-Za-z][\w\-.\[\]/]*)\s*(?:=|:|：|设为|设置为|配置为|取值为?)\s*([^\s,，；;。]+)")
+_ASSIGN = re.compile(r"([A-Za-z][\w\-.\[\]/]*)\s*(?:=|:|：|设为|设置为|配置为|取值为?)\s*([^\s,，；;。（）()]+)")
 
 
 def _segments(text: str) -> Iterable[str]:

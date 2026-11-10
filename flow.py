@@ -15,13 +15,19 @@ from nodes import (
 
 
 class TestCaseParallelFlow(AsyncParallelBatchFlow):
+    """按矩阵行分批并行写 TCD。质量门回流时只重跑 shared["_retry_rows"] 指定的行。"""
+
     async def prep_async(self, shared):
         integrated = shared.get("test_design_spec", {}).get("integrated_matrix", [])
         if not isinstance(integrated, list) or not integrated:
             integrated = []
-        chunk_size = int(shared.get("testcase_chunk_size", 16))
+        retry_rows = set(shared.get("_retry_rows") or [])
+        if retry_rows:
+            integrated = [r for r in integrated if r.get("row_id") in retry_rows]
+        # TCD 内容多（配置 + 消息 + 步骤），每批 4 行；输出被截断时会自动再对半拆
+        chunk_size = int(shared.get("testcase_chunk_size", 4))
         if chunk_size <= 0:
-            chunk_size = 16
+            chunk_size = 4
         chunks = [integrated[i : i + chunk_size] for i in range(0, len(integrated), chunk_size)]
         if not chunks:
             chunks = [[]]

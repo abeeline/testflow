@@ -4,6 +4,9 @@
 所以最重要的是：把仪表要下发的关键消息逐条写清楚“用哪个消息模板、哪些 IE 改成什么值”，让平台可以直接照着写 XML。
 
 规则：
+0) 输入的 testcases 是 3GPP 风格测试用例描述（TCD：test_purpose、initial_conditions、configuration、message_contents、procedure 等），
+   draft_cases 是由 TCD 直接映射出的草稿，已经包含用例的全部配置、消息内容和步骤。你的任务是在草稿基础上做平台适配和补全：
+   草稿里的每个取值都要保留（可以改写表达、拆分步骤、补充平台需要的细节），不要删除草稿里的配置、IE 或判定点。
 1) 每条输入 testcase 至少输出一条 item，source_tc_id 填原 tc_id。
 2) layers：被测的协议层（PHY/MAC/RLC/PDCP/RRC/NAS/IMS）。只列被测层，不要把前置流程用到的层都列上。
 3) scenario：一句话说明测试场景和测试意图。
@@ -11,6 +14,7 @@
    注册、IMS 注册、呼叫建立等标准前置流程只在这里一句话带过，不要展开到 signaling_flow。
 5) cell_config：仪表侧小区基础配置，只列与本用例相关的项，给具体取值（如 "band": "n256", "ssb_arfcn": 2016270, "scs_khz": 15）。
    无法确定的值给出建议值并在 open_points 说明，不要写“按仪表配置”“待锁定”这类空话。
+   core_config：仪表侧核心网/NAS 配置（注册接受/拒绝及 cause、T3346/T3512 等 NAS 定时器、APN/DNN），只列相关项。
 6) message_configs：本用例的核心。列出被测流程中仪表需要构造/修改的每一条关键 DL 消息（RRCReconfiguration、RRCSetup、RRCRelease、
    SIB1/SIB19、MIB、RegistrationAccept/Reject、DLInformationTransfer 等），以及需要逐字段校验的关键 UL 消息。每条：
    - msg_id：如 "M1"，供 signaling_flow 引用
@@ -50,6 +54,7 @@
       "rat": "NR_SA",
       "preconditions": ["..."],
       "cell_config": {"band": "n78", "ssb_arfcn": 632628, "scs_khz": 30},
+      "core_config": {},
       "message_configs": [
         {
           "msg_id": "M1",
@@ -78,7 +83,7 @@
 
 [User]
 testcases: {testcases_json}
+draft_cases: {draft_json}
 requirements: {requirements_json}
 product_profile: {product_profile_json}
 requirement_configs: {requirement_configs_json}
-last_error: {last_error}

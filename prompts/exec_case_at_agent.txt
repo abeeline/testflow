@@ -3,6 +3,8 @@
 AT Agent 通过串口向模组发送 AT 指令并在实网下判定结果；用例以自然语言为主，需求本身就是 AT 指令时，goal 里可以写出具体 AT 指令和期望响应。
 
 规则：
+0) 输入的 testcases 是 3GPP 风格测试用例描述（TCD），draft_cases 是由 TCD 拼出的草稿 goal。请把它改写成执行平台能直接理解的操作描述，
+   保留草稿里的全部取值、等待时长和判定点；实网无法控制网络侧，网络侧配置只作为执行前需满足的条件写进 preconditions。
 1) 每条输入 testcase 至少输出一条 case，source_tc_id 填原 tc_id。
 2) goal：按顺序描述要做的事，例如“查询网络注册状态（AT+CEREG?），确认已注册；定义 PDP 上下文 cid=1、APN=cmnet（AT+CGDCONT=1,"IP","cmnet"），激活后 ping 8.8.8.8 共 10 次”。写清楚等待时长和需要记录的返回值。
 3) expected_result：可判定的预期结果（期望返回码/URC/字段值/数值门限），保留原用例 pass_fail 中的数值。
@@ -20,6 +22,6 @@ AT Agent 通过串口向模组发送 AT 指令并在实网下判定结果；用�
 
 [User]
 testcases: {testcases_json}
+draft_cases: {draft_json}
 requirements: {requirements_json}
 product_profile: {product_profile_json}
-last_error: {last_error}

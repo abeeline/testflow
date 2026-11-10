@@ -1,4 +1,8 @@
-"""把测试用例落地为各执行平台可直接使用的 JSON case。
+"""把测试用例（3GPP 风格 TCD）落地为各执行平台可直接使用的 JSON case。
+
+做法：先由 TCD 确定性投影出各平台草稿（core/tcd.py: project），草稿已包含 TCD 的全部配置、消息内容和步骤；
+再交给各路线 LLM 做平台适配（Amarisoft 动作、仪表消息模板、自然语言 goal / AT 指令），
+LLM 结果缺的字段用草稿补齐，LLM 不可用时直接用草稿，所以信息不会在这一步丢失。
 
 每条测试用例按验收方案分流到四条路线：
 - artemis:   手机实网系统测试，导出 Artemis 用例库格式（artemis-case-library v1, profile=flash）
@@ -13,7 +17,8 @@ import uuid
 from typing import Any, Dict, List
 
 from pocketflow import AsyncNode
-from utils.agent_runner import run_json_agent_with_retry
+from core.llm import generate_json, run_split_on_truncate
+from core.tcd import normalize_tcd, project, summarize_for_prompt
 from utils.paths import prompt_path
 from utils.req_configs import blob_of, extract_config_lines, normalize_explicit_configs, value_present, value_tokens
 
@@ -48,29 +53,36 @@ ROUTE_ITEM_REQUIRED = {
 CONFIG_ROUTES = ("amarisoft", "protocol")
 ROUTE_CONFIG_FIELDS = {
     "amarisoft": ["cell_config", "core_config", "key_parameters", "message_configs", "procedure", "expected_signaling"],
-    "protocol": ["cell_config", "message_configs", "signaling_flow", "parameter_variations", "checkpoints"],
+    "protocol": ["cell_config", "core_config", "message_configs", "signaling_flow", "parameter_variations", "checkpoints"],
 }
 
 # 写进 bundle 的字段说明，方便下游 Agent 不看文档也能理解每个字段。
 FIELD_GUIDE = {
     "amarisoft": {
         "source_tc_id": "来源测试用例编号",
+        "test_purpose": "3GPP 测试目的：with（初始状态）/ when（触发）/ then（期望行为）",
+        "technique": "测试技术：normal / abnormal / boundary / timer / collision / mobility / interworking / capability / performance / stability",
         "rat": "制式：LTE / NR_SA / NR_NSA / NB-IoT / LTE-M / NR_NTN",
+        "ue_preconditions": "UE 初始状态与前置流程（preamble）",
         "cell_config": "小区/PHY 关键参数（band、dl_arfcn/ssb_arfcn、bandwidth_mhz、scs_khz、tdd_pattern、plmn、tac、cell_id、功率、SIB 字段等），按此生成 enb/gnb 配置",
         "core_config": "核心网/NAS 参数（注册接受/拒绝及 cause、T3412/T3512/T3324 等定时器、PSM/eDRX、APN/DNN、IMS、鉴权），按此生成 mme 配置",
         "key_parameters": "本用例要验证或扫描的关键参数：name、value 或 values、layer、purpose",
         "message_configs": "需要定制的 RRC/NAS 消息：message、direction、ies[{path, value, note}]，path 为 ASN.1 字段路径",
-        "procedure": "有序步骤：step、action（英文动作名）、params（具体取值）、expected",
+        "procedure": "有序步骤：step、action（英文动作名）、params（具体取值，含 message/direction）、expected、verdict（是否判定点）",
         "expected_signaling": "期望信令序列：layer、direction、message、key_ies",
         "pass_criteria": "通过标准（保留原用例数值门限）",
+        "references": "3GPP 规范条款",
         "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，missing 未找到需人工补，not_applicable 不适用（note 说明），conflict 与规范冲突（仍按需求值）",
         "open_points": "执行前仍需确认的问题",
     },
     "protocol": {
         "source_tc_id": "来源测试用例编号",
+        "test_purpose": "3GPP 测试目的：with（初始状态）/ when（触发）/ then（期望行为）",
+        "technique": "测试技术：normal / abnormal / boundary / timer / collision / mobility / interworking / capability / performance / stability",
         "layers": "被测协议层",
         "preconditions": "进入被测流程前 UE 状态",
         "cell_config": "仪表侧小区基础配置",
+        "core_config": "仪表侧核心网/NAS 配置（注册接受/拒绝及 cause、NAS 定时器、APN/DNN 等）",
         "message_configs": "仪表要下发/校验的关键消息：msg_id、message、template、direction、ies[{path, value, note, vary}]，path 为 ASN.1 字段路径，按此写消息模板 XML 覆盖值",
         "signaling_flow": "被测流程时序：seq、direction、layer、message、config_ref（引用 msg_id）、key_ies、timing",
         "parameter_variations": "需要扫描的参数，name 对应 ies[].vary",
@@ -140,10 +152,8 @@ def route_for_testcase(tc: Dict[str, Any], product_profile: Dict[str, Any]) -> s
 
 
 def _tc_summary(tc: Dict[str, Any]) -> Dict[str, Any]:
-    """只给 LLM 必要字段，控制提示词长度。"""
-    keys = ["tc_id", "objective_id", "title", "tags", "preconditions", "steps", "expected", "pass_fail",
-            "test_environment", "observability", "trace"]
-    return {k: tc.get(k) for k in keys if k in tc}
+    """只给 LLM 必要字段（TCD 视图），控制提示词长度。"""
+    return summarize_for_prompt(tc)
 
 
 def _requirement_index(requirement_spec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -198,53 +208,37 @@ def _priority(tc: Dict[str, Any], llm_value: Any = None) -> str:
 
 # ---------- 降级结果（LLM 不可用时也能导出可用 case） ----------
 
-def _steps_text(tc: Dict[str, Any]) -> str:
-    parts = []
-    for i, s in enumerate(tc.get("steps") or [], start=1):
-        if not isinstance(s, dict):
-            continue
-        params = s.get("params") or {}
-        p = "，".join(f"{k}={v}" for k, v in params.items()) if isinstance(params, dict) else _text(params)
-        parts.append(f"{i}. {s.get('action', '')}" + (f"（{p}）" if p else ""))
-    return "\n".join(parts)
-
-
 def _fallback_route_items(route: str, tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    items = []
-    for tc in tcs:
-        title = _text(tc.get("title")) or tc.get("tc_id", "")
-        expected = _text(tc.get("pass_fail")) or _text(tc.get("expected"))
-        base = {"source_tc_id": tc.get("tc_id", ""), "title": title, "_fallback": True}
-        if route in ("artemis", "at_agent"):
-            goal = title + ("\n" + _steps_text(tc) if tc.get("steps") else "")
-            items.append({**base, "goal": goal, "expected_result": expected,
-                          "preconditions": _text(tc.get("preconditions")), "group": "", "priority": _priority(tc), "redline": False})
-        elif route == "amarisoft":
-            items.append({**base, "objective": title, "rat": "", "ue_preconditions": tc.get("preconditions") or [],
-                          "cell_config": {}, "core_config": {}, "key_parameters": [],
-                          "procedure": [{"step": i + 1, "action": s.get("action", ""), "params": s.get("params") or {}, "expected": ""}
-                                        for i, s in enumerate(tc.get("steps") or []) if isinstance(s, dict)],
-                          "expected_signaling": [], "pass_criteria": tc.get("pass_fail") or [],
-                          "logs_to_capture": (tc.get("observability") or {}).get("must_capture") or [],
-                          "open_points": ["LLM 未生成，需人工补充小区/核心网关键参数。"]})
-        else:
-            items.append({**base, "scenario": title, "layers": [], "rat": "", "preconditions": tc.get("preconditions") or [],
-                          "cell_config": {}, "message_configs": [], "signaling_flow": [],
-                          "parameter_variations": [], "checkpoints": [{"item": x, "expected": ""} for x in (tc.get("expected") or [])],
-                          "pass_criteria": tc.get("pass_fail") or [], "references": [], "open_points": ["LLM 未生成，需人工补充关键消息配置与信令流程。"]})
-    return items
+    """由 TCD 直接投影的草稿（LLM 不可用、失败或漏掉用例时使用）。"""
+    return [{**project(route, tc), "_fallback": True} for tc in tcs]
+
+
+def _merge_with_draft(route: str, item: Dict[str, Any], draft: Dict[str, Any]) -> Dict[str, Any]:
+    """LLM 输出缺的或空的字段用草稿补齐（草稿来自 TCD，信息完整）。"""
+    for k, v in draft.items():
+        if k.startswith("_"):
+            continue
+        cur = item.get(k)
+        if cur in (None, "", [], {}):
+            item[k] = v
+        elif isinstance(cur, dict) and isinstance(v, dict):
+            for dk, dv in v.items():  # 小区/核心网配置：草稿里有、LLM 漏掉的键补回
+                cur.setdefault(dk, dv)
+    return item
 
 
 # ---------- 需求配置落地校验（基站 / 仪表路线） ----------
 
 def _fill_from_configs(route: str, item: Dict[str, Any], configs: List[Dict[str, Any]]) -> None:
-    """降级 case 的配置字段是空的，先把需求写明的配置按 target 放进去，保证原始取值不丢。"""
+    """降级 case 里还没出现的需求配置，按 target 放进去，保证原始取值不丢。"""
     for c in configs:
+        if value_present(c["value"], blob_of(item, ROUTE_CONFIG_FIELDS[route])):
+            continue
         name = c["name"] or "param"
         target = c.get("target") or ""
         if target == "cell":
             item.setdefault("cell_config", {}).setdefault(name, c["value"])
-        elif target == "core" and route == "amarisoft":
+        elif target == "core":
             item.setdefault("core_config", {}).setdefault(name, c["value"])
         elif route == "amarisoft":
             item.setdefault("key_parameters", []).append(
@@ -377,11 +371,11 @@ def build_bundle(route: str, items: List[Dict[str, Any]], tc_index: Dict[str, Di
         out_items.append(entry)
     source = {"note": SOURCE_LINES_NOTE, "config_lines": source_lines_coverage(source_lines or [], out_items, route)}
     if route == "amarisoft":
-        # v2：新增 message_configs、requirement_configs（需求原文配置及落地情况）、source_requirement、field_guide
-        return {"format": "testflow-amarisoft-case", "version": 2, "exported_at": exported_at,
+        # v3：新增 test_purpose、technique、references、procedure[].verdict（来自 3GPP TCD）；v2 起有 message_configs、requirement_configs
+        return {"format": "testflow-amarisoft-case", "version": 3, "exported_at": exported_at,
                 "field_guide": FIELD_GUIDE["amarisoft"], "source_requirement": source, "cases": out_items}
-    # v3：新增 requirement_configs、source_requirement、field_guide；v2 起有 message_configs 与 config_ref
-    return {"format": "testflow-protocol-test-requirement", "version": 3, "exported_at": exported_at,
+    # v4：新增 test_purpose、technique（来自 3GPP TCD）；v3 起有 requirement_configs、source_requirement、field_guide
+    return {"format": "testflow-protocol-test-requirement", "version": 4, "exported_at": exported_at,
             "field_guide": FIELD_GUIDE["protocol"], "source_requirement": source, "items": out_items}
 
 
@@ -421,8 +415,10 @@ class ExecutableCaseNode(AsyncNode):
         shared["current_node"] = "ExecutableCaseNode"
         q = shared.get("event_queue")
         if q:
-            q.put_nowait({"type": "node_running", "payload": {"node": "ExecutableCaseNode"}})
-        tcs = [tc for tc in (shared.get("test_case_spec") or {}).get("testcases", []) if isinstance(tc, dict)]
+            q.put_nowait({"type": "node_running", "payload": {"node": "ExecutableCaseNode", "label": "生成可执行用例"}})
+        # 旧历史记录里的用例（steps 格式）也先转成 TCD
+        tcs = [tc if "procedure" in tc and "configuration" in tc else normalize_tcd(tc, i)
+               for i, tc in enumerate((shared.get("test_case_spec") or {}).get("testcases", []), start=1) if isinstance(tc, dict)]
         profile = shared.get("product_profile") or {}
         overrides = shared.get("route_overrides") or {}
         routes = {}
@@ -437,63 +433,84 @@ class ExecutableCaseNode(AsyncNode):
         routes = prep_res["routes"]
         shared = self._shared
         req_index = _requirement_index(shared.get("requirement_spec") or {})
-        requirements = [_requirement_view(v) for v in req_index.values()]
         source_lines = extract_config_lines(shared.get("input_requirements") or [])
 
         groups: Dict[str, List[Dict[str, Any]]] = {r: [] for r in ROUTES}
         for tc in tcs:
             groups[routes[str(tc.get("tc_id") or "")]].append(tc)
 
-        for r in CONFIG_ROUTES:
-            if groups[r] and "{requirement_configs_json}" not in prompt_path(ROUTE_PROMPTS[r]).read_text(encoding="utf-8"):
+        for r in ROUTES:
+            text = prompt_path(ROUTE_PROMPTS[r]).read_text(encoding="utf-8") if groups[r] else ""
+            missing_vars = [v for v in ("{draft_json}",) + (("{requirement_configs_json}",) if r in CONFIG_ROUTES else ())
+                            if groups[r] and v not in text]
+            if missing_vars:
                 shared.setdefault("warnings", []).append(
-                    f"ExecutableCaseNode-{r}: 当前提示词缺少 {{requirement_configs_json}}，需求配置只做事后核对；建议在 Prompt Settings 恢复默认模板")
+                    f"ExecutableCaseNode-{r}: 当前提示词缺少 {'、'.join(missing_vars)}（可能是旧版自定义模板），"
+                    "结果只做事后补齐；建议在 Prompt Settings 恢复默认模板")
 
         llm_slots = asyncio.Semaphore(4)  # 限制同时进行的 LLM 请求数，避免触发接口限流
 
-        async def run_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            async with llm_slots:
-                return await _run_batch(route, batch_tcs)
-
-        async def _run_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        def _schema(route: str) -> Dict[str, Any]:
             list_key = ROUTE_LIST_KEY[route]
-            item_schema: Dict[str, Any] = {"type": "object"}
+            item_schema: Dict[str, Any] = {"type": "object", "required": ["source_tc_id"]}
             if route in ROUTE_ITEM_REQUIRED:
                 item_schema = {"type": "object", "required": ROUTE_ITEM_REQUIRED[route],
                                "properties": {"message_configs": {"type": "array"}, "signaling_flow": {"type": "array"},
                                               "cell_config": {"type": "object"}, "procedure": {"type": "array"},
                                               "requirement_configs": {"type": "array"}}}
-            schema = {"type": "object", "required": [list_key],
-                      "properties": {list_key: {"type": "array", "items": item_schema}}}
-            fallback = {list_key: _fallback_route_items(route, batch_tcs)}
-            data = await asyncio.to_thread(
-                run_json_agent_with_retry,
-                shared=shared,
-                template_name=ROUTE_PROMPTS[route],
-                variables={
-                    "testcases_json": json.dumps([_tc_summary(tc) for tc in batch_tcs], ensure_ascii=False),
-                    "requirements_json": json.dumps(requirements, ensure_ascii=False),
-                    "product_profile_json": json.dumps(prep_res["product_profile"].get("selected", {}), ensure_ascii=False),
-                    "requirement_configs_json": json.dumps(
-                        {"per_testcase": {str(tc.get("tc_id") or ""): _linked_configs(tc, req_index) for tc in batch_tcs},
-                         "source_config_lines": [{"line_id": x["line_id"], "text": x["text"]} for x in source_lines]},
-                        ensure_ascii=False),
-                    "last_error": "",
-                },
-                schema=schema,
-                fallback=fallback,
-                warn_tag=f"ExecutableCaseNode-{route}",
-            )
-            items = [x for x in data.get(list_key, []) if isinstance(x, dict)]
-            # LLM 漏掉的用例用降级结果补上，保证每条用例都能落地。
+            return {"type": "object", "required": [list_key], "properties": {list_key: {"type": "array", "items": item_schema}}}
+
+        async def llm_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            list_key = ROUTE_LIST_KEY[route]
+            rids = {str(r) for tc in batch_tcs for r in (tc.get("trace") or {}).get("req_ids") or []}
+            drafts = [{k: v for k, v in project(route, tc).items() if not k.startswith("_")} for tc in batch_tcs]
+            async with llm_slots:
+                data = await asyncio.to_thread(
+                    generate_json,
+                    shared=shared,
+                    template_name=ROUTE_PROMPTS[route],
+                    variables={
+                        "testcases_json": json.dumps([_tc_summary(tc) for tc in batch_tcs], ensure_ascii=False),
+                        "draft_json": json.dumps(drafts, ensure_ascii=False),
+                        "requirements_json": json.dumps([_requirement_view(req_index[r]) for r in rids if r in req_index],
+                                                        ensure_ascii=False),
+                        "product_profile_json": json.dumps(prep_res["product_profile"].get("selected", {}), ensure_ascii=False),
+                        "requirement_configs_json": json.dumps(
+                            {"per_testcase": {str(tc.get("tc_id") or ""): _linked_configs(tc, req_index) for tc in batch_tcs},
+                             "source_config_lines": [{"line_id": x["line_id"], "text": x["text"]} for x in source_lines]},
+                            ensure_ascii=False),
+                    },
+                    schema=_schema(route),
+                    warn_tag=f"ExecutableCaseNode-{route}",
+                    raise_on_truncate=len(batch_tcs) > 1,
+                )
+            return [x for x in data.get(list_key, []) if isinstance(x, dict)]
+
+        async def _run_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            items: List[Dict[str, Any]] = []
+            used_llm = False
+            if shared["llm_client"].enabled:
+                try:
+                    parts = await run_split_on_truncate(batch_tcs, lambda b: llm_batch(route, b))
+                    items = [x for part in parts for x in part]
+                    used_llm = True
+                except Exception as exc:
+                    shared.setdefault("warnings", []).append(f"ExecutableCaseNode-{route}: LLM 适配失败，使用由用例直接映射的草稿: {exc}")
+            elif batch_tcs:
+                shared.setdefault("warnings", []).append(f"ExecutableCaseNode-{route}: LLM未配置，使用由用例直接映射的草稿")
+            tcs_by_id = {str(tc.get("tc_id") or ""): tc for tc in batch_tcs}
+            # LLM 结果缺的字段用 TCD 草稿补齐
+            for it in items:
+                tc = tcs_by_id.get(str(it.get("source_tc_id") or ""))
+                if tc:
+                    _merge_with_draft(route, it, project(route, tc))
             covered = {str(x.get("source_tc_id") or "") for x in items}
             missing = [tc for tc in batch_tcs if str(tc.get("tc_id") or "") not in covered]
-            if missing and data is not fallback:
+            if missing and used_llm:
                 shared.setdefault("warnings", []).append(
-                    f"ExecutableCaseNode-{route}: {len(missing)} 条用例未被 LLM 覆盖，已用降级结果补齐")
-                items.extend(_fallback_route_items(route, missing))
+                    f"ExecutableCaseNode-{route}: {len(missing)} 条用例未被 LLM 覆盖，已用由用例直接映射的草稿补齐")
+            items.extend(_fallback_route_items(route, missing))
             if route in CONFIG_ROUTES:
-                tcs_by_id = {str(tc.get("tc_id") or ""): tc for tc in batch_tcs}
                 lost = 0
                 for it in items:
                     configs = _linked_configs(tcs_by_id.get(str(it.get("source_tc_id") or ""), {}), req_index)
@@ -503,7 +520,12 @@ class ExecutableCaseNode(AsyncNode):
                 if lost:
                     shared.setdefault("warnings", []).append(
                         f"ExecutableCaseNode-{route}: {lost} 项需求写明的配置未落到 case 配置中，已在 requirement_configs 标为 missing 并写入 open_points")
+            else:
+                for it in items:
+                    it.pop("_fallback", None)
             return items
+
+        run_batch = _run_batch
 
         async def run_route(route: str, route_tcs: List[Dict[str, Any]]):
             size = ROUTE_BATCH_SIZE.get(route, 5)
