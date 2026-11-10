@@ -87,8 +87,20 @@ def _norm(value: Any) -> str:
     return re.sub(r"[\s\"'“”]", "", str(value if value is not None else "")).lower()
 
 
+# 步骤号、序号这类计数字段不算配置，否则 “T3346=12” 会被 “step: 12” 误判成已落地
+_BOOKKEEPING_KEYS = {"step", "seq", "verdict", "line_id", "case_id"}
+
+
+def _prune(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _prune(v) for k, v in value.items() if k not in _BOOKKEEPING_KEYS}
+    if isinstance(value, list):
+        return [_prune(v) for v in value]
+    return value
+
+
 def blob_of(item: Dict[str, Any], keys: Iterable[str]) -> str:
-    return _norm({k: item.get(k) for k in keys if k in item})
+    return _norm({k: _prune(item.get(k)) for k in keys if k in item})
 
 
 def value_present(value: Any, blob: str) -> bool:
@@ -106,6 +118,79 @@ def value_present(value: Any, blob: str) -> bool:
     return False
 
 
+def name_key(name: Any) -> str:
+    """参数名归一：只留字母数字并转小写（ssb_arfcn / SSB-ARFCN / ssbArfcn 视为同名）。"""
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", str(name or "").lower())
+
+
+def _leaf_name(path: Any) -> str:
+    return re.sub(r"\[\d+\]$", "", str(path or "").split(".")[-1])
+
+
+def named_values(container: Any) -> List[tuple]:
+    """把结构里所有“名字 → 取值”摊平：字典键值，以及 {path|name|ie, value|values} 形式的 IE / 参数条目。"""
+    out: List[tuple] = []
+
+    def walk(node: Any):
+        if isinstance(node, dict):
+            label = node.get("path") or node.get("name") or node.get("ie")
+            if label and ("value" in node or "values" in node):
+                out.append((name_key(_leaf_name(label)), node.get("value", node.get("values"))))
+            for k, v in node.items():
+                if k in _BOOKKEEPING_KEYS:
+                    continue
+                if isinstance(v, (dict, list)):
+                    walk(v)
+                else:
+                    out.append((name_key(k), v))
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(container)
+    return [(k, v) for k, v in out if k]
+
+
+def _same_value(want: Any, got: Any) -> bool:
+    w, g = _norm(want), _norm(got)
+    return bool(w) and (w == g or value_present(want, g))
+
+
+def config_status(cfg: Dict[str, Any], item: Dict[str, Any], fields: Iterable[str]) -> Dict[str, Any]:
+    """需求写明的一项配置在 case 里的落地情况。
+
+    返回 {"status": applied | conflict | missing, "found": 同名参数的现有取值}：
+      1) 找到同名（或名字互相包含）的参数且取值一致 → applied；
+      2) 取值足够有辨识度（如 632628、12min、#22）并出现在配置字段的任意位置 → applied；
+         一两个字符的取值（如 5、on）太容易撞上无关内容，只认第 1 条；
+      3) 找到完全同名的参数但取值不同 → conflict；
+      4) 否则 missing。
+    """
+    scope = {k: item.get(k) for k in fields if k in item}
+    want_name, want = name_key(cfg.get("name")), cfg.get("value")
+    pairs = named_values(scope)
+    loose = [v for k, v in pairs if want_name and (k == want_name or (min(len(k), len(want_name)) >= 4
+                                                                        and (k in want_name or want_name in k)))]
+    if any(_same_value(want, v) for v in loose):
+        return {"status": "applied", "found": []}
+    if len(_norm(want)) >= 3 and value_present(want, blob_of(item, fields)):
+        return {"status": "applied", "found": []}
+    exact = [v for k, v in pairs if want_name and k == want_name and _norm(v)]
+    if exact:
+        return {"status": "conflict", "found": exact[:3]}
+    return {"status": "missing", "found": []}
+
+
+def group_configs(configs: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """同名配置归为一组（保序）。一组里有多个不同取值，说明需求要求扫描这些取值。"""
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for i, c in enumerate(configs):
+        bucket = groups.setdefault(name_key(c.get("name")) or f"_{i}", [])
+        if _norm(c.get("value")) not in {_norm(x.get("value")) for x in bucket}:
+            bucket.append(c)
+    return list(groups.values())
+
+
 def normalize_explicit_configs(req: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = []
     for c in req.get("explicit_configs") or []:
@@ -113,16 +198,20 @@ def normalize_explicit_configs(req: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         name = str(c.get("name") or "").strip()
         value = c.get("value")
-        if not name and value in (None, ""):
+        if value in (None, "", [], {}):
             continue
-        out.append({
-            "req_id": str(req.get("req_id") or ""),
-            "name": name,
-            "value": value,
-            "layer": str(c.get("layer") or ""),
-            "target": str(c.get("target") or ""),
-            "source_text": str(c.get("source_text") or ""),
-        })
+        # 需求写了一组取值（如带宽 20/40/100MHz）时拆成多条，后面按“同名多值 = 扫描”处理
+        for v in (value if isinstance(value, list) else [value]):
+            if v in (None, ""):
+                continue
+            out.append({
+                "req_id": str(req.get("req_id") or ""),
+                "name": name,
+                "value": v,
+                "layer": str(c.get("layer") or ""),
+                "target": str(c.get("target") or "").lower(),
+                "source_text": str(c.get("source_text") or ""),
+            })
     return out
 
 

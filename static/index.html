@@ -188,6 +188,9 @@
             <details class="raw-json"><summary>原始 JSON</summary><pre id="outDesign" class="ui-pre"></pre></details>
           </div>
           <div class="action-bar">
+            <label class="inline-check" title="用例写完后，再让大模型以评审专家的身份检查协议正确性、测试目的能否判定、是否与需求一致；严重问题自动返工一次，一般意见显示在用例里。会多几次模型调用。">
+              <input id="expertReviewToggle" type="checkbox" checked /> 专家评审（多一轮检查，更准但更慢）
+            </label>
             <button id="genCasesBtn" class="ui-btn">生成测试用例稿 →</button>
           </div>
         </section>
@@ -388,6 +391,10 @@
             <div class="field">
               <label for="llmTimeout">超时（秒）</label>
               <input id="llmTimeout" class="ui-input" type="number" min="10" max="600" step="10" value="120" />
+            </div>
+            <div class="field">
+              <label for="llmMaxTokens">单次输出上限（tokens）<span class="feature-hint">0 = 用接口默认值。用例经常被截断（提示“自动拆批”）时调大，例如 8192 或 16384。</span></label>
+              <input id="llmMaxTokens" class="ui-input" type="number" min="0" max="200000" step="1024" value="0" />
             </div>
           </div>
           <div id="llmTestResult" class="test-result hidden"></div>

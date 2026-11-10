@@ -11,7 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, PrivateAttr
@@ -24,7 +24,8 @@ from flow import (
     create_test_design_flow,
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
-from core.llm import summarize_usage
+from core.events import EventLog
+from core.llm import call_llm, summarize_usage
 from core.tcd import TECHNIQUE_LABELS, purpose_text
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
 from utils.mcp_kb import KBSettings, normalize_mcp_url, query_kb, retrieve as kb_retrieve
@@ -128,6 +129,7 @@ class StageGenerateRequest(BaseModel):
     project_id: str = ""
     bug_ids: Optional[List[str]] = None
     route_overrides: Optional[Dict[str, str]] = None
+    expert_review: bool = True  # 用例质量门里是否再让 LLM 以评审者身份检查一遍
     _last_shared: Any = PrivateAttr(default=None)  # 失败时用于报告出错节点
 
 
@@ -143,6 +145,7 @@ class LLMSettingsRequest(BaseModel):
     api_key: str = ""
     clear_key: bool = False
     timeout: Optional[int] = None
+    max_tokens: Optional[int] = None  # 单次输出上限；0 = 用接口默认值
 
 
 class BugzillaFetchRequest(BaseModel):
@@ -167,6 +170,7 @@ ALLOWED_PROMPT_FILES = {
     "test_designer.txt",
     "integrated_matrix_designer.txt",
     "test_case_tcd.txt",
+    "test_case_reviewer.txt",
     "exec_case_artemis.txt",
     "exec_case_at_agent.txt",
     "exec_case_amarisoft.txt",
@@ -997,7 +1001,8 @@ def llm_get_settings():
 def llm_save_settings(payload: LLMSettingsRequest):
     store = LLMSettings()
     try:
-        cfg = store.merged(payload.api_base, payload.model, payload.api_key, payload.clear_key, payload.timeout)
+        cfg = store.merged(payload.api_base, payload.model, payload.api_key, payload.clear_key, payload.timeout,
+                           payload.max_tokens)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return store.save(cfg)
@@ -1007,7 +1012,8 @@ def llm_save_settings(payload: LLMSettingsRequest):
 def llm_test_settings(payload: LLMSettingsRequest):
     """用表单里的值（未保存也可以）发一次最小请求，验证地址、key 和模型是否可用。"""
     try:
-        cfg = LLMSettings().merged(payload.api_base, payload.model, payload.api_key, payload.clear_key, payload.timeout)
+        cfg = LLMSettings().merged(payload.api_base, payload.model, payload.api_key, payload.clear_key, payload.timeout,
+                                   payload.max_tokens)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     client = LLMClient(cfg)
@@ -1015,7 +1021,7 @@ def llm_test_settings(payload: LLMSettingsRequest):
         raise HTTPException(status_code=400, detail="请填写接口地址、API Key 和模型名称。")
     started = time.time()
     try:
-        reply = client.generate("You are a connectivity check.", "Reply with the single word: OK", temperature=0, max_tokens=8)
+        reply = client.generate("You are a connectivity check.", "Reply with the single word: OK", temperature=0, max_tokens=64)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True, "reply": reply[:80], "latency_ms": int((time.time() - started) * 1000)}
@@ -1134,7 +1140,7 @@ async def chat(payload: ChatRequest):
     if not messages[-1:] or messages[-1].get("content") != message or messages[-1].get("role") != "user":
         messages.append({"role": "user", "content": message})
     try:
-        resp = await asyncio.to_thread(client.chat, messages, 0.3)
+        resp = await asyncio.to_thread(call_llm, client, messages, temperature=0.3)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
     return {"reply": resp.text}
@@ -1218,45 +1224,47 @@ def _collect_open_questions(persona_reviews: Dict[str, Any]) -> List[Dict[str, A
     return _triage_open_questions(persona_reviews)[0]
 
 
-async def _emit_hitl_event(job: Dict[str, Any], ev: Dict[str, Any]):
-    """Broadcast HITL events to internal control queue and all SSE subscribers."""
-    control_q: asyncio.Queue = job["queue"]
-    await control_q.put(ev)
-    job.setdefault("recent_events", []).append(ev)
-    if len(job["recent_events"]) > 80:
-        job["recent_events"] = job["recent_events"][-80:]
-
-    stale: List[asyncio.Queue] = []
-    for sub_q in job.get("subscribers", []) or []:
-        try:
-            sub_q.put_nowait(ev)
-        except Exception:
-            stale.append(sub_q)
-    if stale:
-        job["subscribers"] = [q for q in (job.get("subscribers", []) or []) if q not in stale]
+MAX_FINISHED_JOBS = 30
 
 
-async def _emit_stage_event(job: Dict[str, Any], ev: Dict[str, Any]):
-    """Broadcast stage events to all subscribers and keep a short replay window."""
-    control_q: asyncio.Queue = job["queue"]
-    await control_q.put(ev)
-    job.setdefault("recent_events", []).append(ev)
-    if len(job["recent_events"]) > 120:
-        job["recent_events"] = job["recent_events"][-120:]
+def _prune_jobs(jobs: Dict[str, Dict[str, Any]]) -> None:
+    """只保留最近的若干个已结束任务，避免长时间运行后内存里堆满历史结果。"""
+    done = [k for k, j in jobs.items() if j.get("status") in ("completed", "failed")]
+    for k in done[:-MAX_FINISHED_JOBS]:
+        jobs.pop(k, None)
 
-    stale: List[asyncio.Queue] = []
-    for sub_q in job.get("subscribers", []) or []:
-        try:
-            sub_q.put_nowait(ev)
-        except Exception:
-            stale.append(sub_q)
-    if stale:
-        job["subscribers"] = [q for q in (job.get("subscribers", []) or []) if q not in stale]
+
+def _sse(seq: int, ev: Optional[Dict[str, Any]]) -> str:
+    if ev is None:
+        return ": keep-alive\n\n"  # 长时间没有事件时的心跳，防止代理或浏览器把连接当成空闲断开
+    return f"id: {seq}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+
+def _resume_cursor(request: Request, total: int) -> int:
+    """浏览器断线重连时会带 Last-Event-ID，从那之后续发；首次连接从头发（任务刚启动时的事件也不会丢）。"""
+    try:
+        return max(0, min(int(request.headers.get("last-event-id") or 0), total))
+    except ValueError:
+        return 0
+
+
+def _event_stream(job: Dict[str, Any], request: Request, first: Dict[str, Any]) -> StreamingResponse:
+    events: EventLog = job["events"]
+    cursor = _resume_cursor(request, len(events.events))
+
+    async def gen():
+        if cursor == 0:
+            yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+        async for seq, ev in events.stream(cursor):
+            yield _sse(seq, ev)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 async def _run_requirement_hitl_job(job_id: str):
     job = requirement_hitl_jobs[job_id]
-    queue: asyncio.Queue = job["queue"]
+    events: EventLog = job["events"]
     reqs: List[str] = job["requirements"]
     rag_context: str = job["rag_context"]
     framework_capability_catalog: str = job["framework_capability_catalog"]
@@ -1281,7 +1289,7 @@ async def _run_requirement_hitl_job(job_id: str):
                 "warnings": [],
                 "trace": [],
                 "review_feedback": job.get("review_feedback", ""),
-                "event_queue": queue,
+                "events": events,
             }
             flow = create_requirement_analysis_flow()
             await flow.run_async(shared)
@@ -1331,21 +1339,16 @@ async def _run_requirement_hitl_job(job_id: str):
             job["last_payload"] = round_payload
             job["round"] = round_no
             job["status"] = "round_ready"
-            await _emit_hitl_event(job, {"type": "round_ready", "payload": round_payload})
+            events.emit("round_ready", round_payload)
 
             if round_no >= 3:
                 job["status"] = "completed"
-                await _emit_hitl_event(job, {"type": "completed", "payload": round_payload})
+                events.emit("completed", round_payload)
                 return
 
             job["status"] = "waiting_answers"
-            await _emit_hitl_event(
-                job,
-                {
-                    "type": "waiting_answers",
-                    "payload": {"job_id": job_id, "round": round_no, "open_questions": round_payload["open_questions"]},
-                }
-            )
+            events.emit("waiting_answers", {"job_id": job_id, "round": round_no,
+                                            "open_questions": round_payload["open_questions"]})
             await job["answer_event"].wait()
             job["answer_event"].clear()
             answers = {k: v for k, v in (job.get("pending_answers", {}) or {}).items() if str(v).strip()}
@@ -1378,25 +1381,26 @@ async def _run_requirement_hitl_job(job_id: str):
     except Exception as exc:
         job["status"] = "failed"
         job["error"] = str(exc)
-        await _emit_hitl_event(job, {"type": "error", "payload": {"job_id": job_id, "error": str(exc)}})
+        events.emit("error", {"job_id": job_id, "error": str(exc)})
 
 
-async def _wait_hitl_round(job_id: str, timeout_s: int = 180):
+async def _wait_hitl_round(job_id: str, timeout_s: int = 900):
+    """等到本轮评审出结果。超时只是这次 HTTP 请求不再等，任务本身继续跑，页面可以从 state / stream 接着拿结果。"""
     job = requirement_hitl_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job不存在")
-    queue: asyncio.Queue = job["queue"]
-    try:
-        while True:
-            ev = await asyncio.wait_for(queue.get(), timeout=timeout_s)
-            et = ev.get("type")
-            if et in {"round_ready", "completed"}:
-                return ev.get("payload", {})
-            if et == "error":
-                msg = ev.get("payload", {}).get("error", "unknown error")
-                raise HTTPException(status_code=500, detail=f"HITL执行失败: {msg}")
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="等待HITL结果超时")
+    events: EventLog = job["events"]
+    deadline = time.monotonic() + timeout_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(status_code=504, detail="等待HITL结果超时")
+        new, job["wait_cursor"] = await events.read(job.get("wait_cursor", 0), remaining)
+        for ev in new:
+            if ev["type"] in ("round_ready", "completed"):
+                return ev["payload"]
+            if ev["type"] == "error":
+                raise HTTPException(status_code=500, detail=f"HITL执行失败: {ev['payload'].get('error', 'unknown error')}")
 
 
 @app.post("/api/hitl/requirements/start")
@@ -1406,8 +1410,8 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         raise HTTPException(status_code=400, detail="requirements不能为空")
 
     job_id = uuid.uuid4().hex[:12]
-    queue: asyncio.Queue = asyncio.Queue()
     answer_event = asyncio.Event()
+    _prune_jobs(requirement_hitl_jobs)
     framework_capability_catalog = payload.framework_capability_catalog.strip()
 
     requirement_hitl_jobs[job_id] = {
@@ -1425,9 +1429,8 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "answered_questions": [],
         "pending_answers": {},
         "answer_event": answer_event,
-        "queue": queue,
-        "subscribers": [],
-        "recent_events": [],
+        "events": EventLog().bind(),
+        "wait_cursor": 0,
         "last_payload": None,
         "error": "",
     }
@@ -1446,6 +1449,7 @@ async def hitl_requirements_next(job_id: str, payload: RequirementHITLNextReques
             return job.get("last_payload") or {"job_id": job_id, "is_final_round": True}
         raise HTTPException(status_code=409, detail=f"当前状态不允许next: {job.get('status')}")
     job["pending_answers"] = payload.open_question_answers or {}
+    job["wait_cursor"] = len(job["events"].events)  # 只等这次提交之后的新一轮结果
     job["answer_event"].set()
     nxt = await _wait_hitl_round(job_id)
     return nxt
@@ -1466,41 +1470,15 @@ def hitl_requirements_state(job_id: str):
 
 
 @app.get("/api/hitl/requirements/{job_id}/stream")
-async def hitl_requirements_stream(job_id: str):
+async def hitl_requirements_stream(job_id: str, request: Request):
     job = requirement_hitl_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job不存在")
-
-    sub_q: asyncio.Queue = asyncio.Queue()
-    subscribers = job.setdefault("subscribers", [])
-    subscribers.append(sub_q)
-
-    async def event_generator():
-        try:
-            init_payload = {
-                "job_id": job_id,
-                "status": job.get("status"),
-                "round": job.get("round", 0),
-                "error": job.get("error", ""),
-            }
-            yield f"data: {json.dumps({'type': 'state', 'payload': init_payload}, ensure_ascii=False)}\n\n"
-
-            for ev in job.get("recent_events", [])[-20:]:
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-
-            while True:
-                ev = await sub_q.get()
-                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-                if ev.get("type") in {"completed", "error"}:
-                    break
-        finally:
-            if sub_q in (job.get("subscribers", []) or []):
-                job["subscribers"] = [q for q in job.get("subscribers", []) if q is not sub_q]
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return _event_stream(job, request, {"type": "state", "payload": {
+        "job_id": job_id, "status": job.get("status"), "round": job.get("round", 0), "error": job.get("error", "")}})
 
 
-def _base_shared(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+def _base_shared(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     return {
         "input_requirements": payload.requirement_input or [],
         "requirement_spec": payload.requirement_spec or {},
@@ -1511,7 +1489,8 @@ def _base_shared(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[
         "llm_client": LLMClient(),
         "warnings": [],
         "trace": [],
-        "event_queue": queue,
+        "events": events,
+        "expert_review": payload.expert_review,
     }
 
 
@@ -1529,11 +1508,11 @@ def _merge_usage(*usages: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
-async def _stage_design(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+async def _stage_design(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     knowledge_context, knowledge_hits = await asyncio.to_thread(
         _build_design_knowledge, payload.requirement_spec or {}, payload.project_id
     )
-    shared = {**_base_shared(payload, queue), "knowledge_context": knowledge_context}
+    shared = {**_base_shared(payload, events), "knowledge_context": knowledge_context}
     try:
         await create_test_design_flow().run_async(shared)
     finally:
@@ -1562,10 +1541,10 @@ async def _stage_design(payload: "StageGenerateRequest", queue: asyncio.Queue) -
     }
 
 
-async def _stage_testcases(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+async def _stage_testcases(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     if not payload.test_design_spec:
         raise HTTPException(status_code=400, detail="缺少test_design_spec")
-    shared = {**_base_shared(payload, queue), "test_design_spec": payload.test_design_spec,
+    shared = {**_base_shared(payload, events), "test_design_spec": payload.test_design_spec,
               "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY}
     try:
         await create_test_case_flow().run_async(shared)
@@ -1595,10 +1574,10 @@ async def _stage_testcases(payload: "StageGenerateRequest", queue: asyncio.Queue
     }
 
 
-async def _stage_exec_cases(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+async def _stage_exec_cases(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     if not payload.test_case_spec:
         raise HTTPException(status_code=400, detail="缺少test_case_spec")
-    shared = {**_base_shared(payload, queue), "test_case_spec": payload.test_case_spec,
+    shared = {**_base_shared(payload, events), "test_case_spec": payload.test_case_spec,
               "bug_ids": payload.bug_ids or [], "route_overrides": payload.route_overrides or {}}
     try:
         await create_exec_case_flow().run_async(shared)
@@ -1623,7 +1602,7 @@ async def _stage_exec_cases(payload: "StageGenerateRequest", queue: asyncio.Queu
     }
 
 
-async def _stage_requirements_auto(payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+async def _stage_requirements_auto(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     """一键模式的需求评审：跑一轮解析 + 三方评审 + 综合定稿，所有问题采用 AI / 知识库给出的答案。"""
     reqs = [r.strip() for r in (payload.requirement_input or []) if r and r.strip()]
     if not reqs:
@@ -1632,7 +1611,7 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", queue: async
     rag_context, rag_hits, rag_errors = await asyncio.to_thread(
         _build_effective_rag_context, reqs, payload.rag_context or "", project_id)
     shared = {
-        **_base_shared(payload, queue),
+        **_base_shared(payload, events),
         "input_requirements": reqs,
         "rag_context": rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog or "",
@@ -1674,33 +1653,32 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", queue: async
 AUTO_STAGES = [("requirements", "测试需求评审"), ("design", "测试设计"), ("testcases", "测试用例"), ("exec_cases", "可执行用例")]
 
 
-async def _stage_auto(job: Dict[str, Any], payload: "StageGenerateRequest", queue: asyncio.Queue) -> Dict[str, Any]:
+async def _stage_auto(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     out: Dict[str, Any] = {"warnings": [], "stage_warnings": {}}
     usages = []
     for idx, (stage, label) in enumerate(AUTO_STAGES, start=1):
-        await _emit_stage_event(job, {"type": "stage_progress", "payload": {
-            "stage": stage, "label": label, "index": idx, "total": len(AUTO_STAGES)}})
+        events.emit("stage_progress", {"stage": stage, "label": label, "index": idx, "total": len(AUTO_STAGES)})
         if stage == "requirements":
-            res = await _stage_requirements_auto(payload, queue)
+            res = await _stage_requirements_auto(payload, events)
             payload.requirement_spec = res["requirement_spec"]
             payload.persona_reviews = res["persona_reviews"]
             payload.requirement_review_history = res["requirement_review_history"]
         elif stage == "design":
-            res = await _stage_design(payload, queue)
+            res = await _stage_design(payload, events)
             payload.test_design_spec = res["test_design_spec"]
             payload.history_record_id = (res.get("design_history") or {}).get("record_id") or payload.history_record_id
         elif stage == "testcases":
-            res = await _stage_testcases(payload, queue)
+            res = await _stage_testcases(payload, events)
             payload.test_case_spec = res["test_case_spec"]
         else:
-            res = await _stage_exec_cases(payload, queue)
+            res = await _stage_exec_cases(payload, events)
         usages.append(res.get("llm_usage"))
         out["stage_warnings"][stage] = res.get("warnings", [])
         out["warnings"].extend(res.get("warnings", []))
         for k, v in res.items():
             if k not in ("warnings", "trace", "llm_usage") and v is not None:
                 out[k] = v
-        await _emit_stage_event(job, {"type": "stage_result", "payload": {"stage": stage, "result": res}})
+        events.emit("stage_result", {"stage": stage, "result": res})
     out["llm_usage"] = _merge_usage(*usages)
     return out
 
@@ -1709,29 +1687,16 @@ async def _run_stage_job(job_id: str):
     job = stage_jobs[job_id]
     stage = job["stage"]
     payload: StageGenerateRequest = job["payload"]
-    queue: asyncio.Queue = job["queue"]
+    events: EventLog = job["events"]
+    runners = {"design": _stage_design, "testcases": _stage_testcases, "exec_cases": _stage_exec_cases, "auto": _stage_auto}
 
-    await _emit_stage_event(job, {"type": "job_started", "payload": {"job_id": job_id, "stage": stage}})
-
+    events.emit("job_started", {"job_id": job_id, "stage": stage})
     try:
-        if stage == "design":
-            result = await _stage_design(payload, queue)
-        elif stage == "testcases":
-            result = await _stage_testcases(payload, queue)
-        elif stage == "exec_cases":
-            result = await _stage_exec_cases(payload, queue)
-        elif stage == "auto":
-            result = await _stage_auto(job, payload, queue)
-        else:
-            raise RuntimeError(f"不支持的stage: {stage}")
+        result = await runners[stage](payload, events)
         result["llm_usage_text"] = summarize_usage(result.get("llm_usage"))
-
         job["status"] = "completed"
         job["result"] = result
-        await _emit_stage_event(
-            job,
-            {"type": "completed", "payload": {"job_id": job_id, "stage": stage, "result": result}},
-        )
+        events.emit("completed", {"job_id": job_id, "stage": stage, "result": result})
     except Exception as exc:
         job["status"] = "failed"
         shared = getattr(payload, "_last_shared", None) or {}
@@ -1742,10 +1707,9 @@ async def _run_stage_job(job_id: str):
             "warnings": shared.get("warnings", []),
         }
         job["error"] = detail
-        await _emit_stage_event(
-            job,
-            {"type": "error", "payload": {"job_id": job_id, "stage": stage, **detail}},
-        )
+        events.emit("error", {"job_id": job_id, "stage": stage, **detail})
+    finally:
+        job["payload"] = None  # 请求体里带着整份会话数据，任务结束后不必再留在内存里
 
 
 @app.post("/api/stage/{stage}/start")
@@ -1763,16 +1727,14 @@ async def stage_start(stage: str, payload: StageGenerateRequest):
     if stage_name == "exec_cases" and not payload.test_case_spec:
         raise HTTPException(status_code=400, detail="缺少test_case_spec")
 
+    _prune_jobs(stage_jobs)
     job_id = uuid.uuid4().hex[:12]
-    q: asyncio.Queue = asyncio.Queue()
     stage_jobs[job_id] = {
         "job_id": job_id,
         "stage": stage_name,
         "status": "running",
         "payload": payload,
-        "queue": q,
-        "subscribers": [],
-        "recent_events": [],
+        "events": EventLog().bind(),
         "result": None,
         "error": None,
     }
@@ -1795,30 +1757,12 @@ def stage_state(job_id: str):
 
 
 @app.get("/api/stage/{job_id}/stream")
-async def stage_stream(job_id: str):
+async def stage_stream(job_id: str, request: Request):
     job = stage_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job不存在")
-    queue: asyncio.Queue = job["queue"]
-
-    async def event_generator():
-        init_payload = {
-            "job_id": job_id,
-            "stage": job.get("stage"),
-            "status": job.get("status"),
-            "error": job.get("error"),
-        }
-        yield f"data: {json.dumps({'type': 'state', 'payload': init_payload}, ensure_ascii=False)}\n\n"
-        for ev in job.get("recent_events", [])[-40:]:
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-
-        while True:
-            ev = await queue.get()
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-            if ev.get("type") in {"completed", "error"}:
-                break
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return _event_stream(job, request, {"type": "state", "payload": {
+        "job_id": job_id, "stage": job.get("stage"), "status": job.get("status"), "error": job.get("error")}})
 
 
 @app.get("/api/settings/prompts")
@@ -1887,6 +1831,7 @@ def _prompt_role_mapping() -> List[Dict[str, Any]]:
         {"role": "Test Designer", "node": "TestDesignNode", "prompt": "test_designer.txt"},
         {"role": "Matrix Gap Filler", "node": "TestDesignNode", "prompt": "integrated_matrix_designer.txt"},
         {"role": "3GPP Test Case Writer", "node": "TestCaseBatchGenNode", "prompt": "test_case_tcd.txt"},
+        {"role": "Test Case Expert Reviewer", "node": "TestCaseSupervisorNode", "prompt": "test_case_reviewer.txt"},
         {"role": "Artemis Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_artemis.txt"},
         {"role": "AT Agent Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_at_agent.txt"},
         {"role": "Amarisoft Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_amarisoft.txt"},
@@ -2042,6 +1987,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
             _ic_text(tc.get("initial_conditions")) or _numbered(tc.get("preconditions", [])),
             _cfg_text(tc.get("configuration")), _proc_text(tc.get("procedure")) or _numbered(tc.get("expected", [])),
             _numbered(tc.get("pass_fail", [])), env_text, risk_text, "、".join(str(x) for x in tc.get("tags", []) or []),
+            _numbered(list(tc.get("open_points") or []) + [f"评审：{x}" for x in tc.get("review_notes") or []]),
         ])
         for p in tc.get("procedure") or []:
             if isinstance(p, dict):
@@ -2059,7 +2005,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                                      ie.get("vary", ""), ie.get("note", "")])
     _sheet("测试用例", [("用例编号", 12), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
                         ("测试目标", 10), ("初始条件", 40), ("关键配置", 40), ("测试步骤", 60), ("通过标准", 45),
-                        ("测试环境", 16), ("环境风险", 26), ("标签", 14)], case_rows, first=True)
+                        ("测试环境", 16), ("环境风险", 26), ("标签", 14), ("待确认 / 评审意见", 45)], case_rows, first=True)
     if step_rows:
         _sheet("测试步骤", [("用例", 10), ("St", 5), ("发起方", 8), ("方向", 6), ("层", 6), ("消息", 26), ("消息内容", 10),
                           ("动作", 18), ("参数", 30), ("期望", 50), ("判定点", 7), ("时序", 18)], step_rows)

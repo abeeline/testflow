@@ -561,3 +561,8 @@ tr.verdict-row td { background: var(--success-soft); }
 .tag.tech-mobility, .tag.tech-interworking { background: var(--primary-soft); color: var(--primary); }
 .tag.tech-performance, .tag.tech-stability { background: var(--success-soft); color: var(--success); }
 .tag[class*="tech-"] { white-space: nowrap; }
+
+.action-bar .inline-check { margin: 0 auto 0 0; }
+.warn-text { color: #b45309; }
+.review-notes { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted-foreground); }
+.review-notes li { margin: 2px 0; }

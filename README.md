@@ -39,6 +39,12 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
   旧字段 `preconditions` / `steps` / `expected` 仍然保留，旧历史记录照常可用
 - 质量门（`core/quality.py`）先做确定性修复：需求写明的配置、数值门限没进矩阵或用例时直接按原值补入（用例里标为 `patched`）；
   结构不合格的用例（缺 when/then、没有判定步骤、模拟基站/仪表用例没有小区配置或信令步骤……）只返工对应测试点，不重跑全部
+- 需求配置按“参数名 + 取值”核对（`utils/req_configs.py: config_status`），不会把步骤号或别的参数里的数字误当成已落地；
+  用例里同名参数取值不同时标为 `conflict`：先让模型改一次，仍不一致就保留原值、把需求值另存为“参数名（需求值）”并写进待确认项；
+  需求对同一参数给了多个取值时按扫描处理，补进 `parameter_variations`
+- 专家评审（提示词 `test_case_reviewer.txt`，测试设计页可关）：用例写完后另起一次调用，让模型以评审者身份检查协议正确性
+  （消息名、方向、顺序、定时器和原因值语义）、测试目的能否判定、是否与需求和测试点一致、实网用例是否依赖了网络侧控制；
+  严重问题并入返工反馈，一般意见留在用例的 `review_notes` 里（页面和 Excel 可见）
 - 用例分批并行生成，编号按矩阵行顺序统一（不同批次不再撞号）；输出被截断时自动把这一批对半拆开重试
 - 测试设计完成后自动归档到“测试设计历史”
 - 自动生成标准测试设计文档（HTML），支持固定 URL 查看与分享
@@ -65,7 +71,8 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
 
 - 需求解析时把原文写明的配置（频段、频点、带宽、SCS、定时器、DRX/PSM、测量门限、IE 取值、拒绝原因、APN 等）原样记到 `explicit_configs`（name / value / source_text），综合评审丢掉时按 req_id 自动补回；测试设计和用例生成要求这些值原样进 `key_configuration` 和步骤参数
 - 生成 Amarisoft / 协议仪表 case 时，把关联需求的 `explicit_configs` 和需求原文中的配置行一起交给 LLM，要求一字不改地落到 `cell_config` / `core_config` / `message_configs` 等字段
-- 生成后逐项核对：每个 case 的 `requirement_configs` 标明每项需求配置 `applied`（已落地）/ `missing`（未找到）/ `not_applicable` / `conflict`，未落地项写进 `open_points` 和告警；bundle 的 `source_requirement.config_lines` 保留需求原文配置行并标出取值是否出现在 case 中
+- 生成后逐项核对：每个 case 的 `requirement_configs` 标明每项需求配置 `applied`（已落地）/ `patched`（模型漏了，已按需求原值补入，`applied_to` 写明补到哪）/ `not_applicable` / `conflict`；bundle 的 `source_requirement.config_lines` 保留需求原文配置行并标出取值是否出现在 case 中（`other_route` 表示落在了其他平台的用例里，只有所有平台都没有才告警）
+- 实网用例（Artemis / AT Agent）的 `expected_result` 会保留用例通过标准里的数值门限，模型改写时丢了就按原文补回；TCD 里写明的消息 IE 被模型漏掉时也按草稿补回
 - bundle 顶部 `field_guide` 说明每个字段的含义，下游 Agent 无需额外文档；Excel 导出新增“需求配置落地”页
 
 **由 TCD 投影，LLM 只做平台适配**：每条用例先由 `core/tcd.py: project()` 确定性映射出该平台的草稿（配置、消息内容、信令流程、判定点一个不少），
@@ -160,7 +167,7 @@ python scripts/build_windows_release.py --version 0.1.0
 ```
 main.py            FastAPI 接口
 flow.py / nodes.py PocketFlow 流水线与各节点（只做编排）
-core/              领域层：llm.py（LLM 运行时）、tcd.py（3GPP 测试用例描述与投影）、quality.py（质量门）、environments.py（测试环境能力）
+core/              领域层：llm.py（LLM 运行时）、tcd.py（3GPP 测试用例描述与投影）、quality.py（质量门）、environments.py（测试环境能力）、events.py（任务事件流）
 exec_cases.py      可执行用例（按验收方案分流）
 tests/             离线测试（假 LLM）
 schemas.py         JSON Schema
@@ -184,11 +191,17 @@ LLM 运行时（`core/llm.py`）：
 - 输出不是合法 JSON 或不符合 schema 时，把上次输出和具体错误回灌给模型修正（自修复），不再原样重发
 - `finish_reason=length`（输出被截断）时，批量任务自动对半拆批重试；单条任务要求模型精简后重写
 - 顶层是对象的输出自动请求 JSON 模式（`response_format=json_object`），接口不支持时自动退回
+- 参数兼容：接口不接受自定义 `temperature`，或要求用 `max_completion_tokens` 代替 `max_tokens`（部分推理模型）时，自动去掉 / 换用后重发，并记住这个接口的习惯
+- “单次输出上限”可在大模型设置里填（默认 0 = 用接口默认值）；用例经常被截断时调大
+- 同时在途的请求数全局限制为 4（环境变量 `TESTFLOW_LLM_CONCURRENCY` 可调）；限流 / 5xx / 网络错误退避重试，key 错、模型名错这类错误立即报出
+- LLM 请求都在线程池里执行，生成过程中页面其他操作（助手、设置、历史）不受影响
 - 每个阶段统计 LLM 调用、自修复、失败次数和 token 用量，显示在运行状态里（结果字段 `llm_usage`）
 
 ## 一键生成与助手
 
 - 需求准备页“⚡ 一键生成全部”：需求评审 → 测试设计 → 测试用例 → 可执行用例一次跑完（`POST /api/stage/auto/start`），评审问题全部采用 AI / 知识库答案，各页面边跑边刷新；之后仍可回到任一页面改答案、分步重跑
+- 进度通过 SSE 推送（`/api/stage/{job_id}/stream`），事件带序号；连接中断后浏览器自动重连并从断点续收，长任务不会因为网络抖动而“失败”
+- 没配大模型时一键生成也能跑通：按规则给出每条需求一个正常流程测试点的骨架，方便先联调流程和导出格式
 - 右下角助手能看到当前会话的需求、测试点、用例和告警摘要，可以直接问“TC-003 为什么用协议仪表”“REQ-002 还缺哪些异常场景”
 
 ## 测试

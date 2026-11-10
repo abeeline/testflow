@@ -56,6 +56,15 @@ const llmApiKeyEl = document.getElementById("llmApiKey");
 const llmKeyHintEl = document.getElementById("llmKeyHint");
 const llmModelEl = document.getElementById("llmModel");
 const llmTimeoutEl = document.getElementById("llmTimeout");
+const llmMaxTokensEl = document.getElementById("llmMaxTokens");
+const expertReviewToggle = document.getElementById("expertReviewToggle");
+const EXPERT_REVIEW_KEY = "testflow.expertReview";
+if (expertReviewToggle) {
+  try { expertReviewToggle.checked = localStorage.getItem(EXPERT_REVIEW_KEY) !== "0"; } catch (_) {}
+  expertReviewToggle.addEventListener("change", () => {
+    try { localStorage.setItem(EXPERT_REVIEW_KEY, expertReviewToggle.checked ? "1" : "0"); } catch (_) {}
+  });
+}
 const llmTestResultEl = document.getElementById("llmTestResult");
 const llmSaveBtn = document.getElementById("llmSaveBtn");
 const llmTestBtn = document.getElementById("llmTestBtn");
@@ -423,6 +432,8 @@ function closeStageStream() {
   activeStageJobId = "";
 }
 
+let hitlRequestInFlight = false;
+
 function handleHitlStreamEvent(ev) {
   const et = ev?.type || "";
   const payload = ev?.payload || {};
@@ -433,6 +444,11 @@ function handleHitlStreamEvent(ev) {
     if (payload.error) {
       pushSystemBotMessage(`HITL后台异常：${payload.error}`, { actionNeeded: true });
     }
+    return;
+  }
+  if (et === "node_running") {
+    // 只在有评审请求在途时显示进度；刚连上通道时补发的旧事件不能盖掉已经出来的结果
+    if (hitlRequestInFlight) setStatus(`测试需求评审执行中：${nodeLabel(payload.node, payload)}`);
     return;
   }
   if (et === "round_ready") {
@@ -516,7 +532,7 @@ function usageLine(result) {
 }
 
 async function startStageJobAndWait(stage, payload, handlers = {}) {
-  const startResp = await postJson(`/api/stage/${stage}/start`, payload);
+  const startResp = await postJson(`/api/stage/${stage}/start`, { ...payload, expert_review: expertReviewToggle ? expertReviewToggle.checked : true });
   const jobId = startResp.job_id;
   if (!jobId) throw new Error("stage job_id为空");
 
@@ -542,6 +558,7 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
         if (p?.status && p.status !== "running") pushSystemBotMessage(`${stageLabel(stage)}任务状态：${p.status}`);
         return;
       }
+      streamErrors = 0;
       if (et === "job_started") {
         pushSystemBotMessage(`${stageLabel(stage)}任务开始执行。`);
         return;
@@ -579,22 +596,33 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
       }
     };
 
+    // 连接中断时先问任务状态：还在跑就让 EventSource 自动重连（服务端按 Last-Event-ID 续发，不丢不重），
+    // 只有任务已经结束或服务端找不到任务时才收尾。
+    let streamErrors = 0;
     es.onerror = async () => {
-      closeStageStream();
+      if (activeStageStream !== es) return;
+      streamErrors += 1;
       try {
         const s = await fetch(`/api/stage/${encodeURIComponent(jobId)}/state`);
+        if (activeStageStream !== es) return;
         if (s.ok) {
           const st = await s.json();
           if (st.status === "completed") {
+            closeStageStream();
             resolve(st.result || {});
             return;
           }
-          const err = st?.error?.error || st?.error || "stage stream disconnected";
-          reject(new Error(String(err)));
+          if (st.status === "running" && es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;
+          closeStageStream();
+          reject(new Error(String(st?.error?.error || (st.status === "running" ? "与服务端的进度通道中断，任务仍在后台运行，请稍后在历史记录中查看" : "任务失败"))));
           return;
         }
-      } catch (_) {}
-      reject(new Error("stage stream disconnected"));
+        if (s.status !== 404 && es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;
+      } catch (_) {
+        if (es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;  // 服务暂时连不上，继续等重连
+      }
+      closeStageStream();
+      reject(new Error("与服务端的连接中断"));
     };
   });
 }
@@ -1049,7 +1077,10 @@ function renderTcdDetail(tc) {
       <table class="ui-table"><thead><tr><th>IE 路径</th><th>取值</th><th>扫描</th><th>说明</th></tr></thead><tbody>${
         (m.ies || []).map((ie) => `<tr><td><code>${esc(ie.path || "")}</code></td><td><code>${esc(fmtVal(ie.value))}</code></td><td>${esc(ie.vary || "")}</td><td>${esc(ie.note || "")}</td></tr>`).join("")
       }</tbody></table></div>`).join("");
-  const rc = (tc.requirement_configs || []).filter((c) => c.status === "patched");
+  const rcAll = tc.requirement_configs || [];
+  const rc = rcAll.filter((c) => c.status === "patched");
+  const rcConflict = rcAll.filter((c) => c.status === "conflict");
+  const notes = tc.review_notes || [];
   return `<div class="tcd-detail">
     ${purposeHtml(tc.test_purpose)}
     ${(tc.references || []).length ? `<p class="feature-hint">参考条款：${esc(tc.references.join("；"))}${tc.applicability ? `　适用性：${esc(tc.applicability)}` : ""}</p>` : ""}
@@ -1059,6 +1090,8 @@ function renderTcdDetail(tc) {
     ${msgs ? `<h5>特定消息内容</h5>${msgs}` : ""}
     ${(tc.parameter_variations || []).length ? `<h5>参数扫描</h5><ul>${tc.parameter_variations.map((v) => `<li><code>${esc(v.name || "")}</code>：${esc(fmtVal(v.values))} ${esc(v.purpose || "")}</li>`).join("")}</ul>` : ""}
     ${rc.length ? `<p class="feature-hint">以下需求配置由质量门按需求原值补入：${rc.map((c) => `${esc(c.name)}=${esc(fmtVal(c.value))}`).join("，")}</p>` : ""}
+    ${rcConflict.length ? `<p class="feature-hint warn-text">需求配置与用例取值不一致（需求值已另存，请确认）：${rcConflict.map((c) => esc(c.note || `${c.name}=${fmtVal(c.value)}`)).join("；")}</p>` : ""}
+    ${notes.length ? `<h5>专家评审意见</h5><ul class="review-notes">${notes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
     ${(tc.open_points || []).length ? `<h5>待确认</h5><ul>${tc.open_points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
   </div>`;
 }
@@ -1077,7 +1110,8 @@ function renderCases(spec) {
       const nSteps = (tc.procedure || tc.steps || []).length;
       const nMsg = (tc.procedure || []).filter((p) => p.message).length;
       return `<details class="tc-item"><summary><span class="tc-id">${esc(tc.tc_id)}</span>${techniqueTag(tc.technique)}<span class="tc-title">${esc(tc.title)}</span>
-        <span class="feature-hint">${esc(envText)} · ${nSteps} 步${nMsg ? ` / ${nMsg} 条信令` : ""} · ${esc((tc.trace?.req_ids || []).join(","))}</span></summary>
+        <span class="feature-hint">${esc(envText)} · ${nSteps} 步${nMsg ? ` / ${nMsg} 条信令` : ""} · ${esc((tc.trace?.req_ids || []).join(","))}${
+          (tc.review_notes || []).length ? ` · 评审意见 ${tc.review_notes.length}` : ""}</span></summary>
         <div class="tc-body"><p><b>通过标准：</b>${esc(passFail.join(" / "))}</p>${riskText ? `<p class="feature-hint">${esc(riskText)}</p>` : ""}${
           tc.procedure ? renderTcdDetail(tc) : `<p class="feature-hint">旧格式用例：${esc((tc.steps || []).map((s) => s.action).join(" → "))}</p>`}</div></details>`;
     })
@@ -1693,9 +1727,15 @@ async function generateRequirementsRound(round) {
       project_id: currentProjectId,
     });
   } else {
-    data = await postJson(`/api/hitl/requirements/${stageState.hitl_job_id}/next`, {
-      open_question_answers: collectOpenQuestionAnswers(),
-    });
+    ensureHitlStream(stageState.hitl_job_id);
+    hitlRequestInFlight = true;
+    try {
+      data = await postJson(`/api/hitl/requirements/${stageState.hitl_job_id}/next`, {
+        open_question_answers: collectOpenQuestionAnswers(),
+      });
+    } finally {
+      hitlRequestInFlight = false;
+    }
   }
   stageState.hitl_job_id = data.job_id || stageState.hitl_job_id || "";
   ensureHitlStream(stageState.hitl_job_id);
@@ -1843,14 +1883,14 @@ function renderExecutableCases(data) {
     .join("");
 }
 
-const REQ_CFG_STATUS = { applied: "已落地", missing: "未落地", not_applicable: "不适用", conflict: "与规范冲突" };
+const REQ_CFG_STATUS = { applied: "已落地", patched: "已按需求值补入", missing: "未落地", not_applicable: "不适用", conflict: "与规范冲突" };
 
 function renderReqConfigPreview(bundle) {
   const items = bundle?.cases || bundle?.items || [];
   const rows = [];
   items.forEach((it) => (it.requirement_configs || []).forEach((rc) => rows.push({ ...rc, case_id: it.case_id })));
   const lines = bundle?.source_requirement?.config_lines || [];
-  const missLines = lines.filter((l) => l.status !== "covered");
+  const missLines = lines.filter((l) => l.status !== "covered" && l.status !== "other_route");
   if (!rows.length && !missLines.length) return "";
   const fmt = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : `${v ?? ""}`);
   const table = rows.length
@@ -2696,6 +2736,7 @@ async function loadLlmSettings() {
   llmApiBaseEl.value = data.api_base || "";
   llmModelEl.value = data.model || "";
   llmTimeoutEl.value = data.timeout || 120;
+  if (llmMaxTokensEl) llmMaxTokensEl.value = data.max_tokens || 0;
   llmApiKeyEl.value = "";
   llmKeyHintEl.textContent = data.key_configured ? "（已保存，留空则沿用）" : "（未配置）";
   renderLlmStatus(data);
@@ -2708,6 +2749,7 @@ function llmFormPayload(extra = {}) {
     model: llmModelEl.value.trim(),
     api_key: llmApiKeyEl.value.trim(),
     timeout: Number(llmTimeoutEl.value) || 120,
+    max_tokens: Math.max(0, Number(llmMaxTokensEl?.value) || 0),
     ...extra,
   };
 }

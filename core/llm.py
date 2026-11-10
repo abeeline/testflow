@@ -6,13 +6,17 @@
    而不是把同一个提示词盲目重发；
 3) 截断识别：finish_reason=length 时抛 LLMTruncated，调用方拆小批次重试（见 run_split_on_truncate）；
 4) 顶层是对象的 schema 自动请求 JSON 模式（接口不支持时自动退回）；
-5) 记录每个 Agent 的调用次数、修复次数和 token 用量，写进 shared["llm_usage"]，页面可展示。
+5) 记录每个 Agent 的调用次数、修复次数和 token 用量，写进 shared["llm_usage"]，页面可展示；
+6) 全局限制同时在途的请求数（各阶段都会并行分批，不限流容易触发接口 429）；
+   限流 / 5xx / 网络错误按退避重试，key 错、模型名错这类重试无用的错误立即报出。
 """
 import json
+import os
 import threading
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from utils.llm_client import LLMTruncated, parse_json_from_llm
+from utils.llm_client import FATAL_STATUS, LLMTruncated, parse_json_from_llm
 from utils.prompt_loader import render_prompt
 from utils.schema_validation import validate_jsonschema
 
@@ -20,6 +24,28 @@ DEFAULT_SYSTEM = "You are a senior cellular protocol test engineer. Return stric
 JSON_RULE = "只输出一个合法 JSON，不要输出 Markdown 代码块以外的解释文字。"
 _MAX_ECHO_CHARS = 12000  # 回灌给模型的上次输出最多多少字
 _usage_lock = threading.Lock()
+
+
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(int(os.getenv(name) or default), high))
+    except ValueError:
+        return default
+
+
+MAX_CONCURRENCY = _env_int("TESTFLOW_LLM_CONCURRENCY", 4, 1, 16)
+_slots = threading.BoundedSemaphore(MAX_CONCURRENCY)
+_BACKOFF_BASE = 2.0  # 秒；测试里可改成 0
+
+
+def call_llm(client: Any, messages: List[Dict[str, str]], **kwargs):
+    """所有 LLM 请求的统一入口：占一个并发名额再发。"""
+    with _slots:
+        return client.chat(messages, **kwargs)
+
+
+class LLMFatal(RuntimeError):
+    """重试无意义的接口错误（鉴权失败、模型不存在等）。"""
 
 
 def split_prompt(text: str) -> Tuple[str, str]:
@@ -101,10 +127,14 @@ def generate_json(
 
     for attempt in range(max_retries + 1):
         try:
-            resp = client.chat(messages, temperature=temperature, json_mode=json_mode)
-        except Exception as exc:  # 网络/接口错误：原样重试
+            resp = call_llm(client, messages, temperature=temperature, json_mode=json_mode)
+        except Exception as exc:
             last_error = exc
             record_usage(shared, warn_tag, failed=True)
+            if getattr(exc, "status", 0) in FATAL_STATUS:
+                raise LLMFatal(f"{warn_tag}: {exc}（请检查“系统设置 → 大模型”的接口地址、API Key 和模型名称）") from exc
+            if attempt < max_retries:  # 限流 / 5xx / 网络抖动：退避后原样重试
+                time.sleep(min(_BACKOFF_BASE * (2 ** attempt), 20))
             continue
         record_usage(shared, warn_tag, resp.usage, repair=attempt > 0)
         truncated = resp.finish_reason == "length"

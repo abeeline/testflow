@@ -5,8 +5,10 @@
     → 测试设计：测试目标 + 按测试技术导出的整合矩阵（每行一个测试点，带 TP）
     → 设计质量门：确定性补入需求配置/数值门限，缺覆盖时只为缺口补行
     → 测试用例：每个测试点写成 3GPP 风格测试用例描述（TCD），分批并行，输出过长自动拆批
-    → 用例质量门：补入需求配置，只返工结构不合格的用例
+    → 用例质量门：补入需求配置和数值门限 + LLM 专家评审，只返工有问题的用例
     → 可执行用例（exec_cases.py）：由 TCD 投影草稿，LLM 做平台适配
+
+调用 LLM 的节点都把阻塞请求放到线程池（ThreadedNode / asyncio.to_thread），生成过程中服务仍能响应其他请求和推送进度。
 """
 import asyncio
 import datetime as dt
@@ -27,19 +29,22 @@ from schemas import (
     TEST_OBJECTIVE_REQUIRED_KEYS,
 )
 from core import environments as envs
-from core.llm import generate_json, run_split_on_truncate
+from core.events import emit as _emit
+from core.llm import generate_json, generate_json_or_fallback, run_split_on_truncate
 from core.quality import (
     design_advice,
     design_gaps,
     feedback_for_rows,
+    merge_expert_review,
     repair_design_rows,
     req_index,
     req_metrics,
+    review_stats,
     review_testcases,
+    rows_for_tcs,
     split_tcs_by_rows,
 )
-from core.tcd import TCD_LIST_SCHEMA, TECHNIQUES, normalize_tcd, renumber
-from utils.agent_runner import run_json_agent_with_retry
+from core.tcd import TCD_LIST_SCHEMA, TECHNIQUES, normalize_tcd, renumber, summarize_for_prompt
 from utils.req_configs import normalize_explicit_configs, restore_explicit_configs
 from utils.schema_validation import validate_jsonschema, validate_list_of_dict
 
@@ -52,7 +57,7 @@ NODE_LABELS = {
     "TestDesignSupervisorNode": "设计质量门",
     "TestCaseBatchGenNode": "编写测试用例",
     "FinalizeTestCaseNode": "汇总测试用例",
-    "TestCaseSupervisorNode": "用例质量门",
+    "TestCaseSupervisorNode": "用例质量门与专家评审",
     "ExecutableCaseNode": "生成可执行用例",
     "AssembleResultNode": "汇总结果",
 }
@@ -65,16 +70,6 @@ def _now() -> str:
 
 def _trace(shared: Dict[str, Any], node: str):
     shared.setdefault("trace", []).append({"node": node, "time": _now()})
-
-
-def _emit(shared: Dict[str, Any], event_type: str, payload: Dict[str, Any]):
-    q = shared.get("event_queue")
-    if not q:
-        return
-    try:
-        q.put_nowait({"type": event_type, "payload": payload})
-    except Exception:
-        pass
 
 
 def _set_current_node(shared: Dict[str, Any], node: str, detail: str = ""):
@@ -104,6 +99,20 @@ def _requirement_view(req: Dict[str, Any]) -> Dict[str, Any]:
     if cfgs:
         view["explicit_configs"] = [{k: v for k, v in c.items() if k != "req_id"} for c in cfgs]
     return view
+
+
+class ThreadedNode(AsyncNode):
+    """prep / post 在事件循环里执行，exec（阻塞的 LLM 请求）放到线程池。子类照常写同步的 prep / exec / post。"""
+
+    async def prep_async(self, shared):
+        self._shared = shared
+        return self.prep(shared)
+
+    async def exec_async(self, prep_res):
+        return await asyncio.to_thread(self.exec, prep_res)
+
+    async def post_async(self, shared, prep_res, exec_res):
+        return self.post(shared, prep_res, exec_res)
 
 
 class IntakeNode(Node):
@@ -180,7 +189,7 @@ class IntakeNode(Node):
         return "default"
 
 
-class ReqParseNode(Node):
+class ReqParseNode(ThreadedNode):
     def prep(self, shared):
         _set_current_node(shared, "ReqParseNode")
         return {
@@ -192,7 +201,7 @@ class ReqParseNode(Node):
 
     def exec(self, prep_res):
         fallback = prep_res["seed_requirements"]
-        return run_json_agent_with_retry(
+        return generate_json_or_fallback(
             shared=self._shared,
             template_name="req_parse.txt",
             variables={
@@ -208,10 +217,6 @@ class ReqParseNode(Node):
             fallback=fallback,
             warn_tag="ReqParseNode",
         )
-
-    def _run(self, shared):
-        self._shared = shared
-        return super()._run(shared)
 
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, REQUIREMENT_LIST_SCHEMA)
@@ -285,7 +290,7 @@ class TriPersonaReviewNode(AsyncNode):
         }
 
         return await asyncio.to_thread(
-            run_json_agent_with_retry,
+            generate_json_or_fallback,
             shared=shared,
             template_name=template,
             variables={
@@ -308,9 +313,6 @@ class TriPersonaReviewNode(AsyncNode):
         spec, carrier, ux = await asyncio.gather(spec_task, carrier_task, ux_task)
         return {"spec": spec, "carrier": carrier, "ux": ux}
 
-    def _run(self, shared):
-        raise RuntimeError("Use AsyncFlow.run_async for TriPersonaReviewNode")
-
     async def post_async(self, shared, prep_res, exec_res):
         for review in exec_res.values():
             _normalize_review_questions(review)
@@ -327,7 +329,7 @@ class TriPersonaReviewNode(AsyncNode):
         return await super()._run_async(shared)
 
 
-class SynthesisNode(Node):
+class SynthesisNode(ThreadedNode):
     def prep(self, shared):
         _set_current_node(shared, "SynthesisNode")
         return {"requirements": shared["requirements_parsed"], "reviews": shared["persona_reviews"]}
@@ -339,7 +341,7 @@ class SynthesisNode(Node):
             "questions_to_ask": ["请确认每条需求的量化通过标准"],
             "assumptions": ["默认按P1执行，待业务确认后升降级"],
         }
-        return run_json_agent_with_retry(
+        return generate_json_or_fallback(
             shared=self._shared,
             template_name="synthesis_arbiter.txt",
             variables={
@@ -354,10 +356,6 @@ class SynthesisNode(Node):
             fallback=fallback,
             warn_tag="SynthesisNode",
         )
-
-    def _run(self, shared):
-        self._shared = shared
-        return super()._run(shared)
 
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, SYNTHESIS_SCHEMA)
@@ -427,6 +425,7 @@ def _normalize_integrated_rows(rows: List[Dict[str, Any]], final_requirements: L
                                objectives: List[Dict[str, Any]], available_envs: Any = None,
                                start_index: int = 1) -> List[Dict[str, Any]]:
     obj_map = {o.get("objective_id"): o for o in objectives if isinstance(o, dict)}
+    known_reqs = set(req_index(final_requirements))
     norm = []
     for idx, r in enumerate(rows or [], start=start_index):
         if not isinstance(r, dict):
@@ -437,12 +436,16 @@ def _normalize_integrated_rows(rows: List[Dict[str, Any]], final_requirements: L
         if scenario == obj.get("goal") and cfg:
             scenario = f"{scenario} @ " + "/".join(str(v) for v in list(cfg.values())[:3])
         crit = r.get("pass_criteria", [])
-        crit = crit if isinstance(crit, list) else [str(crit)]
+        crit = [str(c) for c in (crit if isinstance(crit, list) else [crit]) if str(c).strip()]
         technique = str(r.get("technique") or "normal").lower()
+        req_id = str(r.get("req_id") or "")
+        if req_id not in known_reqs:  # 没写或写错需求编号时，按所属目标关联的需求归位，避免这行游离在追溯之外
+            req_id = next((x for x in obj.get("linked_reqs") or [] if x in known_reqs), req_id)
         norm.append({
-            "row_id": r.get("row_id") or f"ROW-{idx:03d}",
-            "req_id": r.get("req_id") or ((obj.get("linked_reqs") or [f"REQ-{idx:03d}"])[0]),
-            "objective_id": r.get("objective_id") or f"TO-{idx:03d}",
+            "row_id": str(r.get("row_id") or f"ROW-{idx:03d}"),
+            "req_id": req_id,
+            "objective_id": r.get("objective_id") or next(
+                (o["objective_id"] for o in objectives if req_id in (o.get("linked_reqs") or [])), ""),
             "technique": technique if technique in TECHNIQUES else "normal",
             "scenario": scenario,
             "test_purpose": _norm_purpose(r.get("test_purpose"), scenario),
@@ -451,18 +454,20 @@ def _normalize_integrated_rows(rows: List[Dict[str, Any]], final_requirements: L
             "references": [str(x) for x in (r.get("references") or []) if str(x).strip()],
             "test_environment": envs.normalize_env(r.get("test_environment"), [scenario] + crit, available_envs),
         })
-    # row_id 去重
-    seen = set()
-    for n, row in enumerate(norm, start=start_index):
-        while row["row_id"] in seen:
-            row["row_id"] = f"ROW-{n:03d}-{len(seen)}"
-        seen.add(row["row_id"])
     return norm
+
+
+def _dedupe_row_ids(rows: List[Dict[str, Any]]) -> None:
+    seen = set()
+    for n, row in enumerate(rows, start=1):
+        if row["row_id"] in seen:
+            row["row_id"] = next(c for c in (f"ROW-{k:03d}" for k in range(n, n + len(rows) + 1)) if c not in seen)
+        seen.add(row["row_id"])
 
 
 def _fallback_rows(missing_reqs: List[str], missing_objs: List[str], final_requirements: List[Dict[str, Any]],
                    objectives: List[Dict[str, Any]], available_envs: Any, start: int) -> List[Dict[str, Any]]:
-    """补漏调用也失败时的规则兜底：每个缺口一行正常流程，保证追溯完整。"""
+    """规则兜底：每个缺口一行正常流程，保证追溯完整。缺目标的需求顺带建一个目标（追加到 objectives）。"""
     reqs = req_index(final_requirements)
     obj_by_id = {o["objective_id"]: o for o in objectives}
     rows = []
@@ -475,23 +480,27 @@ def _fallback_rows(missing_reqs: List[str], missing_objs: List[str], final_requi
             continue
         oid = next((o["objective_id"] for o in objectives if rid in (o.get("linked_reqs") or [])), "")
         if not oid:
-            oid = f"TO-GAP-{len(objectives) + 1:02d}"
+            oid = f"TO-{len(objectives) + 1:03d}"
             req = reqs.get(rid, {})
             objectives.append({"objective_id": oid, "linked_reqs": [rid], "goal": req.get("title", rid),
                                "success_criteria": req_metrics(req) or ["主流程成功"], "evidence": ["modem_log"],
-                               "priority": req.get("priority", "P1"), "risk_notes": "规则补全的目标"})
+                               "priority": req.get("priority", "P1"), "risk_notes": "按规则生成的目标"})
         rows.append((rid, oid, reqs.get(rid, {}).get("title", "")))
     out = []
     for i, (rid, oid, goal) in enumerate(rows, start=start):
         req = reqs.get(rid, {})
+        texts = [goal] + [str(x) for x in (req.get("trigger") or []) + (req.get("expected") or [])]
         out.append({"row_id": f"ROW-{i:03d}", "req_id": rid, "objective_id": oid, "technique": "normal",
-                    "scenario": goal or rid, "test_purpose": {"with": "", "when": "", "then": goal},
+                    "scenario": goal or rid,
+                    "test_purpose": {"with": "；".join(str(x) for x in req.get("preconditions") or [] if x != "待补充"),
+                                     "when": "；".join(str(x) for x in req.get("trigger") or [] if x != "待补充"),
+                                     "then": "；".join(str(x) for x in req.get("expected") or [] if x != "待补充") or goal},
                     "key_configuration": {}, "pass_criteria": req_metrics(req) or ["关键指标满足需求标准"],
-                    "references": [], "test_environment": envs.recommend([goal], available_envs)})
+                    "references": [], "test_environment": envs.recommend(texts, available_envs)})
     return out
 
 
-class TestDesignNode(Node):
+class TestDesignNode(ThreadedNode):
     def prep(self, shared):
         _set_current_node(shared, "TestDesignNode")
         spec = shared["requirement_spec"]
@@ -506,22 +515,19 @@ class TestDesignNode(Node):
             "knowledge_references": shared.get("knowledge_context", ""),
         }
 
-    def exec(self, prep_res):
-        shared = self._shared
-        reqs = prep_res["final_requirements"]
-        available = prep_res.get("test_environments", {})
-
+    def _design_by_llm(self, prep_res) -> Dict[str, Any]:
         def _custom(data: Any):
             if not isinstance(data.get("objectives"), list) or not data["objectives"]:
                 raise ValueError("objectives 不能为空")
             if not isinstance(data.get("integrated_matrix"), list) or not data["integrated_matrix"]:
                 raise ValueError("integrated_matrix 不能为空，每个目标至少一行")
 
-        data = generate_json(
-            shared=shared,
+        available = prep_res.get("test_environments", {})
+        return generate_json(
+            shared=self._shared,
             template_name="test_designer.txt",
             variables={
-                "final_requirements_json": json.dumps(reqs, ensure_ascii=False),
+                "final_requirements_json": json.dumps(prep_res["final_requirements"], ensure_ascii=False),
                 "constraints_json": json.dumps({
                     "questions_to_ask": prep_res.get("questions_to_ask", []),
                     "assumptions": prep_res.get("assumptions", []),
@@ -537,15 +543,16 @@ class TestDesignNode(Node):
             warn_tag="TestDesignNode",
             custom_validator=_custom,
         )
-        design = _normalize_objectives(data, reqs)
-        objectives = design["objectives"]
-        rows = _normalize_integrated_rows(data.get("integrated_matrix", []), reqs, objectives, available)
 
+    def _fill_gaps(self, rows, objectives, reqs, available) -> int:
+        """缺覆盖的需求 / 目标：先让 LLM 只为缺口补行，仍缺的按规则补。返回补的行数。"""
+        shared = self._shared
         gaps = design_gaps(rows, reqs, objectives)
-        gap_filled = 0
-        if gaps["missing_reqs"] or gaps["missing_objectives"]:
+        if not (gaps["missing_reqs"] or gaps["missing_objectives"]):
+            return 0
+        before = len(rows)
+        if shared["llm_client"].enabled:
             _set_current_node(shared, "TestDesignNode", "为未覆盖的需求补充测试点")
-            start = len(rows) + 1
             try:
                 extra = generate_json(
                     shared=shared,
@@ -559,48 +566,55 @@ class TestDesignNode(Node):
                             [{k: r[k] for k in ("row_id", "req_id", "objective_id", "technique", "scenario")} for r in rows],
                             ensure_ascii=False),
                         "available_test_environments_json": json.dumps(envs.environment_brief(available), ensure_ascii=False),
-                        "next_row_id": f"ROW-{start:03d}",
+                        "next_row_id": f"ROW-{before + 1:03d}",
                     },
                     schema=INTEGRATED_MATRIX_SCHEMA,
                     warn_tag="IntegratedMatrixGapFill",
                 )
-                new_rows = _normalize_integrated_rows(extra.get("integrated_matrix", []), reqs, objectives, available, start)
+                rows.extend(_normalize_integrated_rows(extra.get("integrated_matrix", []), reqs, objectives, available, before + 1))
             except Exception as exc:
                 _warn(shared, f"TestDesignNode: 补漏生成失败，按规则补行: {exc}")
-                new_rows = []
-            rows.extend(new_rows)
-            gap_filled = len(new_rows)
-            gaps = design_gaps(rows, reqs, objectives)
-            if gaps["missing_reqs"] or gaps["missing_objectives"]:
-                fb = _fallback_rows(gaps["missing_reqs"], gaps["missing_objectives"], reqs, objectives, available, len(rows) + 1)
-                rows.extend(fb)
-                gap_filled += len(fb)
-        seen = set()
-        for row in rows:  # 补漏行可能和已有行撞号
-            while row["row_id"] in seen:
-                row["row_id"] = row["row_id"] + "b"
-            seen.add(row["row_id"])
+        gaps = design_gaps(rows, reqs, objectives)
+        if gaps["missing_reqs"] or gaps["missing_objectives"]:
+            rows.extend(_fallback_rows(gaps["missing_reqs"], gaps["missing_objectives"], reqs, objectives, available, len(rows) + 1))
+        return len(rows) - before
+
+    def exec(self, prep_res):
+        shared = self._shared
+        reqs = prep_res["final_requirements"]
+        available = prep_res.get("test_environments", {})
+        by_llm = bool(shared["llm_client"].enabled)
+        if by_llm:
+            data = self._design_by_llm(prep_res)
+        else:
+            # 没配大模型时给出最小骨架（每条需求一个正常流程测试点），方便先把流程和导出走通
+            _warn(shared, "TestDesignNode: LLM未配置，按规则生成最小测试设计（每条需求一个正常流程测试点）")
+            data = {"objectives": [], "coverage_matrices": [], "integrated_matrix": [],
+                    "design_notes": ["大模型未配置：本设计由规则生成，只含正常流程骨架"], "de_scoped": []}
+        design = _normalize_objectives(data, reqs)
+        objectives = design["objectives"]
+        rows = _normalize_integrated_rows(data.get("integrated_matrix", []), reqs, objectives, available)
+        gap_filled = self._fill_gaps(rows, objectives, reqs, available)
+        _dedupe_row_ids(rows)
 
         patched = repair_design_rows(rows, reqs)
         if patched["configs"]:
             _warn(shared, f"设计质量门: {patched['configs']} 项需求写明的配置未进矩阵，已按需求原值补入 key_configuration")
+        if patched["metrics"]:
+            _warn(shared, f"设计质量门: {patched['metrics']} 条需求验收门限没有测试点承接，已补入对应测试点的通过标准")
         design["integrated_matrix"] = rows
         design["design_advice"] = design_advice(rows, reqs)
         design["knowledge_references"] = str(prep_res.get("knowledge_references") or "")[:KNOWLEDGE_CHARS_FOR_CASES]
         design["generation_meta"] = {
-            "design_generated_by_llm": True,
-            "integrated_matrix_generated_by_llm": True,
-            "gap_filled_rows": gap_filled,
+            "design_generated_by_llm": by_llm,
+            "integrated_matrix_generated_by_llm": by_llm,
+            "gap_filled_rows": gap_filled if by_llm else 0,
             "patched_configs": patched["configs"],
             "patched_metrics": patched["metrics"],
             "design_prompt": "test_designer.txt",
             "integrated_prompt": "integrated_matrix_designer.txt（仅补漏）",
         }
         return design
-
-    def _run(self, shared):
-        self._shared = shared
-        return super()._run(shared)
 
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, TEST_DESIGN_SCHEMA)
@@ -660,6 +674,7 @@ class TestDesignSupervisorNode(Node):
 _CELL_KEYS = ("band", "arfcn", "earfcn", "ssb_arfcn", "dl_arfcn", "bandwidth", "bandwidth_mhz", "scs", "scs_khz", "pci",
               "plmn", "tac", "duplex", "tdd", "rsrp", "power", "rs_epre", "cell")
 _CORE_KEYS = ("t3", "cause", "apn", "dnn", "psm", "edrx", "drx", "nssai", "ims", "reject", "accept", "auth")
+_ENV_IDS = ("AMARISOFT", "PROTOCOL_ANALYZER", "REAL_NETWORK")
 
 
 def _split_key_configuration(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -703,6 +718,55 @@ def fallback_tcd_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def bind_tcds_to_rows(raw: List[Any], rows: List[Dict[str, Any]], reqs: Dict[str, Dict[str, Any]],
+                      available: Any = None) -> List[Dict[str, Any]]:
+    """把一批 LLM 输出的 TCD 规范化并挂到矩阵行上。
+
+    矩阵行是设计阶段定下来的“合同”：环境、测试技术、追溯关系以行为准，用例只负责把它写细。
+    LLM 没写对 row_id 的用例，按 req_id、再按顺序配到还没有用例的行，而不是丢掉或另补一条空壳。
+    """
+    row_map = {r.get("row_id"): r for r in rows}
+    pairs: List[Any] = []
+    orphans: List[Any] = []
+    for i, tc in enumerate(raw, start=1):
+        if not isinstance(tc, dict):
+            continue
+        norm = normalize_tcd(tc, i)
+        refs = [x for x in norm["trace"]["source_refs"] if x in row_map]
+        if refs:
+            norm["trace"]["source_refs"] = refs
+            pairs.append((tc, norm, row_map[refs[0]]))
+        else:
+            orphans.append((tc, norm))
+    uncovered = [r for r in rows if r.get("row_id") not in {x for _, n, _ in pairs for x in n["trace"]["source_refs"]}]
+    for tc, norm in orphans:
+        ids = set(norm["trace"]["req_ids"])
+        row = next((r for r in uncovered if str(r.get("req_id")) in ids), None) or (uncovered[0] if uncovered else None)
+        if row is not None:
+            uncovered.remove(row)
+        else:  # 行都有用例了：多出来的这条挂到同需求的行（一行多条用例是允许的）
+            row = next((r for r in rows if str(r.get("req_id")) in ids), rows[0])
+        norm["trace"]["source_refs"] = [row["row_id"]]
+        pairs.append((tc, norm, row))
+
+    out = []
+    for tc, norm, row in pairs:
+        rid = str(row.get("req_id") or "")
+        if rid and rid not in norm["trace"]["req_ids"]:
+            norm["trace"]["req_ids"].insert(0, rid)
+        norm["objective_id"] = norm["objective_id"] or row.get("objective_id", "")
+        norm["technique"] = row.get("technique") or norm["technique"]
+        if not str(tc.get("priority") or "").strip() and reqs.get(rid, {}).get("priority"):
+            norm["priority"] = str(reqs[rid]["priority"])
+        if not norm["references"]:
+            norm["references"] = list(row.get("references") or [])
+        row_env = row.get("test_environment") or {}
+        norm["test_environment"] = row_env if str(row_env.get("primary")) in _ENV_IDS else envs.normalize_env(
+            norm.get("test_environment"), [norm["title"]] + norm["pass_fail"], available)
+        out.append(norm)
+    return out
+
+
 class TestCaseBatchGenNode(AsyncNode):
     async def prep_async(self, shared):
         _set_current_node(shared, "TestCaseBatchGenNode",
@@ -734,9 +798,13 @@ class TestCaseBatchGenNode(AsyncNode):
         if not rows:
             return []
 
+        def _not_empty(data: Any):
+            if not data.get("testcases"):
+                raise ValueError("testcases 不能为空，integrated_matrix 的每一行至少一条用例")
+
         async def worker(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             obj_ids = {r.get("objective_id") for r in batch}
-            req_ids = {str(r.get("req_id")) for r in batch}
+            req_ids = list(dict.fromkeys(str(r.get("req_id")) for r in batch))
             data = await asyncio.to_thread(
                 generate_json,
                 shared=shared,
@@ -752,7 +820,7 @@ class TestCaseBatchGenNode(AsyncNode):
                 schema=TCD_LIST_SCHEMA,
                 warn_tag=tag,
                 raise_on_truncate=len(batch) > 1,
-                custom_validator=lambda d: None if d.get("testcases") else (_ for _ in ()).throw(ValueError("testcases 不能为空")),
+                custom_validator=_not_empty,
             )
             return data.get("testcases", [])
 
@@ -767,34 +835,13 @@ class TestCaseBatchGenNode(AsyncNode):
                 _warn(shared, f"{tag}: 生成失败，该批按矩阵行规则生成: {exc}")
                 raw = [fallback_tcd_from_row(r) for r in rows]
 
-        row_map = {r.get("row_id"): r for r in rows}
-        out = []
-        for i, tc in enumerate(raw, start=1):
-            if not isinstance(tc, dict):
-                continue
-            norm = normalize_tcd(tc, i)
-            refs = [x for x in norm["trace"]["source_refs"] if x in row_map]
-            row = row_map.get(refs[0]) if refs else None
-            if row is None and len(rows) == 1:
-                row = rows[0]
-                norm["trace"]["source_refs"] = [row["row_id"]]
-            if row:
-                if not norm["trace"]["req_ids"]:
-                    norm["trace"]["req_ids"] = [row.get("req_id", "")]
-                norm["objective_id"] = norm["objective_id"] if norm["objective_id"] != "TO-001" else row.get("objective_id", "TO-001")
-                if not norm.get("references"):
-                    norm["references"] = row.get("references") or []
-            norm["test_environment"] = envs.normalize_env(
-                norm.get("test_environment"), [norm["title"]] + norm["pass_fail"], prep_res["available"],
-                linked=(row or {}).get("test_environment"))
-            if row and str((row.get("test_environment") or {}).get("primary")) in ("AMARISOFT", "PROTOCOL_ANALYZER", "REAL_NETWORK"):
-                norm["test_environment"] = row["test_environment"]  # 环境由设计决定，用例不改
-            out.append(norm)
+        out = bind_tcds_to_rows(raw, rows, prep_res["reqs"], prep_res["available"])
         covered = {r for tc in out for r in tc["trace"]["source_refs"]}
         missing = [r for r in rows if r.get("row_id") not in covered]
         if missing:
             _warn(shared, f"{tag}: {len(missing)} 个矩阵行没有生成用例，已按规则补齐")
-            out.extend(normalize_tcd(fallback_tcd_from_row(r), len(out) + 1) for r in missing)
+            out.extend(bind_tcds_to_rows([fallback_tcd_from_row(r) for r in missing], missing, prep_res["reqs"],
+                                         prep_res["available"]))
         return out
 
     async def post_async(self, shared, prep_res, exec_res):
@@ -836,46 +883,125 @@ class FinalizeTestCaseNode(Node):
         return "default"
 
 
-class TestCaseSupervisorNode(Node):
-    """用例质量门：补入需求配置；结构不合格的用例只返工其矩阵行。"""
+TC_REVIEW_SCHEMA = {
+    "type": "object",
+    "required": ["reviews"],
+    "properties": {"reviews": {"type": "array", "items": {
+        "type": "object", "required": ["tc_id"],
+        "properties": {"tc_id": {"type": "string"}, "verdict": {"type": "string"},
+                       "issues": {"type": "array", "items": {"type": "object"}}}}}},
+}
+REVIEW_BATCH_SIZE = 5
 
-    def prep(self, shared):
+
+class TestCaseSupervisorNode(AsyncNode):
+    """用例质量门。
+
+    1) 确定性：补入需求写明的配置和数值门限，检查结构；
+    2) LLM 专家评审（首轮、可关）：另起一次调用，以评审者视角检查协议正确性、TP 是否可判定、与需求是否一致；
+    3) 有问题的用例只返工其矩阵行，问题逐条写进反馈；评审的一般性意见留在用例的 review_notes 里。
+    """
+
+    async def prep_async(self, shared):
         _set_current_node(shared, "TestCaseSupervisorNode")
+        retry_count = int(shared.get("testcase_retry_count", 0))
+        llm_enabled = bool(getattr(shared.get("llm_client"), "enabled", False))
         return {
             "reqs": shared.get("requirement_spec", {}).get("final_requirements", []),
             "rows": (shared.get("test_design_spec") or {}).get("integrated_matrix", []),
             "tcs": shared.get("test_case_spec", {}).get("testcases", []),
-            "retry_count": int(shared.get("testcase_retry_count", 0)),
+            "retry_count": retry_count,
             "max_retries": int(shared.get("testcase_max_retries", 1)),
-            "llm_enabled": bool(getattr(shared.get("llm_client"), "enabled", False)),
+            "llm_enabled": llm_enabled,
+            # 评审只做一轮：返工后的用例不再评审，避免来回拉扯和成本失控
+            "expert_review": llm_enabled and retry_count == 0 and shared.get("expert_review", True) is not False,
         }
 
-    def exec(self, prep_res):
-        res = review_testcases(prep_res["tcs"], prep_res["reqs"])
-        retry_rows = list(res["retry_rows"])
+    async def _expert_review(self, prep_res) -> List[Dict[str, Any]]:
+        shared = self._shared
+        reqs = req_index(prep_res["reqs"])
+        row_map = {r.get("row_id"): r for r in prep_res["rows"]}
+        tcs = [tc for tc in prep_res["tcs"] if "Fallback" not in (tc.get("tags") or [])]
+        batches = [tcs[i:i + REVIEW_BATCH_SIZE] for i in range(0, len(tcs), REVIEW_BATCH_SIZE)]
+
+        async def one(batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            rids = list(dict.fromkeys(str(r) for tc in batch for r in tc["trace"]["req_ids"]))
+            view = []
+            for tc in batch:
+                item = {k: v for k, v in summarize_for_prompt(tc).items() if k not in ("requirement_configs", "observability")}
+                row = next((row_map[r] for r in tc["trace"]["source_refs"] if r in row_map), None)
+                if row:
+                    item["matrix_row"] = {k: row.get(k) for k in ("row_id", "technique", "scenario", "test_purpose", "pass_criteria")}
+                view.append(item)
+            data = await asyncio.to_thread(
+                generate_json,
+                shared=shared,
+                template_name="test_case_reviewer.txt",
+                variables={
+                    "testcases_json": json.dumps(view, ensure_ascii=False),
+                    "requirements_json": json.dumps([_requirement_view(reqs[r]) for r in rids if r in reqs], ensure_ascii=False),
+                    "environments_json": json.dumps(envs.environment_brief(shared.get("test_environments", {})), ensure_ascii=False),
+                },
+                schema=TC_REVIEW_SCHEMA,
+                warn_tag="TestCaseReviewer",
+                max_retries=1,
+            )
+            return [r for r in data.get("reviews", []) if isinstance(r, dict)]
+
+        results = await asyncio.gather(*(one(b) for b in batches), return_exceptions=True)
+        failed = [r for r in results if isinstance(r, Exception)]
+        if failed:  # 评审是增强项，失败不影响出用例
+            _warn(shared, f"专家评审: {len(failed)}/{len(batches)} 批评审调用失败，已跳过: {failed[0]}")
+        return [rv for r in results if not isinstance(r, Exception) for rv in r]
+
+    async def exec_async(self, prep_res):
+        tcs = prep_res["tcs"]
+        res = review_testcases(tcs, prep_res["reqs"], prep_res["rows"])
+        coverage_issues = res["issues"][len(res["per_tc"]):]
+        res["expert"] = {"major": 0, "minor": 0, "reviewed": False}
+        if prep_res["expert_review"] and tcs:
+            _set_current_node(self._shared, "TestCaseSupervisorNode", "专家评审")
+            reviews = await self._expert_review(prep_res)
+            res["expert"] = {**merge_expert_review(res["per_tc"], tcs, reviews), "reviewed": True}
+        valid_rows = {r.get("row_id") for r in prep_res["rows"]}
+        retry_rows = rows_for_tcs(res["per_tc"], tcs, valid_rows)
         for rid in res["missing_reqs"]:
             retry_rows.extend(r["row_id"] for r in prep_res["rows"] if str(r.get("req_id")) == rid and r["row_id"] not in retry_rows)
         res["retry_rows"] = retry_rows
+        res["issues"] = [f"{k}: {'；'.join(v)}" for k, v in res["per_tc"].items()] + coverage_issues
         return res
 
-    def post(self, shared, prep_res, exec_res):
+    async def post_async(self, shared, prep_res, exec_res):
         _emit(shared, "module_result", {"module": "test_case_supervisor", "data": {
-            "issues": exec_res["issues"][:20], "patched": exec_res["patched"], "retry_rows": exec_res["retry_rows"]}})
-        if exec_res["patched"]:
-            _warn(shared, f"用例质量门: {exec_res['patched']} 项需求写明的配置未出现在用例中，已按需求原值补入（requirement_configs 标为 patched）")
-        if exec_res["metrics_missing"]:
-            _warn(shared, f"用例质量门: 以下需求数值门限未出现在用例通过标准中: {'；'.join(exec_res['metrics_missing'][:6])}")
+            "issues": exec_res["issues"][:20], "patched": exec_res["patched"], "retry_rows": exec_res["retry_rows"],
+            "expert": exec_res["expert"]}})
+        if exec_res["expert"]["reviewed"]:
+            _warn(shared, f"专家评审: 发现 {exec_res['expert']['major']} 个需要返工的问题、{exec_res['expert']['minor']} 条一般意见（见各用例的评审意见）")
         retry = prep_res["retry_count"] + 1
         if exec_res["retry_rows"] and prep_res["llm_enabled"] and retry <= prep_res["max_retries"]:
             shared["testcase_retry_count"] = retry
             shared["_retry_rows"] = exec_res["retry_rows"]
             shared["testcase_supervisor_feedback"] = feedback_for_rows(exec_res["per_tc"], prep_res["tcs"], exec_res["retry_rows"])
-            _warn(shared, f"用例质量门: {len(exec_res['retry_rows'])} 个测试点的用例不合格，只返工这些（第{retry}次）")
+            _warn(shared, f"用例质量门: {len(exec_res['retry_rows'])} 个测试点的用例需要改进，只返工这些（第{retry}次）")
             return "retry"
+        # 确定性修复的统计只在收尾这一轮报（返工的用例会重新核对，之前的数字已经不作数）
+        final = review_stats(prep_res["tcs"])
+        if final["patched"]:
+            _warn(shared, f"用例质量门: {final['patched']} 项需求写明的配置未出现在用例中，已按需求原值补入（requirement_configs 标为 patched）")
+        if exec_res["criteria_added"]:
+            _warn(shared, f"用例质量门: {exec_res['criteria_added']} 条带数值门限的通过标准未进用例，已按测试点原文补入 pass_fail")
+        if final["conflict"]:
+            _warn(shared, f"用例质量门: {final['conflict']} 项需求配置与用例取值不一致，需求值已另存并写入 open_points，请人工确认")
+        if exec_res["metrics_missing"]:
+            _warn(shared, f"用例质量门: 以下需求数值门限未出现在用例通过标准中: {'；'.join(exec_res['metrics_missing'][:6])}")
         for line in exec_res["issues"][:10]:
             _warn(shared, f"用例质量门: {line}")
         shared["testcase_supervisor_feedback"] = ""
         return "default"
+
+    async def _run_async(self, shared):
+        self._shared = shared
+        return await super()._run_async(shared)
 
 
 class AssembleResultNode(Node):
@@ -911,7 +1037,7 @@ class AssembleResultNode(Node):
                 "Test Design (TP + technique matrix)",
                 "Design Quality Gate",
                 "Test Case Description (3GPP TCD)",
-                "Test Case Quality Gate",
+                "Test Case Quality Gate + Expert Review",
                 "Executable Case Export",
             ],
             "input": {
