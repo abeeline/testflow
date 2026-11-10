@@ -28,7 +28,7 @@ PY_TAG = "312"
 NUGET_URL = f"https://api.nuget.org/v3-flatcontainer/python/{PYTHON_VERSION}/python.{PYTHON_VERSION}.nupkg"
 
 APP_ITEMS = [
-    "run.py", "main.py", "flow.py", "nodes.py", "exec_cases.py", "schemas.py",
+    "run.py", "main.py", "flow.py", "nodes.py", "exec_cases.py", "schemas.py", "core",
     "requirements.txt", "pocketflow", "utils", "prompts", "static",
 ]
 # 内置 Python 里用不到的部分，删掉以减小体积

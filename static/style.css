@@ -541,3 +541,28 @@ label .feature-hint { display: inline; margin: 0; font-weight: 400; font-size: 1
 .dir-dl { background: var(--primary-soft); color: var(--primary); }
 .dir-ul { background: var(--success-soft); color: var(--success); }
 @media (max-width: 1080px) { .proto-grid { grid-template-columns: 1fr; } }
+
+/* 3GPP 测试用例描述（TCD）视图 */
+.tc-item { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; background: var(--card); }
+.tc-item > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; list-style: none; }
+.tc-item > summary::-webkit-details-marker { display: none; }
+.tc-item[open] > summary { border-bottom: 1px solid var(--border); }
+.tc-id { font-family: var(--mono); font-weight: 700; }
+.tc-title { font-weight: 600; flex: 1 1 240px; }
+.tc-body { padding: 8px 12px 12px; }
+.tc-body h5 { margin: 12px 0 6px; }
+.tp-box { border-left: 3px solid var(--primary); background: var(--primary-soft); padding: 6px 10px; border-radius: 4px; margin: 6px 0; font-size: 13px; }
+.tp-box b { display: inline-block; min-width: 42px; color: var(--primary); }
+.kv-table th { width: 110px; white-space: nowrap; text-align: left; }
+.kv-table code, .tc-body code { margin-right: 6px; }
+tr.verdict-row td { background: var(--success-soft); }
+.tag.tech-abnormal, .tag.tech-collision { background: var(--danger-soft); color: var(--danger); }
+.tag.tech-boundary, .tag.tech-timer { background: var(--warning-soft); color: var(--warning); }
+.tag.tech-mobility, .tag.tech-interworking { background: var(--primary-soft); color: var(--primary); }
+.tag.tech-performance, .tag.tech-stability { background: var(--success-soft); color: var(--success); }
+.tag[class*="tech-"] { white-space: nowrap; }
+
+.action-bar .inline-check { margin: 0 auto 0 0; }
+.warn-text { color: #b45309; }
+.review-notes { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted-foreground); }
+.review-notes li { margin: 2px 0; }

@@ -100,18 +100,20 @@ TEST_OBJECTIVE_REQUIRED_KEYS = [
     "priority",
 ]
 
+# 测试用例（3GPP 风格 TCD，见 core/tcd.py）规范化后必有的字段；preconditions/steps/expected 为兼容旧页面保留
 TESTCASE_REQUIRED_KEYS = [
     "tc_id",
     "objective_id",
     "title",
-    "tags",
+    "test_purpose",
+    "initial_conditions",
+    "procedure",
+    "pass_fail",
+    "test_environment",
+    "trace",
     "preconditions",
     "steps",
     "expected",
-    "pass_fail",
-    "test_environment",
-    "observability",
-    "trace",
 ]
 
 DEFAULT_ACTION_VOCABULARY = [
@@ -216,6 +218,7 @@ TEST_DESIGN_SCHEMA = {
     "properties": {
         "objectives": {"type": "array", "items": {"type": "object"}},
         "coverage_matrices": {"type": "array", "items": {"type": "object"}},
+        "integrated_matrix": {"type": "array", "items": {"type": "object"}},
         "design_notes": {"type": "array", "items": {"type": "string"}},
         "de_scoped": {"type": "array", "items": {"type": "string"}},
     },
@@ -238,6 +241,9 @@ INTEGRATED_MATRIX_SCHEMA = {
                 "required": ["req_id", "objective_id", "scenario", "key_configuration", "pass_criteria", "test_environment"],
                 "properties": {
                     "row_id": {"type": "string"},
+                    "technique": {"type": "string"},
+                    "test_purpose": {"type": "object"},
+                    "references": {"type": "array"},
                     "req_id": {"type": "string"},
                     "objective_id": {"type": "string"},
                     "scenario": {"type": "string"},

@@ -1,4 +1,5 @@
 const runBtn = document.getElementById("runBtn");
+const autoRunBtn = document.getElementById("autoRunBtn");
 const regenReqBtn = document.getElementById("regenReqBtn");
 const genDesignBtn = document.getElementById("genDesignBtn");
 const genCasesBtn = document.getElementById("genCasesBtn");
@@ -55,6 +56,15 @@ const llmApiKeyEl = document.getElementById("llmApiKey");
 const llmKeyHintEl = document.getElementById("llmKeyHint");
 const llmModelEl = document.getElementById("llmModel");
 const llmTimeoutEl = document.getElementById("llmTimeout");
+const llmMaxTokensEl = document.getElementById("llmMaxTokens");
+const expertReviewToggle = document.getElementById("expertReviewToggle");
+const EXPERT_REVIEW_KEY = "testflow.expertReview";
+if (expertReviewToggle) {
+  try { expertReviewToggle.checked = localStorage.getItem(EXPERT_REVIEW_KEY) !== "0"; } catch (_) {}
+  expertReviewToggle.addEventListener("change", () => {
+    try { localStorage.setItem(EXPERT_REVIEW_KEY, expertReviewToggle.checked ? "1" : "0"); } catch (_) {}
+  });
+}
 const llmTestResultEl = document.getElementById("llmTestResult");
 const llmSaveBtn = document.getElementById("llmSaveBtn");
 const llmTestBtn = document.getElementById("llmTestBtn");
@@ -208,7 +218,7 @@ const TEST_ENVIRONMENT_OPTIONS = [
   },
 ];
 
-const stageButtons = [runBtn, regenReqBtn, genDesignBtn, genCasesBtn, genExecCasesBtn, goExecCasesBtn];
+const stageButtons = [runBtn, autoRunBtn, regenReqBtn, genDesignBtn, genCasesBtn, genExecCasesBtn, goExecCasesBtn];
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -422,6 +432,8 @@ function closeStageStream() {
   activeStageJobId = "";
 }
 
+let hitlRequestInFlight = false;
+
 function handleHitlStreamEvent(ev) {
   const et = ev?.type || "";
   const payload = ev?.payload || {};
@@ -432,6 +444,11 @@ function handleHitlStreamEvent(ev) {
     if (payload.error) {
       pushSystemBotMessage(`HITL后台异常：${payload.error}`, { actionNeeded: true });
     }
+    return;
+  }
+  if (et === "node_running") {
+    // 只在有评审请求在途时显示进度；刚连上通道时补发的旧事件不能盖掉已经出来的结果
+    if (hitlRequestInFlight) setStatus(`测试需求评审执行中：${nodeLabel(payload.node, payload)}`);
     return;
   }
   if (et === "round_ready") {
@@ -495,27 +512,27 @@ function ensureHitlStream(jobId) {
 }
 
 function stageLabel(stage) {
-  if (stage === "design") return "测试设计";
-  if (stage === "testcases") return "测试用例";
-  if (stage === "scripts") return "测试脚本";
-  return stage || "stage";
+  const map = { design: "测试设计", testcases: "测试用例", exec_cases: "可执行用例", auto: "一键生成", requirements: "测试需求评审" };
+  return map[stage] || stage || "stage";
 }
 
-function nodeLabel(node) {
-  const map = {
-    TestDesignNode: "TestDesignNode",
-    TestDesignSupervisorNode: "TestDesignSupervisorNode",
-    TestCaseBatchGenNode: "TestCaseBatchGenNode",
-    FinalizeTestCaseNode: "FinalizeTestCaseNode",
-    TestCaseSupervisorNode: "TestCaseSupervisorNode",
-    HarnessMapperNode: "HarnessMapperNode",
-    ScriptWriterNode: "ScriptWriterNode",
-  };
-  return map[node] || node || "UnknownNode";
+const NODE_LABELS = {
+  IntakeNode: "需求录入", ReqParseNode: "需求解析", TriPersonaReviewNode: "三方评审", SynthesisNode: "综合定稿",
+  TestDesignNode: "测试设计", TestDesignSupervisorNode: "设计质量门", TestCaseBatchGenNode: "编写测试用例",
+  FinalizeTestCaseNode: "汇总测试用例", TestCaseSupervisorNode: "用例质量门", ExecutableCaseNode: "生成可执行用例",
+};
+
+function nodeLabel(node, payload = {}) {
+  const base = payload.label || NODE_LABELS[node] || node || "处理中";
+  return payload.detail ? `${base}（${payload.detail}）` : base;
 }
 
-async function startStageJobAndWait(stage, payload) {
-  const startResp = await postJson(`/api/stage/${stage}/start`, payload);
+function usageLine(result) {
+  return result?.llm_usage_text ? `\n${result.llm_usage_text}` : "";
+}
+
+async function startStageJobAndWait(stage, payload, handlers = {}) {
+  const startResp = await postJson(`/api/stage/${stage}/start`, { ...payload, expert_review: expertReviewToggle ? expertReviewToggle.checked : true });
   const jobId = startResp.job_id;
   if (!jobId) throw new Error("stage job_id为空");
 
@@ -541,18 +558,28 @@ async function startStageJobAndWait(stage, payload) {
         if (p?.status && p.status !== "running") pushSystemBotMessage(`${stageLabel(stage)}任务状态：${p.status}`);
         return;
       }
+      streamErrors = 0;
       if (et === "job_started") {
         pushSystemBotMessage(`${stageLabel(stage)}任务开始执行。`);
         return;
       }
       if (et === "node_running") {
-        const n = nodeLabel(p.node);
-        setStatus(`${stageLabel(stage)}执行中：${n}`);
-        pushSystemBotMessage(`${stageLabel(stage)}执行节点：${n}`);
+        const n = nodeLabel(p.node, p);
+        const prefix = handlers.currentStage ? `${stageLabel(stage)} · ${stageLabel(handlers.currentStage)}` : stageLabel(stage);
+        setStatus(`${prefix}执行中：${n}`);
+        if (!p.detail) pushSystemBotMessage(`${prefix}：${n}`);
+        return;
+      }
+      if (et === "stage_progress") {
+        handlers.currentStage = p.stage;
+        pushSystemBotMessage(`一键生成 ${p.index}/${p.total}：${p.label}`);
+        return;
+      }
+      if (et === "stage_result") {
+        try { handlers.onStageResult?.(p.stage, p.result || {}); } catch (e) { console.error(e); }
         return;
       }
       if (et === "module_result") {
-        if (p.module) pushSystemBotMessage(`${stageLabel(stage)}模块完成：${p.module}`);
         return;
       }
       if (et === "completed") {
@@ -569,22 +596,33 @@ async function startStageJobAndWait(stage, payload) {
       }
     };
 
+    // 连接中断时先问任务状态：还在跑就让 EventSource 自动重连（服务端按 Last-Event-ID 续发，不丢不重），
+    // 只有任务已经结束或服务端找不到任务时才收尾。
+    let streamErrors = 0;
     es.onerror = async () => {
-      closeStageStream();
+      if (activeStageStream !== es) return;
+      streamErrors += 1;
       try {
         const s = await fetch(`/api/stage/${encodeURIComponent(jobId)}/state`);
+        if (activeStageStream !== es) return;
         if (s.ok) {
           const st = await s.json();
           if (st.status === "completed") {
+            closeStageStream();
             resolve(st.result || {});
             return;
           }
-          const err = st?.error?.error || st?.error || "stage stream disconnected";
-          reject(new Error(String(err)));
+          if (st.status === "running" && es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;
+          closeStageStream();
+          reject(new Error(String(st?.error?.error || (st.status === "running" ? "与服务端的进度通道中断，任务仍在后台运行，请稍后在历史记录中查看" : "任务失败"))));
           return;
         }
-      } catch (_) {}
-      reject(new Error("stage stream disconnected"));
+        if (s.status !== 404 && es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;
+      } catch (_) {
+        if (es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;  // 服务暂时连不上，继续等重连
+      }
+      closeStageStream();
+      reject(new Error("与服务端的连接中断"));
     };
   });
 }
@@ -593,7 +631,7 @@ function resetBotConversation() {
   botHistory = [];
   if (!botMessages) return;
   botMessages.innerHTML = `
-    <div class="bot-msg bot-msg-assistant">你好，我是 TestFlow 助手。可以问我测试流程、各阶段产出物或某条用例的含义。</div>
+    <div class="bot-msg bot-msg-assistant">你好，我是 TestFlow 助手。我能看到当前会话的需求、测试点和用例，可以问我“TC-003 为什么用协议仪表”“REQ-002 还缺哪些异常场景”或某条 3GPP 条款的含义。</div>
     <div class="bot-note">新对话已开始</div>
   `;
   if (botInput) botInput.value = "";
@@ -966,10 +1004,19 @@ function renderDesign(design) {
         const pass = Array.isArray(r.pass_criteria) ? r.pass_criteria.join(" / ") : String(r.pass_criteria || "");
         const envText = formatTestEnvironmentSummary(r.test_environment);
         const riskText = formatTestEnvironmentRisk(r.test_environment);
-        return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(r.objective_id || "")}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgStr)}</td><td>${esc(pass)}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td></tr>`;
+        const tp = purposeHtml(r.test_purpose);
+        const refs = (r.references || []).length ? `<br/><span class="feature-hint">${esc(r.references.join("；"))}</span>` : "";
+        return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(r.objective_id || "")}</td><td>${techniqueTag(r.technique)}</td><td>${esc(r.scenario || "")}${tp}${refs}</td><td>${esc(cfgStr)}</td><td>${esc(pass)}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td></tr>`;
       })
       .join("");
-    html += `<h4>整合覆盖矩阵</h4><table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>具体测试场景</th><th>矩阵组合选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const techCount = {};
+    integrated.forEach((r) => { const t = r.technique || "normal"; techCount[t] = (techCount[t] || 0) + 1; });
+    const techSummary = Object.keys(techCount).map((t) => `${TECHNIQUE_LABELS[t] || t} ${techCount[t]}`).join(" · ");
+    html += `<h4>整合覆盖矩阵（测试点）</h4><p class="feature-hint">共 ${integrated.length} 个测试点：${esc(techSummary)}</p><table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试技术</th><th>测试场景 / 测试目的</th><th>关键配置</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  if ((design?.design_advice || []).length) {
+    html += `<h4>设计提示</h4><div class="banner">${design.design_advice.map((x) => `• ${esc(x)}`).join("<br/>")}</div>`;
   }
 
   if ((design?.design_notes || []).length) {
@@ -977,14 +1024,76 @@ function renderDesign(design) {
   }
 
   if (design?.generation_meta) {
-    html += `<h4>生成元信息</h4><div>测试设计由LLM生成：${esc(String(design.generation_meta.design_generated_by_llm))}<br/>整合覆盖矩阵由LLM生成：${esc(
-      String(design.generation_meta.integrated_matrix_generated_by_llm)
-    )}<br/>测试设计提示词：${esc(design.generation_meta.design_prompt || "")}<br/>整合矩阵提示词：${esc(
-      design.generation_meta.integrated_prompt || ""
-    )}</div>`;
+    const m = design.generation_meta;
+    html += `<details class="fold"><summary>生成信息</summary><div class="feature-hint">补漏生成的测试点：${esc(m.gap_filled_rows ?? 0)}；按需求原值补入的配置：${esc(
+      m.patched_configs ?? 0)}；补入的数值门限：${esc(m.patched_metrics ?? 0)}；提示词：${esc(m.design_prompt || "")}、${esc(m.integrated_prompt || "")}</div></details>`;
   }
 
   viewDesign.innerHTML = html || "<em>暂无结构化设计</em>";
+}
+
+const TECHNIQUE_LABELS = {
+  normal: "正常流程", abnormal: "异常/拒绝", boundary: "边界值", timer: "定时器", collision: "流程冲突",
+  mobility: "移动性", interworking: "互操作", capability: "能力组合", performance: "性能/KPI", stability: "长稳/恢复",
+};
+
+function techniqueTag(t) {
+  if (!t) return "";
+  return `<span class="tag tech-${esc(t)}">${esc(TECHNIQUE_LABELS[t] || t)}</span>`;
+}
+
+function purposeHtml(tp) {
+  if (!tp || !(tp.when || tp.then)) return "";
+  const part = (k, v) => (v ? `<div><b>${k}</b> ${esc(v)}</div>` : "");
+  return `<div class="tp-box">${part("with", tp.with)}${part("when", tp.when)}${part("then", tp.then)}</div>`;
+}
+
+function fmtVal(v) {
+  return typeof v === "object" && v !== null ? JSON.stringify(v) : `${v ?? ""}`;
+}
+
+function kvInline(obj) {
+  return Object.entries(obj || {}).map(([k, v]) => `<code>${esc(k)}=${esc(fmtVal(v))}</code>`).join(" ");
+}
+
+function renderTcdDetail(tc) {
+  const ic = tc.initial_conditions || {};
+  const cfg = tc.configuration || {};
+  const icRows = [["网络侧", ic.system_simulator], ["UE", ic.ue], ["Preamble", ic.preamble]]
+    .filter(([, v]) => (v || []).length)
+    .map(([k, v]) => `<tr><th>${k}</th><td>${(v || []).map(esc).join("<br/>")}</td></tr>`).join("");
+  const cfgRows = [
+    ...(cfg.cells || []).map((c, i) => [`小区 ${esc(c.cell_id || `Cell${i + 1}`)}`, kvInline(Object.fromEntries(Object.entries(c).filter(([k]) => k !== "cell_id")))]),
+    ...(Object.keys(cfg.core || {}).length ? [["核心网/NAS", kvInline(cfg.core)]] : []),
+    ...(Object.keys(cfg.ue || {}).length ? [["UE", kvInline(cfg.ue)]] : []),
+    ...(Object.keys(cfg.other || {}).length ? [["其他", kvInline(cfg.other)]] : []),
+  ].map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join("");
+  const steps = (tc.procedure || []).map((p) => `<tr class="${p.verdict ? "verdict-row" : ""}"><td>${esc(p.step)}</td><td>${esc(p.actor || "")}</td><td>${
+    p.direction ? `<span class="dir dir-${esc(p.direction.toLowerCase())}">${esc(p.direction)}</span>` : ""}</td><td>${esc(p.layer || "")}</td><td><strong>${esc(p.message || p.action || "")}</strong>${
+    p.msg_ref ? ` <span class="tag">${esc(p.msg_ref)}</span>` : ""}${Object.keys(p.params || {}).length ? `<br/>${kvInline(p.params)}` : ""}</td><td>${esc(p.expected || "")}${
+    p.timing ? `<br/><span class="feature-hint">${esc(p.timing)}</span>` : ""}</td><td>${p.verdict ? "✔" : ""}</td></tr>`).join("");
+  const msgs = (tc.message_contents || []).map((m) => `<div class="msg-config"><div class="msg-config-head"><span class="tag">${esc(m.msg_id || "")}</span><strong>${esc(m.message || "")}</strong>
+      <span class="dir dir-${esc((m.direction || "").toLowerCase())}">${esc(m.direction || "")}</span><span class="feature-hint">${esc(m.purpose || m.based_on || "")}</span></div>
+      <table class="ui-table"><thead><tr><th>IE 路径</th><th>取值</th><th>扫描</th><th>说明</th></tr></thead><tbody>${
+        (m.ies || []).map((ie) => `<tr><td><code>${esc(ie.path || "")}</code></td><td><code>${esc(fmtVal(ie.value))}</code></td><td>${esc(ie.vary || "")}</td><td>${esc(ie.note || "")}</td></tr>`).join("")
+      }</tbody></table></div>`).join("");
+  const rcAll = tc.requirement_configs || [];
+  const rc = rcAll.filter((c) => c.status === "patched");
+  const rcConflict = rcAll.filter((c) => c.status === "conflict");
+  const notes = tc.review_notes || [];
+  return `<div class="tcd-detail">
+    ${purposeHtml(tc.test_purpose)}
+    ${(tc.references || []).length ? `<p class="feature-hint">参考条款：${esc(tc.references.join("；"))}${tc.applicability ? `　适用性：${esc(tc.applicability)}` : ""}</p>` : ""}
+    ${icRows ? `<h5>初始条件</h5><table class="ui-table kv-table">${icRows}</table>` : ""}
+    ${cfgRows ? `<h5>关键配置</h5><table class="ui-table kv-table">${cfgRows}</table>` : ""}
+    ${steps ? `<h5>测试步骤</h5><table class="ui-table"><thead><tr><th>St</th><th>发起方</th><th>方向</th><th>层</th><th>消息 / 动作</th><th>期望</th><th>判定</th></tr></thead><tbody>${steps}</tbody></table>` : ""}
+    ${msgs ? `<h5>特定消息内容</h5>${msgs}` : ""}
+    ${(tc.parameter_variations || []).length ? `<h5>参数扫描</h5><ul>${tc.parameter_variations.map((v) => `<li><code>${esc(v.name || "")}</code>：${esc(fmtVal(v.values))} ${esc(v.purpose || "")}</li>`).join("")}</ul>` : ""}
+    ${rc.length ? `<p class="feature-hint">以下需求配置由质量门按需求原值补入：${rc.map((c) => `${esc(c.name)}=${esc(fmtVal(c.value))}`).join("，")}</p>` : ""}
+    ${rcConflict.length ? `<p class="feature-hint warn-text">需求配置与用例取值不一致（需求值已另存，请确认）：${rcConflict.map((c) => esc(c.note || `${c.name}=${fmtVal(c.value)}`)).join("；")}</p>` : ""}
+    ${notes.length ? `<h5>专家评审意见</h5><ul class="review-notes">${notes.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${(tc.open_points || []).length ? `<h5>待确认</h5><ul>${tc.open_points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+  </div>`;
 }
 
 function renderCases(spec) {
@@ -995,14 +1104,19 @@ function renderCases(spec) {
   }
   const rows = tcs
     .map((tc) => {
-      const tags = Array.isArray(tc.tags) ? tc.tags : [String(tc.tags || "")];
       const passFail = Array.isArray(tc.pass_fail) ? tc.pass_fail : [String(tc.pass_fail || "")];
       const envText = formatTestEnvironmentSummary(tc.test_environment);
       const riskText = formatTestEnvironmentRisk(tc.test_environment);
-      return `<tr><td>${esc(tc.tc_id)}</td><td>${esc(tc.objective_id)}</td><td>${esc(tc.title)}</td><td>${esc(tags.join(", "))}</td><td>${esc(passFail.join(" / "))}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td><td>${esc((tc.steps || []).length)}</td></tr>`;
+      const nSteps = (tc.procedure || tc.steps || []).length;
+      const nMsg = (tc.procedure || []).filter((p) => p.message).length;
+      return `<details class="tc-item"><summary><span class="tc-id">${esc(tc.tc_id)}</span>${techniqueTag(tc.technique)}<span class="tc-title">${esc(tc.title)}</span>
+        <span class="feature-hint">${esc(envText)} · ${nSteps} 步${nMsg ? ` / ${nMsg} 条信令` : ""} · ${esc((tc.trace?.req_ids || []).join(","))}${
+          (tc.review_notes || []).length ? ` · 评审意见 ${tc.review_notes.length}` : ""}</span></summary>
+        <div class="tc-body"><p><b>通过标准：</b>${esc(passFail.join(" / "))}</p>${riskText ? `<p class="feature-hint">${esc(riskText)}</p>` : ""}${
+          tc.procedure ? renderTcdDetail(tc) : `<p class="feature-hint">旧格式用例：${esc((tc.steps || []).map((s) => s.action).join(" → "))}</p>`}</div></details>`;
     })
     .join("");
-  viewCases.innerHTML = `<table><thead><tr><th>用例ID</th><th>目标ID</th><th>标题</th><th>标签</th><th>通过标准</th><th>测试环境</th><th>资源风险</th><th>步骤数</th></tr></thead><tbody>${rows}</tbody></table>`;
+  viewCases.innerHTML = `<p class="feature-hint">共 ${tcs.length} 条用例，点击展开测试目的、初始条件、配置、步骤和消息内容。</p>${rows}`;
 }
 
 function renderDesignHistoryList() {
@@ -1613,9 +1727,15 @@ async function generateRequirementsRound(round) {
       project_id: currentProjectId,
     });
   } else {
-    data = await postJson(`/api/hitl/requirements/${stageState.hitl_job_id}/next`, {
-      open_question_answers: collectOpenQuestionAnswers(),
-    });
+    ensureHitlStream(stageState.hitl_job_id);
+    hitlRequestInFlight = true;
+    try {
+      data = await postJson(`/api/hitl/requirements/${stageState.hitl_job_id}/next`, {
+        open_question_answers: collectOpenQuestionAnswers(),
+      });
+    } finally {
+      hitlRequestInFlight = false;
+    }
   }
   stageState.hitl_job_id = data.job_id || stageState.hitl_job_id || "";
   ensureHitlStream(stageState.hitl_job_id);
@@ -1667,7 +1787,7 @@ async function generateDesign() {
   if (stageState.design_history_record_id) {
     await loadDesignHistory(stageState.design_history_record_id).catch(() => {});
   }
-  setStatus("测试设计稿已生成，并已归档到历史目录。");
+  setStatus("测试设计稿已生成，并已归档到历史目录。" + usageLine(data) + (data.warnings?.length ? `\n提示:\n- ${data.warnings.join("\n- ")}` : ""));
   persistCurrentState();
 }
 
@@ -1697,7 +1817,7 @@ async function generateCases() {
   if (stageState.design_history_record_id) {
     await loadDesignHistory(stageState.design_history_record_id).catch(() => {});
   }
-  setStatus("测试用例稿已生成。\n注：基于 integrated_matrix 分批生成。");
+  setStatus(`测试用例稿已生成：${(data.test_case_spec?.testcases || []).length} 条 3GPP 风格用例。` + usageLine(data) + (data.warnings?.length ? `\n提示:\n- ${data.warnings.join("\n- ")}` : ""));
   persistCurrentState();
 }
 
@@ -1763,14 +1883,14 @@ function renderExecutableCases(data) {
     .join("");
 }
 
-const REQ_CFG_STATUS = { applied: "已落地", missing: "未落地", not_applicable: "不适用", conflict: "与规范冲突" };
+const REQ_CFG_STATUS = { applied: "已落地", patched: "已按需求值补入", missing: "未落地", not_applicable: "不适用", conflict: "与规范冲突" };
 
 function renderReqConfigPreview(bundle) {
   const items = bundle?.cases || bundle?.items || [];
   const rows = [];
   items.forEach((it) => (it.requirement_configs || []).forEach((rc) => rows.push({ ...rc, case_id: it.case_id })));
   const lines = bundle?.source_requirement?.config_lines || [];
-  const missLines = lines.filter((l) => l.status !== "covered");
+  const missLines = lines.filter((l) => l.status !== "covered" && l.status !== "other_route");
   if (!rows.length && !missLines.length) return "";
   const fmt = (v) => (typeof v === "object" && v !== null ? JSON.stringify(v) : `${v ?? ""}`);
   const table = rows.length
@@ -1829,10 +1949,99 @@ async function generateExecCases() {
   latestStructured.executable_cases = stageState.executable_cases;
   renderExecutableCases(stageState.executable_cases);
   const s = stageState.executable_cases?.summary || {};
-  setStatus(`可执行用例已生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` +
+  setStatus(`可执行用例已生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` + usageLine(data) +
     (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : ""));
   pushSystemBotMessage("可执行用例已生成，可在“可执行用例”页按验收方案下载。");
   persistCurrentState();
+}
+
+
+async function generateAll() {
+  const requirements = parseRequirements(requirementsEl.value);
+  if (!requirements.length) throw new Error("请先填写需求描述");
+  stageState.hitl_job_id = "";
+  stageState.design_history_record_id = "";
+  stageState.design_history_doc_url = "";
+  stageState.test_design_spec = null;
+  stageState.test_case_spec = null;
+  stageState.executable_cases = null;
+  closeHitlStream();
+  latestStructured = latestStructured || {};
+  const onStageResult = (stage, res) => {
+    if (stage === "requirements") {
+      stageState.round = 1;
+      stageState.requirement_spec = res.requirement_spec;
+      stageState.persona_reviews = res.persona_reviews;
+      stageState.requirement_review_history = res.requirement_review_history;
+      Object.assign(latestStructured, { requirement_spec: res.requirement_spec, persona_reviews: res.persona_reviews, requirement_review_history: res.requirement_review_history });
+      renderOpenQuestions([], res.requirement_review_history?.rounds?.[0]?.auto_confirmed || []);
+    } else if (stage === "design") {
+      stageState.test_design_spec = res.test_design_spec;
+      stageState.design_history_record_id = res.design_history?.record_id || stageState.design_history_record_id;
+      stageState.design_history_doc_url = res.design_history?.document_url || stageState.design_history_doc_url;
+      latestStructured.test_design_spec = res.test_design_spec;
+    } else if (stage === "testcases") {
+      stageState.test_case_spec = res.test_case_spec;
+      latestStructured.test_case_spec = res.test_case_spec;
+    } else if (stage === "exec_cases") {
+      stageState.executable_cases = res.executable_cases;
+      latestStructured.executable_cases = res.executable_cases;
+    }
+    applyStageOutputs();
+    persistCurrentState();
+  };
+  const data = await startStageJobAndWait("auto", {
+    requirement_input: requirements,
+    rag_context: ragEl.value,
+    framework_capability_catalog: buildFrameworkCapabilityCatalog(),
+    product_profile: getSelectedProductProfile(),
+    test_environments: getSelectedTestEnvironments(),
+    action_vocabulary: parseCSVLine(actionVocabEl.value),
+    bug_ids: stageState.bug_ids || [],
+    project_id: currentProjectId,
+  }, { onStageResult });
+  // 事件流中途断开时，用最终结果补齐各阶段
+  if (data.requirement_spec && !stageState.requirement_spec) onStageResult("requirements", data);
+  if (data.test_design_spec) onStageResult("design", data);
+  if (data.test_case_spec) onStageResult("testcases", data);
+  if (data.executable_cases) onStageResult("exec_cases", data);
+  if (stageState.design_history_record_id) await loadDesignHistory(stageState.design_history_record_id).catch(() => {});
+  const s = stageState.executable_cases?.summary || {};
+  const nTc = (stageState.test_case_spec?.testcases || []).length;
+  const nRow = (stageState.test_design_spec?.integrated_matrix || []).length;
+  const askedByAi = (data.auto_answered_user_questions || []).length;
+  setStatus(`一键生成完成：${nRow} 个测试点，${nTc} 条用例；可执行用例 Artemis ${s.artemis || 0} / AT ${s.at_agent || 0} / Amarisoft ${s.amarisoft || 0} / 协议 ${s.protocol || 0}` +
+    usageLine(data) + (askedByAi ? `\n有 ${askedByAi} 个原本需要你确认的问题已采用 AI 建议答案，可在“测试需求评审”页查看，必要时改答案后分步重跑。` : "") +
+    (data.warnings?.length ? `\n提示:\n- ${data.warnings.slice(0, 12).join("\n- ")}` : ""));
+  pushSystemBotMessage("一键生成完成，可在各页面查看结果；可执行用例页可按验收方案下载 JSON。", { actionNeeded: askedByAi > 0 });
+  persistCurrentState();
+}
+
+function buildChatContext() {
+  const ctx = {};
+  const reqs = stageState.requirement_spec?.final_requirements || [];
+  if (reqs.length) {
+    ctx.requirements = reqs.slice(0, 20).map((r) => ({ req_id: r.req_id, title: r.title, priority: r.priority,
+      acceptance: r.acceptance?.pass_fail, explicit_configs: (r.explicit_configs || []).map((c) => `${c.name}=${fmtVal(c.value)}`) }));
+  }
+  const answered = stageState.requirement_review_history?.answered_questions || [];
+  if (answered.length) ctx.confirmed_answers = answered.slice(0, 20).map((q) => `${q.question} → ${q.answer}（${q.source || "用户"}）`);
+  const rows = stageState.test_design_spec?.integrated_matrix || [];
+  if (rows.length) {
+    ctx.design_rows = rows.slice(0, 40).map((r) => ({ row_id: r.row_id, req_id: r.req_id, technique: r.technique, scenario: r.scenario,
+      env: r.test_environment?.primary, rationale: r.test_environment?.rationale, key_configuration: r.key_configuration }));
+    if ((stageState.test_design_spec.design_advice || []).length) ctx.design_advice = stageState.test_design_spec.design_advice;
+  }
+  const tcs = stageState.test_case_spec?.testcases || [];
+  if (tcs.length) {
+    ctx.testcases = tcs.slice(0, 40).map((t) => ({ tc_id: t.tc_id, title: t.title, technique: t.technique, env: t.test_environment?.primary,
+      test_purpose: t.test_purpose, messages: (t.procedure || []).filter((p) => p.message).map((p) => `${p.direction} ${p.message}`),
+      rows: t.trace?.source_refs, open_points: t.open_points }));
+  }
+  if (stageState.executable_cases?.summary) ctx.executable_summary = stageState.executable_cases.summary;
+  const status = (statusEl?.textContent || "").slice(0, 1500);
+  if (status) ctx.latest_status = status;
+  return ctx;
 }
 
 async function loadBugzillaSettings() {
@@ -2153,6 +2362,23 @@ runBtn.addEventListener("click", async () => {
   } finally {
     setSingleButtonBusy(runBtn, false);
     stageButtons.filter((b) => b !== runBtn).forEach((b) => b && (b.disabled = false));
+  }
+});
+
+autoRunBtn?.addEventListener("click", async () => {
+  if (hasSessionWork() && !confirm("一键生成会覆盖当前会话的评审、设计和用例结果，继续吗？")) return;
+  setSingleButtonBusy(autoRunBtn, true, "一键生成中...");
+  stageButtons.filter((b) => b !== autoRunBtn).forEach((b) => b && (b.disabled = true));
+  try {
+    setStatus("一键生成：需求评审 → 测试设计 → 测试用例 → 可执行用例 ...");
+    await generateAll();
+    switchSheetById("sheet5");
+  } catch (e) {
+    setStatus(`一键生成失败: ${e.message}`);
+    pushSystemBotMessage(`一键生成失败：${e.message}`, { actionNeeded: true });
+  } finally {
+    setSingleButtonBusy(autoRunBtn, false);
+    stageButtons.filter((b) => b !== autoRunBtn).forEach((b) => b && (b.disabled = false));
   }
 });
 
@@ -2510,6 +2736,7 @@ async function loadLlmSettings() {
   llmApiBaseEl.value = data.api_base || "";
   llmModelEl.value = data.model || "";
   llmTimeoutEl.value = data.timeout || 120;
+  if (llmMaxTokensEl) llmMaxTokensEl.value = data.max_tokens || 0;
   llmApiKeyEl.value = "";
   llmKeyHintEl.textContent = data.key_configured ? "（已保存，留空则沿用）" : "（未配置）";
   renderLlmStatus(data);
@@ -2522,6 +2749,7 @@ function llmFormPayload(extra = {}) {
     model: llmModelEl.value.trim(),
     api_key: llmApiKeyEl.value.trim(),
     timeout: Number(llmTimeoutEl.value) || 120,
+    max_tokens: Math.max(0, Number(llmMaxTokensEl?.value) || 0),
     ...extra,
   };
 }
@@ -2649,7 +2877,7 @@ async function sendBotMessage() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: q, history: botHistory }),
+      body: JSON.stringify({ message: q, history: botHistory.slice(0, -1), context: buildChatContext() }),
     });
     const text = await resp.text();
     if (!resp.ok) {

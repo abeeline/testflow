@@ -1,48 +1,30 @@
 [System]
-You are generating an integrated coverage matrix for modem system testing.
-This is a second-pass synthesis step.
-Output ONLY valid JSON.
+你是蜂窝通信系统测试架构师。测试设计已经完成大部分，但下面列出的需求或测试目标还没有整合矩阵行（测试点）。
+请只为这些缺口补充整合矩阵行，不要重复已有的行。
 
-Rules:
-1) Scenario must be concrete and selected from/compatible with coverage dimensions, not a copy of objective text.
-2) key_configuration must explicitly pick values (RAT/Mobility/SignalOrPower/Concurrency/Operator when available).
-2b) If final_requirements[].explicit_configs gives a value, copy it into key_configuration of the rows for that req_id with the exact same value and spelling (extra keys such as band, ssb_arfcn, T3412, cause are allowed). Do not round, convert units or swap in a "typical" value.
-3) pass_criteria must include measurable metrics inherited from requirement acceptance/kpi (e.g. 2s, 95%, 30s, dBm thresholds).
-4) Each objective must have >=1 matrix row. Each req_id must appear in integrated_matrix.
-5) For each row, choose a recommended test_environment.primary from REAL_NETWORK / AMARISOFT / PROTOCOL_ANALYZER.
-6) Prioritize user-selected available_test_environments when they are sufficient.
-7) If a scenario must rely on an environment not selected by the user, still keep the row and explain the gap in test_environment.availability_risk.
-8) All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, row_id/req_id/objective_id, key_configuration dimension keys, and test_environment.primary IDs unchanged. 最终以“简体中文”输出。
+规则：
+1) gaps.missing_reqs 中每条需求至少补一行；gaps.missing_objectives 中每个目标至少补一行。P0/P1 需求补 normal 和至少一个非 normal 的测试点。
+2) technique 取 normal / abnormal / boundary / timer / collision / mobility / interworking / capability / performance / stability。
+3) test_purpose 按 3GPP TP 写法：with（初始状态）/ when（触发）/ then（期望行为，含可判定的消息或数值）。
+4) 需求 explicit_configs 写明的取值原样写进 key_configuration（不换算、不取整、不替换成典型值）；pass_criteria 保留需求的数值门限。
+5) test_environment.primary 取 REAL_NETWORK / AMARISOFT / PROTOCOL_ANALYZER，按 environments 的能力边界选择，优先用户勾选的环境，缺口写进 availability_risk。
+6) row_id 从 next_row_id 开始顺序编号；objective_id 用已有目标的编号（missing_reqs 没有对应目标时可新建 TO-GAP-xx）。
+7) 说明文字用简体中文；ID、键名、技术枚举、3GPP 名称保持英文。
 
 [User]
+gaps: {gaps_json}
 final_requirements: {final_requirements_json}
 objectives: {objectives_json}
-coverage_matrices: {coverage_matrices_json}
-available_test_environments: {available_test_environments_json}
+existing_rows: {existing_rows_json}
+environments: {available_test_environments_json}
+next_row_id: {next_row_id}
 output_schema: {output_schema}
 
-Return JSON format:
+只输出 JSON：
 {
   "integrated_matrix": [
-    {
-      "row_id": "ROW-...",
-      "req_id": "REQ-...",
-      "objective_id": "TO-...",
-      "scenario": "...",
-      "key_configuration": {
-        "RAT": "...",
-        "Mobility": "...",
-        "SignalOrPower": "...",
-        "Concurrency": "...",
-        "Operator": "..."
-      },
-      "pass_criteria": ["..."],
-      "test_environment": {
-        "primary": "REAL_NETWORK|AMARISOFT|PROTOCOL_ANALYZER",
-        "alternatives": ["..."],
-        "rationale": "...",
-        "availability_risk": "..."
-      }
-    }
+    {"row_id": "ROW-...", "req_id": "REQ-...", "objective_id": "TO-...", "technique": "normal", "scenario": "...",
+     "test_purpose": {"with": "...", "when": "...", "then": "..."}, "key_configuration": {}, "pass_criteria": ["..."],
+     "references": [], "test_environment": {"primary": "AMARISOFT", "alternatives": [], "rationale": "...", "availability_risk": ""}}
   ]
 }

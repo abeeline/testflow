@@ -122,7 +122,7 @@
               <summary>执行平台能力 <span class="tag">可选</span></summary>
               <label for="capability">执行平台能力说明（供需求分析参考）</label>
               <textarea class="ui-input" id="capability" placeholder="例如：pytest+allure，支持日志采集"></textarea>
-              <label for="actionVocab">Action Vocabulary（逗号分隔）</label>
+              <label for="actionVocab">偏好的步骤动作名（逗号分隔，可选，仅作建议）</label>
               <input class="ui-input" id="actionVocab" type="text" placeholder="SET_DEVICE_STATE,TRIGGER_REGISTRATION,WAIT,CHECK,COLLECT_LOG" />
             </details>
           </div>
@@ -140,6 +140,8 @@
           </div>
 
           <div class="action-bar">
+            <span class="action-hint">分步模式：逐步评审每个阶段的结果；一键模式：评审问题全部采用 AI / 知识库答案，直接生成到可执行用例，之后仍可回到任一页面调整重跑。</span>
+            <button id="autoRunBtn" class="ui-btn ui-btn-secondary ui-btn-lg" type="button" title="需求评审 → 测试设计 → 3GPP 测试用例 → 可执行用例">⚡ 一键生成全部</button>
             <button id="runBtn" class="ui-btn ui-btn-lg">生成测试需求 v1</button>
           </div>
         </section>
@@ -175,7 +177,7 @@
           <header class="page-head">
             <div>
               <h2>测试设计</h2>
-              <p>需求 → 测试目标 → 覆盖矩阵 → 整合矩阵，完成后自动归档到测试设计历史。</p>
+              <p>需求 → 测试目标 → 按测试技术（正常 / 异常 / 边界 / 定时器 / 冲突 / 移动性…）导出测试点，每个测试点写明 3GPP 测试目的（with / when / then）。完成后自动归档到测试设计历史。</p>
             </div>
             <div id="designDocActions" class="btn-row compact-row hidden">
               <a id="designDocLink" class="ui-btn ui-btn-secondary" href="#" target="_blank" rel="noopener noreferrer">查看测试设计文档 ↗</a>
@@ -186,6 +188,9 @@
             <details class="raw-json"><summary>原始 JSON</summary><pre id="outDesign" class="ui-pre"></pre></details>
           </div>
           <div class="action-bar">
+            <label class="inline-check" title="用例写完后，再让大模型以评审专家的身份检查协议正确性、测试目的能否判定、是否与需求一致；严重问题自动返工一次，一般意见显示在用例里。会多几次模型调用。">
+              <input id="expertReviewToggle" type="checkbox" checked /> 专家评审（多一轮检查，更准但更慢）
+            </label>
             <button id="genCasesBtn" class="ui-btn">生成测试用例稿 →</button>
           </div>
         </section>
@@ -194,7 +199,7 @@
           <header class="page-head">
             <div>
               <h2>测试用例</h2>
-              <p>每条用例保留到需求和设计矩阵的追溯关系，可导出 Excel。</p>
+              <p>按 TS 38.523-1 / 36.523-1 的写法生成测试用例描述：测试目的、初始条件、关键配置、特定消息内容、带方向和判定点的测试步骤。点击用例行展开详情；Excel 含“测试步骤”“消息内容”两页。</p>
             </div>
             <button id="downloadExcelBtn" class="ui-btn ui-btn-secondary">下载 Excel</button>
           </header>
@@ -386,6 +391,10 @@
             <div class="field">
               <label for="llmTimeout">超时（秒）</label>
               <input id="llmTimeout" class="ui-input" type="number" min="10" max="600" step="10" value="120" />
+            </div>
+            <div class="field">
+              <label for="llmMaxTokens">单次输出上限（tokens）<span class="feature-hint">0 = 用接口默认值。用例经常被截断（提示“自动拆批”）时调大，例如 8192 或 16384。</span></label>
+              <input id="llmMaxTokens" class="ui-input" type="number" min="0" max="200000" step="1024" value="0" />
             </div>
           </div>
           <div id="llmTestResult" class="test-result hidden"></div>

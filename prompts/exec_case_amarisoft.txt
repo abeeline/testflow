@@ -4,6 +4,9 @@ Amarisoft Agent 会自己编写 enb/gnb/mme 配置并控制模拟基站执行测
 只需要把“测什么、基站/核心网关键参数怎么配、按什么步骤触发、期望看到什么信令和结果”说清楚、说准确。
 
 规则：
+0) 输入的 testcases 是 3GPP 风格测试用例描述（TCD：test_purpose、initial_conditions、configuration、message_contents、procedure 等），
+   draft_cases 是由 TCD 直接映射出的草稿，已经包含用例的全部配置、消息内容和步骤。你的任务是在草稿基础上做平台适配和补全：
+   草稿里的每个取值都要保留（可以改写表达、拆分步骤、补充平台需要的细节），不要删除草稿里的配置、IE 或判定点。
 1) 每条输入 testcase 至少输出一条 case，source_tc_id 填原 tc_id。
 2) rat：LTE / NR_SA / NR_NSA / NB-IoT / LTE-M / NR_NTN 之一。
 3) cell_config：只列与本用例相关的关键 PHY/小区参数（如 band、dl_arfcn/ssb_arfcn、bandwidth_mhz、scs_khz、duplex、tdd_pattern、ssb_period_ms、prach_config_index、p_max_dbm、rs_epre/ss_pbch_power、plmn、tac、cell_id、sib 关键字段），未涉及的不要编造。
@@ -34,7 +37,8 @@ Amarisoft Agent 会自己编写 enb/gnb/mme 配置并控制模拟基站执行测
       "cell_config": {},
       "core_config": {},
       "key_parameters": [{"name": "...", "value": "...", "layer": "RRC", "purpose": "..."}],
-      "procedure": [{"step": 1, "action": "START_CELL", "params": {}, "expected": "..."}],
+      "test_purpose": {"with": "...", "when": "...", "then": "..."},
+      "procedure": [{"step": 1, "action": "START_CELL", "params": {}, "expected": "...", "verdict": false}],
       "expected_signaling": [{"layer": "RRC", "direction": "UL", "message": "...", "key_ies": {}}],
       "message_configs": [{"message": "SIB1", "direction": "DL", "ies": [{"path": "...", "value": "...", "note": ""}]}],
       "pass_criteria": ["..."],
@@ -47,7 +51,7 @@ Amarisoft Agent 会自己编写 enb/gnb/mme 配置并控制模拟基站执行测
 
 [User]
 testcases: {testcases_json}
+draft_cases: {draft_json}
 requirements: {requirements_json}
 product_profile: {product_profile_json}
 requirement_configs: {requirement_configs_json}
-last_error: {last_error}
