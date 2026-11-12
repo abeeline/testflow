@@ -368,33 +368,48 @@ def purpose_text(tc: Dict[str, Any]) -> str:
 
 # ---------- 需求配置补入（确定性，不依赖 LLM） ----------
 
+_UNPLACED = "需求配置 {name}={value} 没有出现在用例里，也无法确定它属于哪条消息，暂存在 configuration.other，请确认应放在哪里"
 TCD_CONFIG_FIELDS = ["configuration", "message_contents", "procedure", "parameter_variations", "initial_conditions"]
 
 
-def _place_config(tc: Dict[str, Any], c: Dict[str, Any], conflict_with: Any = None) -> None:
-    """把一项需求配置按 target 放进 TCD。conflict_with 不为空表示用例里已有同名但取值不同的项，需求值另存、不覆盖原值。"""
+def owner_message(msgs: List[Dict[str, Any]], c: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """需求配置属于用例里的哪条消息：只认需求原文（或参数名）里点了名的消息。
+
+    找不到就返回 None。不能随手塞进第一条消息：方向、所属容器都可能是错的
+    （例如把 UE 能力字段补进下行 RRCRelease），执行方照着构造就是一条错误的消息。
+    """
+    text = f"{c.get('message') or ''} {c.get('source_text') or ''} {c.get('name') or ''}".lower()
+    hits = [m for m in msgs or [] if isinstance(m, dict) and len(str(m.get("message") or "").strip()) >= 3
+            and str(m.get("message")).strip().lower() in text]
+    return max(hits, key=lambda m: len(str(m.get("message")))) if hits else None
+
+
+def _place_config(tc: Dict[str, Any], c: Dict[str, Any], conflict_with: Any = None) -> str:
+    """把一项需求配置按 target 放进 TCD，返回落到的位置；无法确定位置时返回空串（值暂存在 configuration.other）。
+    conflict_with 不为空表示用例里已有同名但取值不同的项，需求值另存、不覆盖原值。"""
     name, target, value = c.get("name") or "param", c.get("target") or "", c.get("value")
     cfg = tc["configuration"]
     key = f"{name}（需求值）" if conflict_with is not None else name
     if target == "message":
-        msgs = tc["message_contents"]
-        holder = next((m for m in msgs if m.get("msg_id") == "M-REQ"), None)
+        holder = owner_message(tc["message_contents"], c)
         if holder is None:
-            holder = {"msg_id": "M-REQ", "message": "", "direction": "DL", "layer": str(c.get("layer") or "").upper(),
-                      "based_on": "默认消息内容", "purpose": "需求写明的消息字段（所属消息待确认）", "ies": []}
-            msgs.append(holder)
+            cfg.setdefault("other", {})[f"{key}（所属消息待确认）"] = value
+            return ""
         note = c.get("source_text", "")
         if conflict_with is not None:
             note = f"需求值；用例中同名字段为 {_text(conflict_with)}，请确认。{note}"
-        holder["ies"].append({"path": name, "value": value, "note": note, "vary": ""})
+        holder.setdefault("ies", []).append({"path": key, "value": value, "note": note, "vary": ""})
+        return f"message_contents.{holder.get('msg_id', '')}"
     elif target == "cell":
         if not cfg["cells"]:
             cfg["cells"].append({"cell_id": "Cell1"})
         cfg["cells"][0][key] = value
+        return "configuration.cells"
     elif target in ("core", "ue"):
         cfg[target][key] = value
-    else:
-        cfg.setdefault("other", {})[key] = value
+        return f"configuration.{target}"
+    cfg.setdefault("other", {})[key] = value
+    return "configuration.other"
 
 
 def _is_varied(tc: Dict[str, Any], name: str) -> bool:
@@ -469,13 +484,17 @@ def patch_explicit_configs(tc: Dict[str, Any], configs: List[Dict[str, Any]]) ->
             record(c, "varied", f"本用例有意改变该参数（现值 {_text(st['found'][0])}）")
         elif st["status"] == "conflict":
             found = st["found"][0]
-            _place_config(tc, c, conflict_with=found)
+            if not _place_config(tc, c, conflict_with=found):
+                tc["open_points"].append(_UNPLACED.format(name=c.get("name"), value=_text(c.get("value"))))
             note = f"用例中 {c.get('name')} 为 {_text(found)}，需求写明 {_text(c.get('value'))}；需求值已另存，原值未改"
             tc["open_points"].append(f"需求配置冲突：{note}，请确认以哪个为准")
             record(c, "conflict", note)
         else:
-            _place_config(tc, c)
-            record(c, "patched", "用例中未出现，已按需求原值补入")
+            if _place_config(tc, c):
+                record(c, "patched", "用例中未出现，已按需求原值补入")
+            else:
+                tc["open_points"].append(_UNPLACED.format(name=c.get("name"), value=_text(c.get("value"))))
+                record(c, "patched", "用例中未出现，且找不到它所属的消息：暂存在 configuration.other，没有写进任何消息，需人工确认")
     tc["requirement_configs"] = results
     return results
 
@@ -539,11 +558,30 @@ def _procedure_lines(tc: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _ordered_procedure(tc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """TCD 步骤原样按序带到执行平台：谁来做（actor）、做什么、参数、多久之内（timing）、用哪条消息内容（msg_ref）、是否判定点。"""
+    return [{"step": p["step"], "actor": p.get("actor", ""), "action": p.get("action", ""),
+             "params": {**(p.get("params") or {}), **({"message": p["message"], "direction": p["direction"]} if p.get("message") else {})},
+             "expected": p.get("expected", ""), "verdict": bool(p.get("verdict")),
+             **({"timing": p["timing"]} if p.get("timing") else {}),
+             **({"msg_ref": p["msg_ref"]} if p.get("msg_ref") else {})}
+            for p in tc.get("procedure") or []]
+
+
+def _variation(v: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
+    """扫描参数。variants 是“每个取值各有自己的前置和预期”的分支，要原样带到执行用例里，
+    否则执行侧只看到一串取值，不知道每个取值该判什么。"""
+    out = {"name": v.get("name", ""), "values": v.get("values"), **extra, "purpose": v.get("purpose", "")}
+    variants = [x for x in as_list(v.get("variants")) if isinstance(x, dict)]
+    if variants:
+        out["variants"] = variants
+    return out
+
+
 def to_amarisoft(tc: Dict[str, Any]) -> Dict[str, Any]:
     msgs = _msg_by_id(tc)
     ic = tc.get("initial_conditions") or {}
-    key_params = [{"name": v.get("name", ""), "values": v.get("values"), "layer": v.get("layer", ""),
-                   "purpose": v.get("purpose", "")} for v in tc.get("parameter_variations") or []]
+    key_params = [_variation(v, layer=v.get("layer", "")) for v in tc.get("parameter_variations") or []]
     for k, v in ((tc.get("configuration") or {}).get("ue") or {}).items():
         key_params.append({"name": k, "value": v, "layer": "UE", "purpose": "UE 侧配置"})
     return {
@@ -558,12 +596,7 @@ def to_amarisoft(tc: Dict[str, Any]) -> Dict[str, Any]:
         "core_config": dict((tc.get("configuration") or {}).get("core") or {}),
         "key_parameters": key_params,
         # actor / timing / msg_ref 是 TCD 步骤里“谁来做、多久之内、用哪条消息内容”的信息，基站用例同样需要
-        "procedure": [{"step": p["step"], "actor": p.get("actor", ""), "action": p.get("action", ""),
-                       "params": {**(p.get("params") or {}), **({"message": p["message"], "direction": p["direction"]} if p.get("message") else {})},
-                       "expected": p.get("expected", ""), "verdict": bool(p.get("verdict")),
-                       **({"timing": p["timing"]} if p.get("timing") else {}),
-                       **({"msg_ref": p["msg_ref"]} if p.get("msg_ref") else {})}
-                      for p in tc.get("procedure") or []],
+        "procedure": _ordered_procedure(tc),
         "expected_signaling": [{"layer": p.get("layer") or message_layer(p["message"]), "direction": p.get("direction", ""),
                                 "message": p["message"], "key_ies": _ies_dict(msgs.get(p.get("msg_ref", "")))}
                                for p in _steps_with_messages(tc)],
@@ -582,7 +615,7 @@ def to_protocol(tc: Dict[str, Any]) -> Dict[str, Any]:
     flow = []
     for i, p in enumerate(_steps_with_messages(tc), start=1):
         ref = p.get("msg_ref", "") if p.get("msg_ref", "") in msgs else ""
-        flow.append({"seq": i, "direction": p.get("direction", ""), "layer": p.get("layer") or message_layer(p["message"]),
+        flow.append({"seq": i, "step": p.get("step"), "direction": p.get("direction", ""), "layer": p.get("layer") or message_layer(p["message"]),
                      "message": p["message"], "config_ref": ref, "key_ies": {} if ref else dict(p.get("params") or {}),
                      "timing": p.get("timing", ""), "note": p.get("expected", "")})
     layers = sorted({f["layer"] for f in flow if f["layer"]} | {m["layer"] for m in msgs.values() if m.get("layer")})
@@ -599,13 +632,15 @@ def to_protocol(tc: Dict[str, Any]) -> Dict[str, Any]:
         "preconditions": (ic.get("ue") or []) + (ic.get("preamble") or []),
         "cell_config": _cell_config(tc),
         "core_config": dict((tc.get("configuration") or {}).get("core") or {}),
+        "ue_config": dict((tc.get("configuration") or {}).get("ue") or {}),
+        # 完整的有序步骤：非消息动作（改位置、改功率、注入故障、等待、恢复）只在这里，signaling_flow 只是其中的信令视图
+        "procedure": _ordered_procedure(tc),
         "message_configs": [{"msg_id": m["msg_id"], "message": m["message"], "template": m["message"] or m.get("based_on", ""),
                              "direction": m["direction"], "purpose": m.get("purpose", ""), "ies": m["ies"]}
                             for m in tc.get("message_contents") or []],
         "signaling_flow": flow,
-        "parameter_variations": [{"name": v.get("name", ""), "values": v.get("values"), "purpose": v.get("purpose", "")}
-                                 for v in tc.get("parameter_variations") or []],
-        "checkpoints": [{"item": f"St{p['step']} {p.get('message') or p.get('action', '')}".strip(), "expected": p.get("expected", "")}
+        "parameter_variations": [_variation(v) for v in tc.get("parameter_variations") or []],
+        "checkpoints": [{"step": p["step"], "item": f"St{p['step']} {p.get('message') or p.get('action', '')}".strip(), "expected": p.get("expected", "")}
                         for p in tc.get("procedure") or [] if p.get("verdict")],
         "pass_criteria": list(tc.get("pass_fail") or []),
         "references": list(tc.get("references") or []),

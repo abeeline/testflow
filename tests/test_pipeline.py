@@ -215,7 +215,7 @@ def test_full_pipeline_offline():
     assert set(ams_cfg.values()) <= {"applied", "patched"} and ams["core_config"].get("T3346") == "12min"
     art = ex["bundles"]["artemis"]["cases"][0]["task"]
     assert "10s 内完成" in art["expected_result"] and "99%" in art["expected_result"], "实网用例改写时丢掉的数值门限要补回"
-    assert ex["bundles"]["amarisoft"]["version"] == 4 and ex["bundles"]["protocol"]["version"] == 5
+    assert ex["bundles"]["amarisoft"]["version"] == 4 and ex["bundles"]["protocol"]["version"] == 6
 
 
 def test_no_llm_still_produces_everything():
