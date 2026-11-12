@@ -22,7 +22,7 @@ from core.events import emit
 from core.grouping import ensure_suite, suite_tree
 from core.llm import generate_json, run_split_on_truncate
 from core.quality import uncovered_thresholds
-from core.tcd import normalize_tcd, project, summarize_for_prompt
+from core.tcd import normalize_tcd, owner_message, project, summarize_for_prompt
 from utils.paths import prompt_path
 from utils.req_configs import (blob_of, config_status, extract_config_lines, name_key, normalize_explicit_configs,
                                value_present, value_tokens)
@@ -58,7 +58,8 @@ ROUTE_ITEM_REQUIRED = {
 CONFIG_ROUTES = ("amarisoft", "protocol")
 ROUTE_CONFIG_FIELDS = {
     "amarisoft": ["cell_config", "core_config", "key_parameters", "message_configs", "procedure", "expected_signaling"],
-    "protocol": ["cell_config", "core_config", "message_configs", "signaling_flow", "parameter_variations", "checkpoints"],
+    "protocol": ["cell_config", "core_config", "ue_config", "test_parameters", "message_configs", "procedure", "signaling_flow",
+                 "parameter_variations", "checkpoints"],
 }
 
 # 写进 bundle 的字段说明，方便下游 Agent 不看文档也能理解每个字段。
@@ -71,7 +72,7 @@ FIELD_GUIDE = {
         "ue_preconditions": "UE 初始状态与前置流程（preamble）",
         "cell_config": "小区/PHY 关键参数（band、dl_arfcn/ssb_arfcn、bandwidth_mhz、scs_khz、tdd_pattern、plmn、tac、cell_id、功率、SIB 字段等），按此生成 enb/gnb 配置",
         "core_config": "核心网/NAS 参数（注册接受/拒绝及 cause、T3412/T3512/T3324 等定时器、PSM/eDRX、APN/DNN、IMS、鉴权），按此生成 mme 配置",
-        "key_parameters": "本用例要验证或扫描的关键参数：name、value 或 values、layer、purpose",
+        "key_parameters": "本用例要验证或扫描的关键参数：name、value 或 values、layer、purpose；各取值的前置或预期不同时用 variants 逐个列出",
         "message_configs": "需要定制的 RRC/NAS 消息：msg_id、message、direction、purpose、ies[{path, value, note}]，path 为 ASN.1 字段路径",
         "procedure": "有序步骤：step、actor（SS=基站侧，UE=被测终端，TESTER=终端侧操作）、action（英文动作名）、params（具体取值，含 message/direction）、"
                      "expected、verdict（是否判定点）、timing（时序/定时器约束，可无）、msg_ref（引用 message_configs 的 msg_id，可无）",
@@ -89,11 +90,15 @@ FIELD_GUIDE = {
         "preconditions": "进入被测流程前 UE 状态",
         "cell_config": "仪表侧小区基础配置",
         "core_config": "仪表侧核心网/NAS 配置（注册接受/拒绝及 cause、NAS 定时器、APN/DNN 等）",
+        "ue_config": "UE 侧设置和 UE 本地行为参数（如 UE 侧 NAS 定时器取值），不是仪表下发的消息内容",
+        "test_parameters": "需求写明、但不属于小区 / 核心网 / UE / 某条消息的测试参数（门限、次数等）",
+        "procedure": "完整的有序步骤，执行以它为准：step、actor（SS=仪表侧，UE=被测终端，TESTER=终端侧操作）、action（英文动作名）、params、"
+                     "expected、verdict（是否判定点）、timing、msg_ref。改位置、改功率、注入故障、等待、恢复这类非消息动作只出现在这里",
         "message_configs": "仪表要下发/校验的关键消息：msg_id、message、template、direction、ies[{path, value, note, vary}]，path 为 ASN.1 字段路径，按此写消息模板 XML 覆盖值",
-        "signaling_flow": "被测流程时序：seq、direction、layer、message、config_ref（引用 msg_id）、key_ies、timing",
-        "parameter_variations": "需要扫描的参数，name 对应 ies[].vary",
+        "signaling_flow": "procedure 中信令步骤的视图：seq、step（对应 procedure 的步骤号）、direction、layer、message、config_ref（引用 msg_id）、key_ies、timing",
+        "parameter_variations": "需要扫描的参数，name 对应 ies[].vary；各取值的前置或预期不同时用 variants 逐个列出（id、value、preconditions、expected）",
         "checkpoints": "逐项检查点",
-        "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，patched 生成结果里没有、已按需求原值补入（applied_to 写明补到哪），not_applicable 不适用（note 说明），conflict 与规范冲突（仍按需求值）",
+        "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，patched 生成结果里没有、已按需求原值补入（applied_to 写明补到哪），not_applicable 不适用（note 说明），conflict 与规范冲突（仍按需求值），missing 没有落地且无法确定该放在哪（见 open_points）",
         "references": "3GPP 规范条款",
         "open_points": "落地前仍需确认的问题",
     },
@@ -248,6 +253,9 @@ def _merge_with_draft(route: str, item: Dict[str, Any], draft: Dict[str, Any]) -
     for k, v in draft.items():
         if k.startswith("_"):
             continue
+        if route == "protocol" and k == "procedure" and v:
+            item[k] = v  # 有序步骤以用例为准：适配只补平台细节，不能增删或调换步骤
+            continue
         cur = item.get(k)
         if cur in (None, "", [], {}):
             item[k] = v
@@ -272,16 +280,23 @@ def _fill_config(route: str, item: Dict[str, Any], c: Dict[str, Any], clash: boo
             item[field] = {}
         item[field][key] = c["value"]
         return f"{field}.{key}"
+    if target == "message":
+        # 只补进需求原文点了名的那条消息；找不到就不补，交给人确认。
+        # 不能塞进第一条消息：方向和所属容器都可能是错的，执行方照着构造就是一条错误的消息。
+        holder = owner_message(item.get("message_configs") or [], c)
+        if holder is None:
+            return ""
+        holder.setdefault("ies", []).append({"path": key, "value": c["value"], "note": c.get("source_text", ""), "vary": ""})
+        return f"message_configs.{holder.get('msg_id', '')}"
     if route == "amarisoft":
         item.setdefault("key_parameters", []).append(
             {"name": name, "value": c["value"], "layer": c.get("layer", ""), "purpose": "需求写明的配置"})
         return "key_parameters"
-    msgs = item.setdefault("message_configs", [])
-    if not msgs:
-        msgs.append({"msg_id": "M1", "message": "", "template": "", "direction": "DL",
-                     "purpose": "需求写明的消息配置（所属消息待确认）", "ies": []})
-    msgs[0].setdefault("ies", []).append({"path": name, "value": c["value"], "note": c.get("source_text", ""), "vary": ""})
-    return f"message_configs.{msgs[0].get('msg_id', 'M1')}"
+    field = "ue_config" if target == "ue" else "test_parameters"
+    if not isinstance(item.get(field), dict):
+        item[field] = {}
+    item[field][key] = c["value"]
+    return f"{field}.{key}"
 
 
 def _match_llm_entry(cfg: Dict[str, Any], entries: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -302,7 +317,7 @@ def apply_requirement_configs(route: str, item: Dict[str, Any], configs: List[Di
     逐项结果写到 item.requirement_configs，返回被补入的项（用于告警）。"""
     llm_entries = [e for e in (item.get("requirement_configs") or []) if isinstance(e, dict)]
     fields = ROUTE_CONFIG_FIELDS[route]
-    results, patched, used = [], [], set()
+    results, patched, used, unplaced = [], [], set(), []
     for c in configs:
         e = _match_llm_entry(c, llm_entries)
         if e:
@@ -315,11 +330,16 @@ def apply_requirement_configs(route: str, item: Dict[str, Any], configs: List[Di
         elif llm_status == "not_applicable":
             status = "not_applicable"
         else:
-            status = "patched"
             applied_to = _fill_config(route, item, c, clash=st["status"] == "conflict")
-            note = "生成结果中未出现，已按需求原值补入" + (
-                f"（case 中同名项为 {_text(st['found'][0])}，未覆盖，请确认）" if st["found"] else "")
-            patched.append(f"{c['name']}={c['value']}")
+            if applied_to:
+                status = "patched"
+                note = "生成结果中未出现，已按需求原值补入" + (
+                    f"（case 中同名项为 {_text(st['found'][0])}，未覆盖，请确认）" if st["found"] else "")
+                patched.append(f"{c['name']}={c['value']}")
+            else:
+                status = "missing"
+                note = "生成结果中未出现，也无法确定它属于哪条消息，没有自动补入"
+                unplaced.append(f"需求配置未落地：{c['name']}={c['value']}，无法确定它属于哪条消息（需求原文：{str(c.get('source_text') or '')[:80]}），请确认应放在哪里")
         results.append({
             "req_id": c.get("req_id", ""), "name": c["name"], "value": c["value"], "layer": c.get("layer", ""),
             "target": c.get("target", ""), "source_text": c.get("source_text", ""),
@@ -336,11 +356,12 @@ def apply_requirement_configs(route: str, item: Dict[str, Any], configs: List[Di
         results.append({**e, "status": status})
     item["requirement_configs"] = results
     clashes = [r for r in results if r["status"] == "patched" and "同名项" in r["note"]]
-    if clashes:
+    if clashes or unplaced:
         ops = item.setdefault("open_points", [])
         if not isinstance(ops, list):
             ops = item["open_points"] = [str(ops)]
         ops.extend(f"需求配置待确认：{r['name']}={r['value']}，{r['note']}" for r in clashes)
+        ops.extend(x for x in unplaced if x not in ops)
     return patched
 
 
@@ -352,7 +373,8 @@ def source_lines_coverage(lines: List[Dict[str, Any]], items: List[Dict[str, Any
         vals = line.get("values") or value_tokens(line["text"])
         hit = [v for v in vals if value_present(v, blob)]
         status = "covered" if vals and len(hit) == len(vals) else ("partial" if hit else "not_found")
-        out.append({"line_id": line["line_id"], "text": line["text"], "values": vals, "matched_values": hit, "status": status})
+        out.append({"line_id": line["line_id"], **({"req_id": line["req_id"]} if line.get("req_id") else {}),
+                    "text": line["text"], "values": vals, "matched_values": hit, "status": status})
     return out
 
 
@@ -416,9 +438,10 @@ def build_bundle(route: str, items: List[Dict[str, Any]], tc_index: Dict[str, Di
         # v3：新增 test_purpose、technique、references、procedure[].verdict（来自 3GPP TCD）；v2 起有 message_configs、requirement_configs
         return {"format": "testflow-amarisoft-case", "version": 4, "exported_at": exported_at,
                 "field_guide": FIELD_GUIDE["amarisoft"], "source_requirement": source, "suites": suites, "cases": out_items}
+    # v6：新增 procedure（完整有序步骤，含非消息动作）、ue_config、test_parameters；signaling_flow / checkpoints 带 step
     # v5：新增 suites（两级用例分组）和每条的 suite
     # v4：新增 test_purpose、technique（来自 3GPP TCD）；v3 起有 requirement_configs、source_requirement、field_guide
-    return {"format": "testflow-protocol-test-requirement", "version": 5, "exported_at": exported_at,
+    return {"format": "testflow-protocol-test-requirement", "version": 6, "exported_at": exported_at,
             "field_guide": FIELD_GUIDE["protocol"], "source_requirement": source, "suites": suites, "items": out_items}
 
 
@@ -476,6 +499,10 @@ class ExecutableCaseNode(AsyncNode):
         shared = self._shared
         req_index = _requirement_index(shared.get("requirement_spec") or {})
         source_lines = extract_config_lines(shared.get("input_requirements") or [])
+        meta = shared.get("requirement_meta") or []
+        if len(meta) == len(shared.get("input_requirements") or []):  # 导入的需求清单：标出每行原文属于哪条需求
+            for line in source_lines:
+                line["req_id"] = str((meta[line["req_no"] - 1] or {}).get("req_id") or "")
 
         groups: Dict[str, List[Dict[str, Any]]] = {r: [] for r in ROUTES}
         for tc in tcs:

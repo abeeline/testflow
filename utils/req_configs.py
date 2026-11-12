@@ -41,7 +41,7 @@ def _segments(text: str) -> Iterable[str]:
         for part in re.split(r"(?<=[；;。])", line):
             part = part.strip()
             if part:
-                yield part[:_MAX_LINE_LEN]
+                yield part  # 不截断：截掉后半句会让取值核对漏报，也不再是原文
 
 
 def value_tokens(text: str) -> List[str]:

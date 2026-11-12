@@ -221,9 +221,69 @@ def test_import_api_and_grouped_export():
     assert r.status_code == 200
     wb = openpyxl.load_workbook(io.BytesIO(r.content))
     cases = list(wb["测试用例"].iter_rows(values_only=True))
-    assert cases[0][:3] == ("一级模块", "二级模块", "用例编号") and cases[3][:2] == ("SR 2 切换", "AR 2 切换")
+    assert cases[0][:4] == ("一级模块", "二级模块", "用例编号", "测试点") and cases[3][:2] == ("SR 2 切换", "AR 2 切换")
     groups = list(wb["用例分组"].iter_rows(values_only=True))
     assert groups[1][:4] == ("SR 1 驻留", 2, "AR 1 读取 SIB19", 2) and groups[2][2:4] == ("AR 2 切换", 1)
     doc = main._render_design_document_html({"requirement_spec": {"final_requirements": reqs}, "test_case_spec": {"testcases": tcs},
                                              "test_design_spec": {"integrated_matrix": [{"row_id": "ROW-001", "req_id": "AR-1"}]}})
     assert "用例分组" in doc and "SR 1 驻留" in doc
+
+
+def test_requirement_config_is_not_forced_into_a_wrong_message():
+    from core.tcd import normalize_tcd, patch_explicit_configs, to_protocol
+    from exec_cases import apply_requirement_configs
+
+    def tc():
+        return normalize_tcd({
+            "tc_id": "TC-001", "title": "非激活态周期 RNA 更新", "trace": {"req_ids": ["AR-1"], "source_refs": ["ROW-1"]},
+            "configuration": {"ue": {"T3540": "20s"}},
+            "message_contents": [{"msg_id": "M1", "message": "RRCRelease", "direction": "DL", "ies": [{"path": "suspendConfig.t380", "value": "min5"}]},
+                                 {"msg_id": "M2", "message": "UECapabilityInformation", "direction": "UL", "ies": []}],
+            "procedure": [{"actor": "SS", "action": "SEND", "message": "RRCRelease", "direction": "DL", "msg_ref": "M1"},
+                          {"actor": "TESTER", "action": "INJECT_LOCATION", "params": {"distance": "9.5 km"}},
+                          {"actor": "SS", "action": "CHECK", "expected": "120s 内不重选", "verdict": True},
+                          {"actor": "TESTER", "action": "INJECT_LOCATION", "params": {"distance": "10.5 km"}},
+                          {"actor": "UE", "action": "SEND", "message": "RRCResumeRequest", "direction": "UL", "expected": "RNA 更新", "verdict": True}]})
+
+    named = {"req_id": "AR-1", "name": "inactiveStateNTN-r17", "value": "supported", "target": "message",
+             "source_text": "UE 在 UECapabilityInformation 中上报 inactiveStateNTN-r17 = supported"}
+    orphan = {"req_id": "AR-1", "name": "fooBar-r17", "value": "enabled", "target": "message", "source_text": "fooBar-r17 = enabled"}
+
+    case = tc()
+    res = {r["name"]: r for r in patch_explicit_configs(case, [named, orphan])}
+    by_id = {m["msg_id"]: m for m in case["message_contents"]}
+    assert [ie["path"] for ie in by_id["M2"]["ies"]] == ["inactiveStateNTN-r17"], "补进原文点名的那条消息"
+    assert len(by_id["M1"]["ies"]) == 1 and len(by_id) == 2, "不动其他消息，也不新建没有消息名的占位消息"
+    assert "找不到它所属的消息" in res["fooBar-r17"]["note"] and any("fooBar-r17" in x for x in case["open_points"])
+
+    item = to_protocol(tc())
+    assert [p["action"] for p in item["procedure"]] == ["SEND", "INJECT_LOCATION", "CHECK", "INJECT_LOCATION", "SEND"], \
+        "协议用例保留完整的有序步骤，包括非消息动作"
+    assert [f["step"] for f in item["signaling_flow"]] == [1, 5] and item["ue_config"] == {"T3540": "20s"}
+    apply_requirement_configs("protocol", item, [named, orphan, {"req_id": "AR-1", "name": "T3517", "value": "27s", "target": "ue", "source_text": "T3517 = 27s"}])
+    status = {r["name"]: r["status"] for r in item["requirement_configs"]}
+    assert status == {"inactiveStateNTN-r17": "patched", "fooBar-r17": "missing", "T3517": "patched"}
+    msgs = {m["msg_id"]: m for m in item["message_configs"]}
+    assert len(msgs["M1"]["ies"]) == 1, "UE 能力字段不能补进下行 RRCRelease"
+    assert item["ue_config"]["T3517"] == "27s" and any("fooBar-r17" in x for x in item["open_points"])
+
+
+def test_long_source_line_is_not_truncated():
+    line = "ephemerisInfo-r17 = positionVelocity-r17，" + "说明" * 200 + "，epochTime-r17 = sfn0"
+    lines = extract_config_lines([line])
+    assert lines and lines[0]["text"] == line
+
+
+def test_variants_with_own_expectations_reach_the_executable_cases():
+    from core.tcd import normalize_tcd, to_amarisoft, to_protocol
+
+    variants = [{"id": "V1", "value": "duration=1", "preconditions": "SMTC 窗口 1 ms", "expected": "不触发切换时判 INCONCLUSIVE"},
+                {"id": "V2", "value": "duration=5", "preconditions": "SMTC 窗口 5 ms", "expected": "上报 A3"}]
+    tc = normalize_tcd({
+        "tc_id": "TC-001", "title": "SMTC 窗口扫描", "trace": {"req_ids": ["AR-1"], "source_refs": ["ROW-1"]},
+        "procedure": [{"actor": "SS", "action": "CHECK", "expected": "按分支判定", "verdict": True}],
+        "parameter_variations": [{"name": "smtc duration", "values": ["duration=1", "duration=5"], "purpose": "各分支预期不同", "variants": variants},
+                                 {"name": "带宽", "values": ["5 MHz", "10 MHz"], "purpose": "同一预期"}]})
+    ama, pro = to_amarisoft(tc)["key_parameters"], to_protocol(tc)["parameter_variations"]
+    assert ama[0]["variants"] == variants and pro[0]["variants"] == variants, "每个取值自己的前置和预期要带到执行用例"
+    assert "variants" not in ama[1] and "variants" not in pro[1]

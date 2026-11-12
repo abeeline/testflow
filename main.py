@@ -2043,7 +2043,8 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
         suite = ensure_suite(tc, req_by_id)
         suite_entries.append({"case_id": tc.get("tc_id", ""), "suite": suite})
         case_rows.append([
-            suite["level1"], suite["level2"], tc.get("tc_id", ""), tc.get("title", ""), TECHNIQUE_LABELS.get(tech, tech), purpose_text(tc),
+            suite["level1"], suite["level2"], tc.get("tc_id", ""),
+            "、".join(str(x) for x in (tc.get("trace") or {}).get("source_refs") or []), tc.get("title", ""), TECHNIQUE_LABELS.get(tech, tech), purpose_text(tc),
             _list_to_text(tc.get("references", [])), tc.get("objective_id", ""),
             _ic_text(tc.get("initial_conditions")) or _numbered(tc.get("preconditions", [])),
             _cfg_text(tc.get("configuration")), _proc_text(tc.get("procedure")) or _numbered(tc.get("expected", [])),
@@ -2064,7 +2065,8 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                     msg_rows.append([tc.get("tc_id", ""), m.get("msg_id", ""), m.get("message", ""), m.get("direction", ""),
                                      ie.get("path", ""), _safe_json(ie.get("value")) if isinstance(ie.get("value"), (dict, list)) else str(ie.get("value", "")),
                                      ie.get("vary", ""), ie.get("note", "")])
-    _sheet("测试用例", [("一级模块", 26), ("二级模块", 30), ("用例编号", 12), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
+    # “测试点”是设计矩阵的行号：需求清单增删后用例编号会重排，测试点编号不变，适合用来关联历史结果和缺陷
+    _sheet("测试用例", [("一级模块", 26), ("二级模块", 30), ("用例编号", 12), ("测试点", 16), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
                         ("测试目标", 10), ("初始条件", 40), ("关键配置", 40), ("测试步骤", 60), ("通过标准", 45),
                         ("测试环境", 16), ("环境风险", 26), ("标签", 14), ("待确认 / 评审意见", 45)], case_rows, first=True)
     # 用例分组：一级模块 / 二级模块 两级套件，带每级用例数，便于按模块分配和导入用例管理系统

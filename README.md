@@ -44,6 +44,11 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
 - 需求配置按“参数名 + 取值”核对（`utils/req_configs.py: config_status`），不会把步骤号或别的参数里的数字误当成已落地；
   用例里同名参数取值不同时标为 `conflict`：先让模型改一次，仍不一致就保留原值、把需求值另存为“参数名（需求值）”并写进待确认项；
   需求对同一参数给了多个取值时按扫描处理，补进 `parameter_variations`
+  消息里的配置只补进需求原文点名的那条消息；原文没说是哪条消息时不猜，记到 `configuration.other`（标“所属消息待确认”）和待确认项里
+- 扫描参数的各个取值如果前置或预期不同，用 `parameter_variations[].variants`（id、value、preconditions、expected）逐个写清，
+  这些分支会原样带到 Amarisoft 的 `key_parameters` 和协议仪表的 `parameter_variations`
+- 协议仪表用例除 `signaling_flow` 外还带完整的有序 `procedure`（含位置注入、等待、检查等非消息步骤）和 `ue_config`，
+  `signaling_flow` / `checkpoints` 里的 `step` 与它对应；Excel 的“测试用例”页有“测试点”列，重跑后用例编号变了也能对上
 - 专家评审（提示词 `test_case_reviewer.txt`，测试设计页可关）：用例写完后另起一次调用，让模型以评审者身份检查协议正确性
   （消息名、方向、顺序、定时器和原因值语义）、测试目的能否判定、是否与需求和测试点一致、实网用例是否依赖了网络侧控制；
   严重问题并入返工反馈，一般意见留在用例的 `review_notes` 里（页面和 Excel 可见）
