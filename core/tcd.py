@@ -21,6 +21,36 @@ TECHNIQUE_LABELS = {
     "collision": "流程冲突", "mobility": "移动性", "interworking": "互操作/回落", "capability": "能力/配置组合",
     "performance": "性能/KPI", "stability": "长稳/恢复",
 }
+# 模型常用但不在上表里的叫法，归到最接近的测试技术；认不出的才按 normal 处理并告警
+_TECHNIQUE_ALIASES = {
+    "normal": ["positive", "basic", "functional", "happy_path", "nominal", "正常"],
+    "abnormal": ["negative", "error", "exception", "reject", "rejection", "failure", "invalid", "异常", "拒绝"],
+    "boundary": ["limit", "threshold", "edge", "boundary_value", "边界"],
+    "timer": ["timeout", "timing", "timers", "定时器", "超时"],
+    "collision": ["race", "conflict", "concurrent", "concurrency", "冲突"],
+    "mobility": ["handover", "reselection", "移动性", "切换", "重选"],
+    "interworking": ["irat", "inter_rat", "interop", "interoperability", "fallback", "互操作", "回落"],
+    "capability": ["combinational", "combination", "combinatorial", "config", "configuration", "pairwise", "能力", "配置组合"],
+    "performance": ["kpi", "throughput", "latency", "性能"],
+    "stability": ["stress", "robustness", "recovery", "endurance", "long_run", "soak", "长稳", "恢复"],
+}
+_TECHNIQUE_LOOKUP = {alias: name for name, aliases in _TECHNIQUE_ALIASES.items() for alias in aliases}
+_TECHNIQUE_LOOKUP.update({label: name for name, label in TECHNIQUE_LABELS.items()})
+
+
+def normalize_technique(value: Any) -> tuple:
+    """返回 (测试技术, 认不出的原值)。认得出时第二项为空串。"""
+    raw = str(value or "").strip()
+    key = re.sub(r"[\s\-/]+", "_", raw.lower())
+    if not key:
+        return "normal", ""
+    if key in TECHNIQUES:
+        return key, ""
+    if key in _TECHNIQUE_LOOKUP or raw in _TECHNIQUE_LOOKUP:
+        return _TECHNIQUE_LOOKUP.get(key) or _TECHNIQUE_LOOKUP[raw], ""
+    return "normal", raw
+
+
 ACTORS = ["SS", "UE", "TESTER"]
 
 TCD_STEP_SCHEMA = {
@@ -288,7 +318,7 @@ def normalize_tcd(tc: Dict[str, Any], idx: int = 1) -> Dict[str, Any]:
         "objective_id": _text(tc.get("objective_id") or tc.get("objectiveId")),
         "title": title,
         "priority": _text(tc.get("priority")).upper() or next((t for t in tags if str(t).upper() in ("P0", "P1", "P2", "P3")), "P1"),
-        "technique": technique if technique in TECHNIQUES else (technique or "normal"),
+        "technique": normalize_technique(technique)[0],
         "tags": tags or ["Regression"],
         "test_purpose": _norm_purpose(tc.get("test_purpose"), title, expected),
         "references": as_text_list(tc.get("references")),

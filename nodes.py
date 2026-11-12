@@ -13,6 +13,8 @@
 import asyncio
 import datetime as dt
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
 
 from pocketflow import AsyncNode, Node
@@ -30,7 +32,8 @@ from schemas import (
 )
 from core import environments as envs
 from core.events import emit as _emit
-from core.llm import generate_json, generate_json_or_fallback, run_split_on_truncate
+from core.grouping import attach_suites, restore_groups
+from core.llm import MAX_CONCURRENCY, generate_json, generate_json_or_fallback, run_split_on_truncate
 from core.quality import (
     design_advice,
     design_gaps,
@@ -44,7 +47,7 @@ from core.quality import (
     rows_for_tcs,
     split_tcs_by_rows,
 )
-from core.tcd import TCD_LIST_SCHEMA, TECHNIQUES, normalize_tcd, renumber, summarize_for_prompt
+from core.tcd import TCD_LIST_SCHEMA, TECHNIQUES, normalize_tcd, normalize_technique, renumber, summarize_for_prompt
 from utils.req_configs import normalize_explicit_configs, restore_explicit_configs
 from utils.schema_validation import validate_jsonschema, validate_list_of_dict
 
@@ -62,6 +65,46 @@ NODE_LABELS = {
     "AssembleResultNode": "汇总结果",
 }
 KNOWLEDGE_CHARS_FOR_CASES = 6000
+
+
+def _req_batch_size() -> int:
+    try:
+        return max(1, int(os.getenv("TESTFLOW_REQ_BATCH_SIZE") or 8))
+    except ValueError:
+        return 8
+
+
+def _req_batches(reqs: List[Any]) -> List[List[Any]]:
+    """需求分析和测试设计按需求分批调用模型。
+
+    一次把几十条需求塞进一个请求，输出很容易超长被截断，后面的需求也会越写越粗。
+    条数不超过一批时只有一批，行为与不分批相同。
+    """
+    reqs, size = list(reqs or []), _req_batch_size()
+    return [reqs[i:i + size] for i in range(0, len(reqs), size)] or [[]]
+
+
+def _map_batches(fn, batches: List[Any]) -> List[Any]:
+    """按原顺序返回各批结果；多批时并行（总并发仍受 core.llm 的全局限流约束）。"""
+    if len(batches) <= 1:
+        return [fn(b) for b in batches]
+    with ThreadPoolExecutor(max_workers=min(MAX_CONCURRENCY, len(batches))) as pool:
+        return list(pool.map(fn, batches))
+
+
+def _batch_tag(tag: str, idx: int, total: int) -> str:
+    return tag if total <= 1 else f"{tag}-Batch{idx}"
+
+
+def _merge_unique(lists: List[Any]) -> List[Any]:
+    out, seen = [], set()
+    for items in lists:
+        for x in items or []:
+            key = json.dumps(x, ensure_ascii=False, sort_keys=True) if isinstance(x, (dict, list)) else str(x)
+            if key not in seen:
+                seen.add(key)
+                out.append(x)
+    return out
 
 
 def _now() -> str:
@@ -120,6 +163,7 @@ class IntakeNode(Node):
         _set_current_node(shared, "IntakeNode")
         return {
             "requirements": shared.get("input_requirements", []),
+            "requirement_meta": shared.get("requirement_meta") or [],
             "rag_context": shared.get("rag_context", ""),
             "review_feedback": shared.get("review_feedback", ""),
             "framework_capability_catalog": shared.get("framework_capability_catalog", ""),
@@ -130,15 +174,30 @@ class IntakeNode(Node):
         }
 
     def exec(self, prep_res):
-        requirements = [x.strip() for x in prep_res["requirements"] if x and x.strip()]
-        if not requirements:
+        raw = list(prep_res["requirements"] or [])
+        metas = list(prep_res.get("requirement_meta") or [])
+        metas = metas if len(metas) == len(raw) else []  # 与需求一一对应才可信
+        pairs = [(x.strip(), metas[i] if metas and isinstance(metas[i], dict) else {})
+                 for i, x in enumerate(raw) if x and x.strip()]
+        if not pairs:
             raise ValueError("requirements不能为空")
 
         items = []
-        for idx, text in enumerate(requirements, start=1):
+        used_ids, renamed = set(), []
+        for idx, (text, meta) in enumerate(pairs, start=1):
+            req_id = " ".join(str(meta.get("req_id") or "").split()) or f"REQ-{idx:03d}"
+            if req_id in used_ids:  # 清单里编号重复：加后缀保证唯一，否则后面的追溯会把两条需求混在一起
+                base, n = req_id, 2
+                while f"{base}-{n}" in used_ids:
+                    n += 1
+                req_id = f"{base}-{n}"
+                renamed.append(f"{base} → {req_id}")
+            used_ids.add(req_id)
+            group = [str(g).strip() for g in (meta.get("group") or []) if str(g).strip()][:2]
             items.append(
                 {
-                    "req_id": f"REQ-{idx:03d}",
+                    "req_id": req_id,
+                    **({"group": group} if group else {}),
                     "title": text,
                     "source": {
                         "type": "PRD",
@@ -168,6 +227,7 @@ class IntakeNode(Node):
 
         return {
             "seed_requirements": items,
+            "_renamed_req_ids": renamed,
             "rag_context": prep_res["rag_context"].strip(),
             "review_feedback": prep_res["review_feedback"].strip(),
             "framework_capability_catalog": prep_res["framework_capability_catalog"].strip(),
@@ -178,6 +238,9 @@ class IntakeNode(Node):
         }
 
     def post(self, shared, prep_res, exec_res):
+        renamed = exec_res.pop("_renamed_req_ids", [])
+        if renamed:
+            _warn(shared, "IntakeNode: 需求清单里有重复的需求编号，已加后缀区分：" + "；".join(renamed))
         shared.update(exec_res)
         missing_inputs = []
         if not exec_res["rag_context"]:
@@ -200,23 +263,31 @@ class ReqParseNode(ThreadedNode):
         }
 
     def exec(self, prep_res):
-        fallback = prep_res["seed_requirements"]
-        return generate_json_or_fallback(
-            shared=self._shared,
-            template_name="req_parse.txt",
-            variables={
-                "glossary_json": json.dumps({"attach": "注册", "idle reselection": "驻留重选"}, ensure_ascii=False),
-                "doc_meta_json": json.dumps({"type": "USER_INPUT", "lang": "mixed"}, ensure_ascii=False),
-                "text_chunk": json.dumps(prep_res["seed_requirements"], ensure_ascii=False),
-                "rag_context": prep_res.get("rag_context", ""),
-                "review_feedback": prep_res.get("review_feedback", ""),
-                "product_profile_json": json.dumps(prep_res.get("product_profile", {}), ensure_ascii=False),
-                "output_schema": json.dumps(REQUIREMENT_LIST_SCHEMA, ensure_ascii=False),
-            },
-            schema=REQUIREMENT_LIST_SCHEMA,
-            fallback=fallback,
-            warn_tag="ReqParseNode",
-        )
+        batches = _req_batches(prep_res["seed_requirements"])
+
+        def _parse(item):
+            idx, seeds = item
+            if len(batches) > 1:
+                _set_current_node(self._shared, "ReqParseNode", f"第 {idx}/{len(batches)} 批（共 {len(prep_res['seed_requirements'])} 条需求）")
+            out = generate_json_or_fallback(
+                shared=self._shared,
+                template_name="req_parse.txt",
+                variables={
+                    "glossary_json": json.dumps({"attach": "注册", "idle reselection": "驻留重选"}, ensure_ascii=False),
+                    "doc_meta_json": json.dumps({"type": "USER_INPUT", "lang": "mixed"}, ensure_ascii=False),
+                    "text_chunk": json.dumps(seeds, ensure_ascii=False),
+                    "rag_context": prep_res.get("rag_context", ""),
+                    "review_feedback": prep_res.get("review_feedback", ""),
+                    "product_profile_json": json.dumps(prep_res.get("product_profile", {}), ensure_ascii=False),
+                    "output_schema": json.dumps(REQUIREMENT_LIST_SCHEMA, ensure_ascii=False),
+                },
+                schema=REQUIREMENT_LIST_SCHEMA,
+                fallback=seeds,
+                warn_tag=_batch_tag("ReqParseNode", idx, len(batches)),
+            )
+            return list(out) if isinstance(out, list) else list(seeds)
+
+        return [req for part in _map_batches(_parse, list(enumerate(batches, start=1))) for req in part]
 
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, REQUIREMENT_LIST_SCHEMA)
@@ -229,6 +300,7 @@ class ReqParseNode(ThreadedNode):
             shared.setdefault("warnings", []).append(
                 "ReqParseNode: LLM压缩了需求条目，已补齐缺失条目以保持覆盖。"
             )
+        restore_groups(exec_res, prep_res["seed_requirements"])
         shared["requirements_parsed"] = exec_res
         _trace(shared, "ReqParseNode")
         _emit(shared, "module_result", {"module": "req_parse", "data": exec_res})
@@ -273,7 +345,8 @@ class TriPersonaReviewNode(AsyncNode):
         _set_current_node(shared, "TriPersonaReviewNode")
         return {"requirements": shared["requirements_parsed"]}
 
-    async def _review_persona(self, shared: Dict[str, Any], template: str, role: str, requirements: List[Dict[str, Any]]):
+    async def _review_persona(self, shared: Dict[str, Any], template: str, role: str, requirements: List[Dict[str, Any]],
+                              tag: str = ""):
         fallback = {
             "reviews": [
                 {
@@ -301,15 +374,24 @@ class TriPersonaReviewNode(AsyncNode):
             },
             schema=PERSONA_REVIEW_SCHEMA,
             fallback=fallback,
-            warn_tag=f"TriPersonaReviewNode-{role}",
+            warn_tag=tag or f"TriPersonaReviewNode-{role}",
         )
+
+    async def _review_in_batches(self, shared, template: str, role: str, requirements: List[Dict[str, Any]]):
+        batches = _req_batches(requirements)
+        if len(batches) == 1:
+            return await self._review_persona(shared, template, role, requirements)
+        parts = await asyncio.gather(*[
+            self._review_persona(shared, template, role, b, tag=f"TriPersonaReviewNode-{role}-Batch{i}")
+            for i, b in enumerate(batches, start=1)])
+        return {"reviews": [r for p in parts for r in (p.get("reviews") or [])]}
 
     async def exec_async(self, prep_res):
         reqs = prep_res["requirements"]
         shared = self._shared
-        spec_task = self._review_persona(shared, "review_spec_lawyer.txt", "SpecLawyer", reqs)
-        carrier_task = self._review_persona(shared, "review_carrier.txt", "CarrierReviewer", reqs)
-        ux_task = self._review_persona(shared, "review_ux_advocate.txt", "UXAdvocate", reqs)
+        spec_task = self._review_in_batches(shared, "review_spec_lawyer.txt", "SpecLawyer", reqs)
+        carrier_task = self._review_in_batches(shared, "review_carrier.txt", "CarrierReviewer", reqs)
+        ux_task = self._review_in_batches(shared, "review_ux_advocate.txt", "UXAdvocate", reqs)
         spec, carrier, ux = await asyncio.gather(spec_task, carrier_task, ux_task)
         return {"spec": spec, "carrier": carrier, "ux": ux}
 
@@ -335,27 +417,51 @@ class SynthesisNode(ThreadedNode):
         return {"requirements": shared["requirements_parsed"], "reviews": shared["persona_reviews"]}
 
     def exec(self, prep_res):
-        fallback = {
-            "final_requirements": prep_res["requirements"],
-            "conflicts": [],
-            "questions_to_ask": ["请确认每条需求的量化通过标准"],
-            "assumptions": ["默认按P1执行，待业务确认后升降级"],
-        }
-        return generate_json_or_fallback(
-            shared=self._shared,
-            template_name="synthesis_arbiter.txt",
-            variables={
-                "requirements_json": json.dumps(prep_res["requirements"], ensure_ascii=False),
-                "reviews_spec_json": json.dumps(prep_res["reviews"]["spec"], ensure_ascii=False),
-                "reviews_carrier_json": json.dumps(prep_res["reviews"]["carrier"], ensure_ascii=False),
-                "reviews_ux_json": json.dumps(prep_res["reviews"]["ux"], ensure_ascii=False),
-                "return_schema": json.dumps(SYNTHESIS_SCHEMA, ensure_ascii=False),
-                "output_schema": json.dumps(SYNTHESIS_SCHEMA, ensure_ascii=False),
-            },
-            schema=SYNTHESIS_SCHEMA,
-            fallback=fallback,
-            warn_tag="SynthesisNode",
-        )
+        batches = _req_batches(prep_res["requirements"])
+        reviews = prep_res["reviews"]
+
+        def _reviews_for(persona: str, ids: set) -> Dict[str, Any]:
+            data = reviews.get(persona) or {}
+            if len(batches) == 1:
+                return data
+            return {**data, "reviews": [r for r in data.get("reviews") or []
+                                        if isinstance(r, dict) and str(r.get("req_id")) in ids]}
+
+        def _synthesize(item):
+            idx, reqs = item
+            ids = {str(r.get("req_id")) for r in reqs if isinstance(r, dict)}
+            if len(batches) > 1:
+                _set_current_node(self._shared, "SynthesisNode", f"第 {idx}/{len(batches)} 批")
+            fallback = {
+                "final_requirements": reqs,
+                "conflicts": [],
+                "questions_to_ask": ["请确认每条需求的量化通过标准"],
+                "assumptions": ["默认按P1执行，待业务确认后升降级"],
+            }
+            return generate_json_or_fallback(
+                shared=self._shared,
+                template_name="synthesis_arbiter.txt",
+                variables={
+                    "requirements_json": json.dumps(reqs, ensure_ascii=False),
+                    "reviews_spec_json": json.dumps(_reviews_for("spec", ids), ensure_ascii=False),
+                    "reviews_carrier_json": json.dumps(_reviews_for("carrier", ids), ensure_ascii=False),
+                    "reviews_ux_json": json.dumps(_reviews_for("ux", ids), ensure_ascii=False),
+                    "return_schema": json.dumps(SYNTHESIS_SCHEMA, ensure_ascii=False),
+                    "output_schema": json.dumps(SYNTHESIS_SCHEMA, ensure_ascii=False),
+                },
+                schema=SYNTHESIS_SCHEMA,
+                fallback=fallback,
+                warn_tag=_batch_tag("SynthesisNode", idx, len(batches)),
+            )
+
+        parts = _map_batches(_synthesize, list(enumerate(batches, start=1)))
+        if len(parts) == 1:
+            return parts[0]
+        merged = dict(parts[0])
+        merged["final_requirements"] = [r for p in parts for r in (p.get("final_requirements") or [])]
+        for key in ("conflicts", "questions_to_ask", "assumptions"):
+            merged[key] = _merge_unique([p.get(key) for p in parts])
+        return merged
 
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, SYNTHESIS_SCHEMA)
@@ -363,6 +469,7 @@ class SynthesisNode(ThreadedNode):
         if restored:
             shared.setdefault("warnings", []).append(
                 f"SynthesisNode: 综合评审丢失了 {restored} 项需求显式配置，已按 req_id 补回。")
+        restore_groups(exec_res.get("final_requirements", []), prep_res["requirements"])
         for req in exec_res.get("final_requirements", []):
             if isinstance(req, dict):
                 req["persona_sources"] = req.get("persona_sources") or ["PRD", "Carrier", "UX"]
@@ -437,7 +544,7 @@ def _normalize_integrated_rows(rows: List[Dict[str, Any]], final_requirements: L
             scenario = f"{scenario} @ " + "/".join(str(v) for v in list(cfg.values())[:3])
         crit = r.get("pass_criteria", [])
         crit = [str(c) for c in (crit if isinstance(crit, list) else [crit]) if str(c).strip()]
-        technique = str(r.get("technique") or "normal").lower()
+        technique, technique_raw = normalize_technique(r.get("technique"))
         req_id = str(r.get("req_id") or "")
         if req_id not in known_reqs:  # 没写或写错需求编号时，按所属目标关联的需求归位，避免这行游离在追溯之外
             req_id = next((x for x in obj.get("linked_reqs") or [] if x in known_reqs), req_id)
@@ -446,7 +553,8 @@ def _normalize_integrated_rows(rows: List[Dict[str, Any]], final_requirements: L
             "req_id": req_id,
             "objective_id": r.get("objective_id") or next(
                 (o["objective_id"] for o in objectives if req_id in (o.get("linked_reqs") or [])), ""),
-            "technique": technique if technique in TECHNIQUES else "normal",
+            "technique": technique,
+            **({"technique_raw": technique_raw} if technique_raw else {}),
             "scenario": scenario,
             "test_purpose": _norm_purpose(r.get("test_purpose"), scenario),
             "key_configuration": cfg,
@@ -515,7 +623,7 @@ class TestDesignNode(ThreadedNode):
             "knowledge_references": shared.get("knowledge_context", ""),
         }
 
-    def _design_by_llm(self, prep_res) -> Dict[str, Any]:
+    def _design_by_llm(self, prep_res, tag: str = "TestDesignNode") -> Dict[str, Any]:
         def _custom(data: Any):
             if not isinstance(data.get("objectives"), list) or not data["objectives"]:
                 raise ValueError("objectives 不能为空")
@@ -540,7 +648,7 @@ class TestDesignNode(ThreadedNode):
                 }, ensure_ascii=False),
             },
             schema=TEST_DESIGN_SCHEMA,
-            warn_tag="TestDesignNode",
+            warn_tag=tag,
             custom_validator=_custom,
         )
 
@@ -579,23 +687,74 @@ class TestDesignNode(ThreadedNode):
             rows.extend(_fallback_rows(gaps["missing_reqs"], gaps["missing_objectives"], reqs, objectives, available, len(rows) + 1))
         return len(rows) - before
 
+    def _design_one(self, prep_res, reqs, available, tag: str, row_start: int = 1):
+        """对一批需求做测试设计，返回 (规范化后的设计, 行)。"""
+        data = self._design_by_llm({**prep_res, "final_requirements": reqs}, tag)
+        design = _normalize_objectives(data, reqs)
+        rows = _normalize_integrated_rows(data.get("integrated_matrix", []), reqs, design["objectives"], available, row_start)
+        return design, rows
+
+    def _design_in_batches(self, prep_res, reqs, available):
+        """需求多时按批设计再合并。各批独立编号，合并时把撞号的目标和矩阵编号改成唯一的。"""
+        batches = _req_batches(reqs)
+        if len(batches) == 1:
+            return self._design_one(prep_res, reqs, available, "TestDesignNode")
+
+        def _run(item):
+            idx, batch = item
+            _set_current_node(self._shared, "TestDesignNode", f"第 {idx}/{len(batches)} 批（共 {len(reqs)} 条需求）")
+            return self._design_one(prep_res, batch, available, f"TestDesignNode-Batch{idx}")
+
+        parts = _map_batches(_run, list(enumerate(batches, start=1)))
+        merged: Dict[str, Any] = {"objectives": [], "coverage_matrices": [], "req_to_objective_map": []}
+        rows: List[Dict[str, Any]] = []
+        obj_ids, cm_ids = set(), set()
+        for idx, (design, part_rows) in enumerate(parts, start=1):
+            rename = {}
+            for obj in design["objectives"]:
+                oid = obj["objective_id"]
+                if oid in obj_ids:
+                    rename[oid] = obj["objective_id"] = next(
+                        c for c in (f"{oid}-B{idx}" + (f"-{k}" if k else "") for k in range(len(obj_ids) + 2)) if c not in obj_ids)
+                obj_ids.add(obj["objective_id"])
+                merged["objectives"].append(obj)
+            for cm in design["coverage_matrices"]:
+                if cm["matrix_id"] in cm_ids:
+                    cm["matrix_id"] = f"{cm['matrix_id']}-B{idx}"
+                cm_ids.add(cm["matrix_id"])
+                merged["coverage_matrices"].append(cm)
+            for row in part_rows:
+                row["objective_id"] = rename.get(row["objective_id"], row["objective_id"])
+                rows.append(row)
+            for m in design.get("req_to_objective_map") or []:
+                if isinstance(m, dict):
+                    m["objective_ids"] = [rename.get(x, x) for x in m.get("objective_ids") or []]
+                    merged["req_to_objective_map"].append(m)
+        merged["design_notes"] = _merge_unique([d.get("design_notes") for d, _ in parts])
+        merged["de_scoped"] = _merge_unique([d.get("de_scoped") for d, _ in parts])
+        return merged, rows
+
     def exec(self, prep_res):
         shared = self._shared
         reqs = prep_res["final_requirements"]
         available = prep_res.get("test_environments", {})
         by_llm = bool(shared["llm_client"].enabled)
         if by_llm:
-            data = self._design_by_llm(prep_res)
+            design, rows = self._design_in_batches(prep_res, reqs, available)
         else:
             # 没配大模型时给出最小骨架（每条需求一个正常流程测试点），方便先把流程和导出走通
             _warn(shared, "TestDesignNode: LLM未配置，按规则生成最小测试设计（每条需求一个正常流程测试点）")
-            data = {"objectives": [], "coverage_matrices": [], "integrated_matrix": [],
-                    "design_notes": ["大模型未配置：本设计由规则生成，只含正常流程骨架"], "de_scoped": []}
-        design = _normalize_objectives(data, reqs)
+            design = _normalize_objectives(
+                {"objectives": [], "coverage_matrices": [], "integrated_matrix": [],
+                 "design_notes": ["大模型未配置：本设计由规则生成，只含正常流程骨架"], "de_scoped": []}, reqs)
+            rows = []
         objectives = design["objectives"]
-        rows = _normalize_integrated_rows(data.get("integrated_matrix", []), reqs, objectives, available)
         gap_filled = self._fill_gaps(rows, objectives, reqs, available)
         _dedupe_row_ids(rows)
+        unknown = sorted({r.pop("technique_raw") for r in rows if r.get("technique_raw")})
+        if unknown:
+            _warn(shared, "TestDesignNode: 以下测试技术不在支持的取值里，已按 normal 处理：" + "、".join(unknown)
+                  + "（支持：" + " / ".join(TECHNIQUES) + "）")
 
         patched = repair_design_rows(rows, reqs)
         if patched["configs"]:
@@ -859,6 +1018,7 @@ class FinalizeTestCaseNode(Node):
     def prep(self, shared):
         _set_current_node(shared, "FinalizeTestCaseNode")
         return {
+            "requirements": (shared.get("requirement_spec") or {}).get("final_requirements", []),
             "batches": shared.get("_testcase_batches", {}),
             "retry_rows": shared.get("_retry_rows") or [],
             "previous": (shared.get("test_case_spec") or {}).get("testcases", []),
@@ -872,7 +1032,9 @@ class FinalizeTestCaseNode(Node):
         if prep_res["retry_rows"]:
             keep, _ = split_tcs_by_rows(prep_res["previous"], prep_res["retry_rows"])
             new = keep + new
-        return {"testcases": renumber(new, prep_res["row_order"])}
+        tcs = renumber(new, prep_res["row_order"])
+        attach_suites(tcs, req_index(prep_res["requirements"]))
+        return {"testcases": tcs}
 
     def post(self, shared, prep_res, exec_res):
         validate_list_of_dict(exec_res["testcases"], TESTCASE_REQUIRED_KEYS, "testcases")

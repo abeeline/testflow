@@ -11,6 +11,8 @@ Rules:
   · source_text is the original sentence/line quoted verbatim.
   · target: cell (base station / cell / SIB), core (MME/AMF/NAS/IMS), message (a specific RRC/NAS message IE), ue (UE side setting), test (test procedure/threshold).
   · Only values actually written in the input; never add guessed values here (put guesses in assumptions).
+- Keep the req_id of every input item unchanged, output exactly one requirement per input item in the same order, and do not merge or drop items.
+- group: if an input item carries "group" ([level-1 module, level-2 module]), copy it unchanged. Test cases are exported under this two-level grouping.
 - Do NOT invent spec citations. If evidence text is not provided, keep source.evidence_refs empty.
 - All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, IDs, enum values, and structured field names unchanged. 最终以“简体中文”输出。
 

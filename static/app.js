@@ -235,9 +235,51 @@ function setSingleButtonBusy(button, busy, pendingText) {
   button.textContent = busy ? (pendingText || "处理中...") : button.dataset.defaultText;
 }
 
+// 批量导入的需求清单：{ filename, requirements: [文本], meta: [{req_id, group}], groups, warnings }
+let importedRequirements = null;
+
 function parseRequirements(text) {
+  if (importedRequirements?.requirements?.length) return importedRequirements.requirements.slice();
   const one = (text || "").trim();
   return one ? [one] : [];
+}
+
+function requirementMeta() {
+  return importedRequirements?.requirements?.length ? importedRequirements.meta : null;
+}
+
+function renderRequirementImport() {
+  const box = document.getElementById("reqImportResult");
+  if (!box) return;
+  const imp = importedRequirements;
+  if (!imp?.requirements?.length) {
+    box.innerHTML = "";
+    if (requirementsEl) requirementsEl.readOnly = false;
+    return;
+  }
+  if (requirementsEl) {
+    requirementsEl.readOnly = true;
+    requirementsEl.value = imp.requirements.join("\n\n");
+  }
+  const groups = (imp.groups || []).map((g) => `<li>${esc(g.name)}（${g.count} 条）</li>`).join("");
+  const warns = (imp.warnings || []).map((w) => `<p class="feature-hint">⚠ ${esc(w)}</p>`).join("");
+  box.innerHTML = `<p>已导入 <b>${imp.requirements.length}</b> 条需求（${esc(imp.filename || "")}），每行一条，用例按“一级模块 / 二级模块”分组。
+    <button id="reqImportClear" class="ui-btn ui-btn-secondary" type="button">清除导入</button></p>${warns}${
+    groups ? `<details class="fold"><summary>一级模块 ${imp.groups.length} 个</summary><ul>${groups}</ul></details>` : ""}`;
+  document.getElementById("reqImportClear")?.addEventListener("click", () => {
+    importedRequirements = null;
+    if (requirementsEl) requirementsEl.value = "";
+    renderRequirementImport();
+  });
+}
+
+async function importRequirementFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  const data = await postJson("/api/requirements/import", { filename: file.name, content_base64: btoa(bin) });
+  importedRequirements = { filename: file.name, ...data };
+  renderRequirementImport();
 }
 
 function parseCSVLine(text) {
@@ -532,7 +574,7 @@ function usageLine(result) {
 }
 
 async function startStageJobAndWait(stage, payload, handlers = {}) {
-  const startResp = await postJson(`/api/stage/${stage}/start`, { ...payload, expert_review: expertReviewToggle ? expertReviewToggle.checked : true });
+  const startResp = await postJson(`/api/stage/${stage}/start`, { ...payload, requirement_meta: requirementMeta(), expert_review: expertReviewToggle ? expertReviewToggle.checked : true });
   const jobId = startResp.job_id;
   if (!jobId) throw new Error("stage job_id为空");
 
@@ -1102,8 +1144,7 @@ function renderCases(spec) {
     viewCases.innerHTML = "<em>暂无结构化用例</em>";
     return;
   }
-  const rows = tcs
-    .map((tc) => {
+  const caseHtml = (tc) => {
       const passFail = Array.isArray(tc.pass_fail) ? tc.pass_fail : [String(tc.pass_fail || "")];
       const envText = formatTestEnvironmentSummary(tc.test_environment);
       const riskText = formatTestEnvironmentRisk(tc.test_environment);
@@ -1114,9 +1155,29 @@ function renderCases(spec) {
           (tc.review_notes || []).length ? ` · 评审意见 ${tc.review_notes.length}` : ""}</span></summary>
         <div class="tc-body"><p><b>通过标准：</b>${esc(passFail.join(" / "))}</p>${riskText ? `<p class="feature-hint">${esc(riskText)}</p>` : ""}${
           tc.procedure ? renderTcdDetail(tc) : `<p class="feature-hint">旧格式用例：${esc((tc.steps || []).map((s) => s.action).join(" → "))}</p>`}</div></details>`;
-    })
-    .join("");
-  viewCases.innerHTML = `<p class="feature-hint">共 ${tcs.length} 条用例，点击展开测试目的、初始条件、配置、步骤和消息内容。</p>${rows}`;
+  };
+  // 按“一级模块 / 二级模块”分组展示；只有一个分组时不套层级，保持原来的平铺列表
+  const tree = new Map();
+  tcs.forEach((tc) => {
+    const l1 = tc.suite?.level1 || "未分组";
+    const l2 = tc.suite?.level2 || "未分组";
+    if (!tree.has(l1)) tree.set(l1, new Map());
+    if (!tree.get(l1).has(l2)) tree.get(l1).set(l2, []);
+    tree.get(l1).get(l2).push(tc);
+  });
+  const nLevel2 = [...tree.values()].reduce((n, m) => n + m.size, 0);
+  let rows = "";
+  if (nLevel2 <= 1) {
+    rows = tcs.map(caseHtml).join("");
+  } else {
+    rows = [...tree.entries()].map(([l1, subs]) => {
+      const total = [...subs.values()].reduce((n, list) => n + list.length, 0);
+      const inner = [...subs.entries()].map(([l2, list]) =>
+        `<details class="tc-suite tc-suite-l2"><summary><span class="tc-title">${esc(l2)}</span><span class="feature-hint">${list.length} 条</span></summary>${list.map(caseHtml).join("")}</details>`).join("");
+      return `<details class="tc-suite tc-suite-l1"${tree.size === 1 ? " open" : ""}><summary><b>${esc(l1)}</b><span class="feature-hint">${subs.size} 个二级模块 · ${total} 条用例</span></summary>${inner}</details>`;
+    }).join("");
+  }
+  viewCases.innerHTML = `<p class="feature-hint">共 ${tcs.length} 条用例${nLevel2 > 1 ? `，分为 ${tree.size} 个一级模块、${nLevel2} 个二级模块` : ""}，点击展开测试目的、初始条件、配置、步骤和消息内容。</p>${rows}`;
 }
 
 function renderDesignHistoryList() {
@@ -1720,6 +1781,7 @@ async function generateRequirementsRound(round) {
   if (round <= 1 || !stageState.hitl_job_id) {
     data = await postJson("/api/hitl/requirements/start", {
       requirements,
+      requirement_meta: requirementMeta(),
       rag_context: ragEl.value,
       framework_capability_catalog: buildFrameworkCapabilityCatalog(),
       product_profile: productProfile,
@@ -2465,6 +2527,19 @@ bzSaveBtn?.addEventListener("click", async () => {
     setStatus(`保存 Bugzilla 设置失败: ${e.message}`);
   } finally {
     setSingleButtonBusy(bzSaveBtn, false);
+  }
+});
+
+document.getElementById("reqImportFile")?.addEventListener("change", async (ev) => {
+  const file = ev.target.files?.[0];
+  ev.target.value = "";
+  if (!file) return;
+  const box = document.getElementById("reqImportResult");
+  if (box) box.innerHTML = "<em>正在读取需求清单…</em>";
+  try {
+    await importRequirementFile(file);
+  } catch (err) {
+    if (box) box.innerHTML = `<p class="feature-hint">导入失败：${esc(err?.message || String(err))}</p>`;
   }
 });
 

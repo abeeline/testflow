@@ -543,6 +543,12 @@ label .feature-hint { display: inline; margin: 0; font-weight: 400; font-size: 1
 @media (max-width: 1080px) { .proto-grid { grid-template-columns: 1fr; } }
 
 /* 3GPP 测试用例描述（TCD）视图 */
+.tc-suite { margin-bottom: 8px; }
+.tc-suite > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; border-radius: var(--radius-sm); }
+.tc-suite-l1 > summary { background: var(--card); border: 1px solid var(--border); }
+.tc-suite-l1 > .tc-suite-l2 { margin: 8px 0 0 16px; }
+.tc-suite-l2 > summary { border-left: 3px solid var(--border); border-radius: 0; }
+.tc-suite-l2 > .tc-item { margin: 8px 0 0 16px; }
 .tc-item { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 8px; background: var(--card); }
 .tc-item > summary { cursor: pointer; padding: 8px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; list-style: none; }
 .tc-item > summary::-webkit-details-marker { display: none; }
