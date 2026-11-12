@@ -19,6 +19,7 @@ from typing import Any, Dict, List
 
 from pocketflow import AsyncNode
 from core.events import emit
+from core.grouping import ensure_suite, suite_tree
 from core.llm import generate_json, run_split_on_truncate
 from core.quality import uncovered_thresholds
 from core.tcd import normalize_tcd, project, summarize_for_prompt
@@ -71,8 +72,9 @@ FIELD_GUIDE = {
         "cell_config": "小区/PHY 关键参数（band、dl_arfcn/ssb_arfcn、bandwidth_mhz、scs_khz、tdd_pattern、plmn、tac、cell_id、功率、SIB 字段等），按此生成 enb/gnb 配置",
         "core_config": "核心网/NAS 参数（注册接受/拒绝及 cause、T3412/T3512/T3324 等定时器、PSM/eDRX、APN/DNN、IMS、鉴权），按此生成 mme 配置",
         "key_parameters": "本用例要验证或扫描的关键参数：name、value 或 values、layer、purpose",
-        "message_configs": "需要定制的 RRC/NAS 消息：message、direction、ies[{path, value, note}]，path 为 ASN.1 字段路径",
-        "procedure": "有序步骤：step、action（英文动作名）、params（具体取值，含 message/direction）、expected、verdict（是否判定点）",
+        "message_configs": "需要定制的 RRC/NAS 消息：msg_id、message、direction、purpose、ies[{path, value, note}]，path 为 ASN.1 字段路径",
+        "procedure": "有序步骤：step、actor（SS=基站侧，UE=被测终端，TESTER=终端侧操作）、action（英文动作名）、params（具体取值，含 message/direction）、"
+                     "expected、verdict（是否判定点）、timing（时序/定时器约束，可无）、msg_ref（引用 message_configs 的 msg_id，可无）",
         "expected_signaling": "期望信令序列：layer、direction、message、key_ies",
         "pass_criteria": "通过标准（保留原用例数值门限）",
         "references": "3GPP 规范条款",
@@ -367,7 +369,7 @@ def _artemis_case(item: Dict[str, Any], tc: Dict[str, Any], trace: Dict[str, Any
         "goal": goal,
         "profile": profile,
         "case_code": _cut(tc_id, _CODE_MAX),
-        "group": _cut(item.get("group"), _GROUP_MAX),
+        "group": _cut(item.get("group") or " / ".join(x for x in ((tc.get("suite") or {}).get("level1"), (tc.get("suite") or {}).get("level2")) if x), _GROUP_MAX),
         "redline": bool(item.get("redline")),
         "expected_result": _cut(item.get("expected_result"), _TEXT_MAX),
         "test_kind": "verification",
@@ -405,16 +407,19 @@ def build_bundle(route: str, items: List[Dict[str, Any]], tc_index: Dict[str, Di
         tc = tc_index.get(str(item.get("source_tc_id") or ""), {})
         prefix = "AMS" if route == "amarisoft" else "PRT"
         entry = {"case_id": f"{prefix}-{idx:03d}", **item, "priority": _priority(tc, item.get("priority")),
-                 "trace": _trace_for(tc, req_index, bug_ids)}
+                 "suite": ensure_suite(tc, req_index), "trace": _trace_for(tc, req_index, bug_ids)}
         out_items.append(entry)
+    suites = suite_tree(out_items)
     source = {"note": SOURCE_LINES_NOTE, "config_lines": source_lines_coverage(source_lines or [], out_items, route)}
     if route == "amarisoft":
+        # v4：新增 suites（两级用例分组）和每条 case 的 suite
         # v3：新增 test_purpose、technique、references、procedure[].verdict（来自 3GPP TCD）；v2 起有 message_configs、requirement_configs
-        return {"format": "testflow-amarisoft-case", "version": 3, "exported_at": exported_at,
-                "field_guide": FIELD_GUIDE["amarisoft"], "source_requirement": source, "cases": out_items}
+        return {"format": "testflow-amarisoft-case", "version": 4, "exported_at": exported_at,
+                "field_guide": FIELD_GUIDE["amarisoft"], "source_requirement": source, "suites": suites, "cases": out_items}
+    # v5：新增 suites（两级用例分组）和每条的 suite
     # v4：新增 test_purpose、technique（来自 3GPP TCD）；v3 起有 requirement_configs、source_requirement、field_guide
-    return {"format": "testflow-protocol-test-requirement", "version": 4, "exported_at": exported_at,
-            "field_guide": FIELD_GUIDE["protocol"], "source_requirement": source, "items": out_items}
+    return {"format": "testflow-protocol-test-requirement", "version": 5, "exported_at": exported_at,
+            "field_guide": FIELD_GUIDE["protocol"], "source_requirement": source, "suites": suites, "items": out_items}
 
 
 def build_traceability(tcs: List[Dict[str, Any]], routes: Dict[str, str], bundles: Dict[str, Dict[str, Any]],
@@ -436,6 +441,7 @@ def build_traceability(tcs: List[Dict[str, Any]], routes: Dict[str, str], bundle
             "req_titles": t["req_titles"],
             "objective_id": t["objective_id"],
             "row_ids": t["row_ids"],
+            "suite": ensure_suite(tc, req_index),
             "tc_id": tc_id,
             "tc_title": tc.get("title", ""),
             "test_environment": (tc.get("test_environment") or {}).get("primary", ""),

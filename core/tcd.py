@@ -21,6 +21,36 @@ TECHNIQUE_LABELS = {
     "collision": "流程冲突", "mobility": "移动性", "interworking": "互操作/回落", "capability": "能力/配置组合",
     "performance": "性能/KPI", "stability": "长稳/恢复",
 }
+# 模型常用但不在上表里的叫法，归到最接近的测试技术；认不出的才按 normal 处理并告警
+_TECHNIQUE_ALIASES = {
+    "normal": ["positive", "basic", "functional", "happy_path", "nominal", "正常"],
+    "abnormal": ["negative", "error", "exception", "reject", "rejection", "failure", "invalid", "异常", "拒绝"],
+    "boundary": ["limit", "threshold", "edge", "boundary_value", "边界"],
+    "timer": ["timeout", "timing", "timers", "定时器", "超时"],
+    "collision": ["race", "conflict", "concurrent", "concurrency", "冲突"],
+    "mobility": ["handover", "reselection", "移动性", "切换", "重选"],
+    "interworking": ["irat", "inter_rat", "interop", "interoperability", "fallback", "互操作", "回落"],
+    "capability": ["combinational", "combination", "combinatorial", "config", "configuration", "pairwise", "能力", "配置组合"],
+    "performance": ["kpi", "throughput", "latency", "性能"],
+    "stability": ["stress", "robustness", "recovery", "endurance", "long_run", "soak", "长稳", "恢复"],
+}
+_TECHNIQUE_LOOKUP = {alias: name for name, aliases in _TECHNIQUE_ALIASES.items() for alias in aliases}
+_TECHNIQUE_LOOKUP.update({label: name for name, label in TECHNIQUE_LABELS.items()})
+
+
+def normalize_technique(value: Any) -> tuple:
+    """返回 (测试技术, 认不出的原值)。认得出时第二项为空串。"""
+    raw = str(value or "").strip()
+    key = re.sub(r"[\s\-/]+", "_", raw.lower())
+    if not key:
+        return "normal", ""
+    if key in TECHNIQUES:
+        return key, ""
+    if key in _TECHNIQUE_LOOKUP or raw in _TECHNIQUE_LOOKUP:
+        return _TECHNIQUE_LOOKUP.get(key) or _TECHNIQUE_LOOKUP[raw], ""
+    return "normal", raw
+
+
 ACTORS = ["SS", "UE", "TESTER"]
 
 TCD_STEP_SCHEMA = {
@@ -288,7 +318,7 @@ def normalize_tcd(tc: Dict[str, Any], idx: int = 1) -> Dict[str, Any]:
         "objective_id": _text(tc.get("objective_id") or tc.get("objectiveId")),
         "title": title,
         "priority": _text(tc.get("priority")).upper() or next((t for t in tags if str(t).upper() in ("P0", "P1", "P2", "P3")), "P1"),
-        "technique": technique if technique in TECHNIQUES else (technique or "normal"),
+        "technique": normalize_technique(technique)[0],
         "tags": tags or ["Regression"],
         "test_purpose": _norm_purpose(tc.get("test_purpose"), title, expected),
         "references": as_text_list(tc.get("references")),
@@ -527,14 +557,18 @@ def to_amarisoft(tc: Dict[str, Any]) -> Dict[str, Any]:
         "cell_config": _cell_config(tc),
         "core_config": dict((tc.get("configuration") or {}).get("core") or {}),
         "key_parameters": key_params,
-        "procedure": [{"step": p["step"], "action": p.get("action", ""),
+        # actor / timing / msg_ref 是 TCD 步骤里“谁来做、多久之内、用哪条消息内容”的信息，基站用例同样需要
+        "procedure": [{"step": p["step"], "actor": p.get("actor", ""), "action": p.get("action", ""),
                        "params": {**(p.get("params") or {}), **({"message": p["message"], "direction": p["direction"]} if p.get("message") else {})},
-                       "expected": p.get("expected", ""), "verdict": bool(p.get("verdict"))}
+                       "expected": p.get("expected", ""), "verdict": bool(p.get("verdict")),
+                       **({"timing": p["timing"]} if p.get("timing") else {}),
+                       **({"msg_ref": p["msg_ref"]} if p.get("msg_ref") else {})}
                       for p in tc.get("procedure") or []],
         "expected_signaling": [{"layer": p.get("layer") or message_layer(p["message"]), "direction": p.get("direction", ""),
                                 "message": p["message"], "key_ies": _ies_dict(msgs.get(p.get("msg_ref", "")))}
                                for p in _steps_with_messages(tc)],
-        "message_configs": [{"message": m["message"], "direction": m["direction"], "ies": m["ies"]}
+        "message_configs": [{"msg_id": m["msg_id"], "message": m["message"], "direction": m["direction"],
+                             "purpose": m.get("purpose", ""), "ies": m["ies"]}
                             for m in tc.get("message_contents") or [] if m.get("ies")],
         "pass_criteria": list(tc.get("pass_fail") or []),
         "logs_to_capture": list((tc.get("observability") or {}).get("must_capture") or []),

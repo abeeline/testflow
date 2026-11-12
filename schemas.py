@@ -17,6 +17,8 @@ REQUIREMENT_ITEM_SCHEMA = {
     "properties": {
         "req_id": {"type": "string"},
         "title": {"type": "string"},
+        # 可选：[一级模块, 二级模块]。批量导入需求清单时由表格的上级列带出，用例按它分组导出
+        "group": {"type": "array", "items": {"type": "string"}},
         "source": {
             "type": "object",
             "required": ["type", "doc_id"],

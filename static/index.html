@@ -98,8 +98,14 @@
 
           <div class="card ui-card">
             <div class="card-head"><h3>需求描述</h3></div>
-            <label for="requirements">单次填写一个完整需求，可粘贴该需求的全部说明</label>
+            <label for="requirements">填写一个完整需求，可粘贴该需求的全部说明；多条需求请用下面的“导入需求清单”</label>
             <textarea class="ui-input tall" id="requirements" placeholder="例如：请完整描述该需求的业务目标、约束、指标阈值、边界场景、验收口径、失败处理策略等。"></textarea>
+            <div class="btn-row">
+              <label class="ui-btn ui-btn-secondary" for="reqImportFile">导入需求清单（xlsx / csv）</label>
+              <input id="reqImportFile" type="file" accept=".xlsx,.csv,.tsv" hidden />
+              <span class="feature-hint">表格一行一条需求。有“SR / 上级需求”列时，用例按上级需求（一级）和本条需求（二级）分组，需求编号沿用表格里的编号。</span>
+            </div>
+            <div id="reqImportResult" class="visual"></div>
 
             <details class="fold">
               <summary>参考资料（RAG）<span class="tag">可选</span></summary>

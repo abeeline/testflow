@@ -25,6 +25,7 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from core.events import EventLog
+from core.grouping import ensure_suite, requirement_group, suite_tree
 from core.llm import call_llm, summarize_usage
 from core.tcd import TECHNIQUE_LABELS, purpose_text
 from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bugs
@@ -41,6 +42,7 @@ from utils.llm_client import LLMClient, LLMSettings
 from utils.paths import CONFIG_DIR, HISTORY_DIR, PROJECTS_DIR, PROMPT_OVERRIDE_DIR, RAG_DIR, STATIC_DIR, prompt_path
 from utils.project_store import DEFAULT_PROJECT_ID, ProjectStore, valid_project_id
 from utils.rag_store import SimpleRAGStore
+from utils.req_import import parse_requirement_sheet
 
 
 class PromptSettingsRequest(BaseModel):
@@ -98,8 +100,14 @@ class ChatRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None  # 当前会话摘要（需求、设计、用例、告警），让助手能回答“为什么这样设计”
 
 
+class RequirementImportRequest(BaseModel):
+    filename: str
+    content_base64: str
+
+
 class RequirementHITLStartRequest(BaseModel):
     requirements: List[str] = Field(..., min_length=1)
+    requirement_meta: Optional[List[Dict[str, Any]]] = None  # 需求清单导入时带来的编号和分组，与 requirements 一一对应
     rag_context: str = ""
     framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
@@ -113,6 +121,7 @@ class RequirementHITLNextRequest(BaseModel):
 
 class StageGenerateRequest(BaseModel):
     requirement_input: Optional[List[str]] = None
+    requirement_meta: Optional[List[Dict[str, Any]]] = None  # 与 requirement_input 一一对应：{"req_id", "group"}
     requirement_spec: Optional[Dict[str, Any]] = None
     rag_context: str = ""  # 一键全流程（auto）用
     framework_capability_catalog: str = ""
@@ -477,6 +486,26 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
         else "<p>无</p>"
     )
 
+    # 分组：一级模块 / 二级模块，各有多少测试点和用例
+    req_by_id = {str(r.get("req_id")): r for r in reqs if isinstance(r, dict) and r.get("req_id")}
+    tcs = [t for t in (record.get("test_case_spec") or {}).get("testcases", []) or [] if isinstance(t, dict)]
+    tc_tree = {(g["name"], c["name"]): c["count"] for g in suite_tree([{"case_id": t.get("tc_id"), "suite": ensure_suite(t, req_by_id)} for t in tcs])
+               for c in g["children"]}
+    point_tree = suite_tree([{"case_id": r.get("row_id"), "suite": ensure_suite({"trace": {"req_ids": [r.get("req_id")]}}, req_by_id)}
+                             for r in test_design_spec.get("integrated_matrix", []) or [] if isinstance(r, dict)])
+    group_rows = []
+    for g in point_tree:
+        for i, c in enumerate(g["children"]):
+            first = f"<td rowspan=\"{len(g['children'])}\">{html.escape(g['name'])}<br/><small>{g['count']} 个测试点</small></td>" if i == 0 else ""
+            group_rows.append(f"<tr>{first}<td>{html.escape(c['name'])}</td><td>{c['count']}</td>"
+                              f"<td>{tc_tree.get((g['name'], c['name']), '') if tcs else '未生成'}</td></tr>")
+    group_table = (
+        "<table><thead><tr><th>一级模块</th><th>二级模块</th><th>测试点</th><th>测试用例</th></tr></thead>"
+        f"<tbody>{''.join(group_rows)}</tbody></table>"
+        if group_rows
+        else "<p>无</p>"
+    )
+
     review_sections = []
     for label, key in [("规范评审", "spec"), ("运营商评审", "carrier"), ("现网体验评审", "ux")]:
         reviews = (persona_reviews.get(key) or {}).get("reviews", []) if isinstance(persona_reviews.get(key), dict) else []
@@ -615,6 +644,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
           <div><h3>待确认问题</h3>{_render_html_list(requirement_spec.get("questions_to_ask", []))}</div>
         </div>
       </section>
+      <section class="section"><h2>十、用例分组</h2><p>用例按“一级模块 / 二级模块”分组，导出的 Excel 和可执行用例里带同样的分组。</p>{group_table}</section>
     </div>
   </body>
 </html>"""
@@ -1278,6 +1308,7 @@ async def _run_requirement_hitl_job(job_id: str):
             )
             shared = {
                 "input_requirements": reqs,
+                "requirement_meta": job.get("requirement_meta") or [],
                 "rag_context": effective_rag_context,
                 "framework_capability_catalog": framework_capability_catalog,
                 "product_profile": product_profile,
@@ -1403,9 +1434,22 @@ async def _wait_hitl_round(job_id: str, timeout_s: int = 900):
                 raise HTTPException(status_code=500, detail=f"HITL执行失败: {ev['payload'].get('error', 'unknown error')}")
 
 
+@app.post("/api/requirements/import")
+def import_requirements(payload: RequirementImportRequest):
+    """导入需求清单（xlsx / csv），一行一条需求。返回需求文本和对应的编号、分组，前端随生成请求一起带回。"""
+    try:
+        content = base64.b64decode(payload.content_base64)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"base64解析失败: {exc}")
+    try:
+        return parse_requirement_sheet(payload.filename, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/hitl/requirements/start")
 async def hitl_requirements_start(payload: RequirementHITLStartRequest):
-    reqs = [r.strip() for r in payload.requirements if r.strip()]
+    reqs, req_meta = _clean_requirements(payload.requirements, payload.requirement_meta)
     if not reqs:
         raise HTTPException(status_code=400, detail="requirements不能为空")
 
@@ -1419,6 +1463,7 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "status": "starting",
         "round": 0,
         "requirements": reqs,
+        "requirement_meta": req_meta,
         "rag_context": payload.rag_context.strip(),
         "project_id": project_store.resolve_id(payload.project_id),
         "framework_capability_catalog": framework_capability_catalog,
@@ -1478,9 +1523,20 @@ async def hitl_requirements_stream(job_id: str, request: Request):
         "job_id": job_id, "status": job.get("status"), "round": job.get("round", 0), "error": job.get("error", "")}})
 
 
+def _clean_requirements(reqs: Optional[List[str]], meta: Optional[List[Dict[str, Any]]]) -> tuple[List[str], List[Dict[str, Any]]]:
+    """去掉空需求，同时保持 meta 与需求一一对应；对不上时丢弃 meta。"""
+    reqs = list(reqs or [])
+    meta = list(meta or [])
+    if len(meta) != len(reqs):
+        meta = []
+    pairs = [(r.strip(), meta[i] if meta else None) for i, r in enumerate(reqs) if r and r.strip()]
+    return [p[0] for p in pairs], [p[1] if isinstance(p[1], dict) else {} for p in pairs] if meta else []
+
+
 def _base_shared(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     return {
         "input_requirements": payload.requirement_input or [],
+        "requirement_meta": payload.requirement_meta or [],
         "requirement_spec": payload.requirement_spec or {},
         "persona_reviews": payload.persona_reviews or {},
         "requirement_review_history": payload.requirement_review_history or {},
@@ -1604,7 +1660,7 @@ async def _stage_exec_cases(payload: "StageGenerateRequest", events: EventLog) -
 
 async def _stage_requirements_auto(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     """一键模式的需求评审：跑一轮解析 + 三方评审 + 综合定稿，所有问题采用 AI / 知识库给出的答案。"""
-    reqs = [r.strip() for r in (payload.requirement_input or []) if r and r.strip()]
+    reqs, req_meta = _clean_requirements(payload.requirement_input, payload.requirement_meta)
     if not reqs:
         raise HTTPException(status_code=400, detail="requirements不能为空")
     project_id = project_store.resolve_id(payload.project_id)
@@ -1613,6 +1669,7 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
     shared = {
         **_base_shared(payload, events),
         "input_requirements": reqs,
+        "requirement_meta": req_meta,
         "rag_context": rag_context,
         "framework_capability_catalog": payload.framework_capability_catalog or "",
         "capabilities": DEFAULT_CAPABILITIES,
@@ -1975,14 +2032,18 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
         parts = [("网络侧", ic.get("system_simulator")), ("UE", ic.get("ue")), ("Preamble", ic.get("preamble"))]
         return "\n".join(f"{k}：{'；'.join(v)}" for k, v in parts if v)
 
-    case_rows, step_rows, msg_rows = [], [], []
+    req_by_id = {str(r.get("req_id")): r for r in (requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else [])
+                 if isinstance(r, dict) and r.get("req_id")}
+    case_rows, step_rows, msg_rows, suite_entries = [], [], [], []
     for tc in testcases:
         if not isinstance(tc, dict):
             continue
         env_text, risk_text = _format_test_environment_cell(tc.get("test_environment"))
         tech = str(tc.get("technique") or "")
+        suite = ensure_suite(tc, req_by_id)
+        suite_entries.append({"case_id": tc.get("tc_id", ""), "suite": suite})
         case_rows.append([
-            tc.get("tc_id", ""), tc.get("title", ""), TECHNIQUE_LABELS.get(tech, tech), purpose_text(tc),
+            suite["level1"], suite["level2"], tc.get("tc_id", ""), tc.get("title", ""), TECHNIQUE_LABELS.get(tech, tech), purpose_text(tc),
             _list_to_text(tc.get("references", [])), tc.get("objective_id", ""),
             _ic_text(tc.get("initial_conditions")) or _numbered(tc.get("preconditions", [])),
             _cfg_text(tc.get("configuration")), _proc_text(tc.get("procedure")) or _numbered(tc.get("expected", [])),
@@ -2003,9 +2064,16 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                     msg_rows.append([tc.get("tc_id", ""), m.get("msg_id", ""), m.get("message", ""), m.get("direction", ""),
                                      ie.get("path", ""), _safe_json(ie.get("value")) if isinstance(ie.get("value"), (dict, list)) else str(ie.get("value", "")),
                                      ie.get("vary", ""), ie.get("note", "")])
-    _sheet("测试用例", [("用例编号", 12), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
+    _sheet("测试用例", [("一级模块", 26), ("二级模块", 30), ("用例编号", 12), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
                         ("测试目标", 10), ("初始条件", 40), ("关键配置", 40), ("测试步骤", 60), ("通过标准", 45),
                         ("测试环境", 16), ("环境风险", 26), ("标签", 14), ("待确认 / 评审意见", 45)], case_rows, first=True)
+    # 用例分组：一级模块 / 二级模块 两级套件，带每级用例数，便于按模块分配和导入用例管理系统
+    group_rows = []
+    for g in suite_tree(suite_entries):
+        for i, child in enumerate(g["children"]):
+            group_rows.append([g["name"], g["count"] if i == 0 else "", child["name"], child["count"], "、".join(child["case_ids"])])
+    if group_rows:
+        _sheet("用例分组", [("一级模块", 40), ("一级用例数", 10), ("二级模块", 50), ("用例数", 8), ("用例编号", 60)], group_rows)
     if step_rows:
         _sheet("测试步骤", [("用例", 10), ("St", 5), ("发起方", 8), ("方向", 6), ("层", 6), ("消息", 26), ("消息内容", 10),
                           ("动作", 18), ("参数", 30), ("期望", 50), ("判定点", 7), ("时序", 18)], step_rows)
@@ -2041,10 +2109,10 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     for r in requirement_spec.get("final_requirements", []) if isinstance(requirement_spec, dict) else []:
         if isinstance(r, dict):
             req_rows.append([
-                r.get("req_id", ""), r.get("title", ""), r.get("priority", ""), _list_to_text(r.get("rat_scope", [])),
+                requirement_group(r)[0], r.get("req_id", ""), r.get("title", ""), r.get("priority", ""), _list_to_text(r.get("rat_scope", [])),
                 _numbered((r.get("acceptance") or {}).get("pass_fail", [])), _numbered((r.get("acceptance") or {}).get("kpi", [])),
             ])
-    _sheet("测试需求", [("需求编号", 12), ("需求标题", 45), ("优先级", 8), ("制式范围", 14), ("通过/失败判定", 50),
+    _sheet("测试需求", [("一级模块", 26), ("需求编号", 12), ("需求标题", 45), ("优先级", 8), ("制式范围", 14), ("通过/失败判定", 50),
                       ("KPI", 40)], req_rows)
 
     answer_rows = [
@@ -2069,9 +2137,10 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     executable_cases = payload.executable_cases or {}
     trace_rows = executable_cases.get("traceability") or []
     if trace_rows:
-        _sheet("追溯矩阵", [("Bug ID", 12), ("需求 ID", 12), ("需求标题", 35), ("测试目标", 12), ("矩阵行", 12),
+        _sheet("追溯矩阵", [("一级模块", 26), ("二级模块", 30), ("Bug ID", 12), ("需求 ID", 12), ("需求标题", 35), ("测试目标", 12), ("矩阵行", 12),
                           ("用例 ID", 14), ("用例标题", 35), ("测试环境", 16), ("验收方案", 22), ("可执行 case", 16)], [
-            [_list_to_text(r.get("bug_ids")), _list_to_text(r.get("req_ids")), _list_to_text(r.get("req_titles")),
+            [(r.get("suite") or {}).get("level1", ""), (r.get("suite") or {}).get("level2", ""),
+             _list_to_text(r.get("bug_ids")), _list_to_text(r.get("req_ids")), _list_to_text(r.get("req_titles")),
              r.get("objective_id", ""), _list_to_text(r.get("row_ids")), r.get("tc_id", ""), r.get("tc_title", ""),
              r.get("test_environment", ""), r.get("route_label", ""), _list_to_text(r.get("exec_case_ids"))]
             for r in trace_rows

@@ -10,7 +10,7 @@ import json
 import re
 from typing import Any, Dict, Iterable, List
 
-_MAX_LINES = 80
+_MAX_LINES = 80  # 每条需求最多摘多少行
 _MAX_LINE_LEN = 300
 
 _UNIT = r"(?:dBm|dB|MHz|kHz|KHz|GHz|Hz|ms|min|s|PRB|RB|Mbps|kbps|%)"
@@ -66,8 +66,11 @@ def extract_config_lines(requirement_input: List[str]) -> List[Dict[str, Any]]:
     """从需求原文按行摘出配置类句子，原样保留。"""
     out: List[Dict[str, Any]] = []
     seen = set()
-    for text in requirement_input or []:
+    for req_no, text in enumerate(requirement_input or [], start=1):
+        taken = 0  # 上限按每条需求算：批量导入几十条需求时，后面的需求不会因为前面的占满名额而不参与核对
         for seg in _segments(str(text or "")):
+            if taken >= _MAX_LINES:
+                break
             if seg in seen:
                 continue
             tokens = value_tokens(seg)
@@ -75,9 +78,8 @@ def extract_config_lines(requirement_input: List[str]) -> List[Dict[str, Any]]:
             if not tokens or not (has_assign or _KEYWORDS.search(seg)):
                 continue
             seen.add(seg)
-            out.append({"line_id": f"SRC-{len(out) + 1:02d}", "text": seg, "values": tokens})
-            if len(out) >= _MAX_LINES:
-                return out
+            out.append({"line_id": f"SRC-{len(out) + 1:02d}", "req_no": req_no, "text": seg, "values": tokens})
+            taken += 1
     return out
 
 

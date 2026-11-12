@@ -27,6 +27,8 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
 - `issues` 与 `open_questions` 区分处理
 - 支持多轮需求迭代（v1→v2→v3）
 - SSE 推送到 Bot：任务状态、异常、待确认事项
+- 批量导入需求清单（xlsx / csv）：表格一行一条需求，列靠表头识别。需求编号沿用表格里的编号（如 `AR-99165`），表格有“SR / 上级需求”列时带出两级分组（上级需求 / 本条需求）；重复的编号会加后缀区分并给出提示
+- 需求多时（默认超过 8 条）需求解析、三方评审、综合定稿和测试设计按批调用模型再合并，避免一次输出过长被截断；批大小用环境变量 `TESTFLOW_REQ_BATCH_SIZE` 调整
 
 ### 2) 测试设计与用例（3GPP 对齐）
 
@@ -92,6 +94,8 @@ Amarisoft case 升到 v3、协议测试需求升到 v4（新增 `test_purpose`�
   - 测试步骤（每步一行：发起方、方向、层、消息、期望、判定点）
   - 消息内容（每个 IE 一行：消息、IE 路径、取值、扫描参数）
   - 追溯矩阵（生成可执行用例后）
+  - 用例分组（一级模块 / 二级模块及各自的用例数）
+- 用例分组：每条用例带 `suite`（`level1` / `level2`），跟随它追溯到的需求。分组来自需求的 `group`（导入需求清单时由表格带出），没有时一级取需求的 feature、二级取需求本身。Excel 的“测试用例”“追溯矩阵”页带分组列，Amarisoft / 协议仪表 bundle 顶部有 `suites` 树、每条 case 有 `suite`，页面上的用例列表按分组折叠展示
   - RawJSON
 
 ### 6) 项目 / Product
@@ -220,6 +224,7 @@ GET  /api/projects                           项目 / Product 列表
 GET  /api/design-history?project_id=         历史测试设计列表（可按项目筛选）
 GET  /api/design-history/{record_id}         历史测试设计详情
 GET  /api/design-history/{record_id}/document 固定 URL 测试设计文档
+POST /api/requirements/import                导入需求清单（xlsx / csv），返回需求文本和对应的编号、分组
 POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases / auto）
 POST /api/export/testcases.xlsx              导出 Excel
 ```
