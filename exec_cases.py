@@ -71,8 +71,9 @@ FIELD_GUIDE = {
         "cell_config": "小区/PHY 关键参数（band、dl_arfcn/ssb_arfcn、bandwidth_mhz、scs_khz、tdd_pattern、plmn、tac、cell_id、功率、SIB 字段等），按此生成 enb/gnb 配置",
         "core_config": "核心网/NAS 参数（注册接受/拒绝及 cause、T3412/T3512/T3324 等定时器、PSM/eDRX、APN/DNN、IMS、鉴权），按此生成 mme 配置",
         "key_parameters": "本用例要验证或扫描的关键参数：name、value 或 values、layer、purpose",
-        "message_configs": "需要定制的 RRC/NAS 消息：message、direction、ies[{path, value, note}]，path 为 ASN.1 字段路径",
-        "procedure": "有序步骤：step、action（英文动作名）、params（具体取值，含 message/direction）、expected、verdict（是否判定点）",
+        "message_configs": "需要定制的 RRC/NAS 消息：msg_id、message、direction、purpose、ies[{path, value, note}]，path 为 ASN.1 字段路径",
+        "procedure": "有序步骤：step、actor（SS=基站侧，UE=被测终端，TESTER=终端侧操作）、action（英文动作名）、params（具体取值，含 message/direction）、"
+                     "expected、verdict（是否判定点）、timing（时序/定时器约束，可无）、msg_ref（引用 message_configs 的 msg_id，可无）",
         "expected_signaling": "期望信令序列：layer、direction、message、key_ies",
         "pass_criteria": "通过标准（保留原用例数值门限）",
         "references": "3GPP 规范条款",

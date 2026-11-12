@@ -527,14 +527,18 @@ def to_amarisoft(tc: Dict[str, Any]) -> Dict[str, Any]:
         "cell_config": _cell_config(tc),
         "core_config": dict((tc.get("configuration") or {}).get("core") or {}),
         "key_parameters": key_params,
-        "procedure": [{"step": p["step"], "action": p.get("action", ""),
+        # actor / timing / msg_ref 是 TCD 步骤里“谁来做、多久之内、用哪条消息内容”的信息，基站用例同样需要
+        "procedure": [{"step": p["step"], "actor": p.get("actor", ""), "action": p.get("action", ""),
                        "params": {**(p.get("params") or {}), **({"message": p["message"], "direction": p["direction"]} if p.get("message") else {})},
-                       "expected": p.get("expected", ""), "verdict": bool(p.get("verdict"))}
+                       "expected": p.get("expected", ""), "verdict": bool(p.get("verdict")),
+                       **({"timing": p["timing"]} if p.get("timing") else {}),
+                       **({"msg_ref": p["msg_ref"]} if p.get("msg_ref") else {})}
                       for p in tc.get("procedure") or []],
         "expected_signaling": [{"layer": p.get("layer") or message_layer(p["message"]), "direction": p.get("direction", ""),
                                 "message": p["message"], "key_ies": _ies_dict(msgs.get(p.get("msg_ref", "")))}
                                for p in _steps_with_messages(tc)],
-        "message_configs": [{"message": m["message"], "direction": m["direction"], "ies": m["ies"]}
+        "message_configs": [{"msg_id": m["msg_id"], "message": m["message"], "direction": m["direction"],
+                             "purpose": m.get("purpose", ""), "ies": m["ies"]}
                             for m in tc.get("message_contents") or [] if m.get("ies")],
         "pass_criteria": list(tc.get("pass_fail") or []),
         "logs_to_capture": list((tc.get("observability") or {}).get("must_capture") or []),
