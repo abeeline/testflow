@@ -16,6 +16,10 @@ open_questions 规则（减少需要用户人工确认的问题）：
 - 每个 req_id 最多 3 条，按 priority 从高到低排列；不要重复已在 requirements 或上一轮“用户补充回答 / AI 自行确认”里出现过的问题。
 - 格式：{"question": "...", "priority": "P0|P1|P2", "needs_user": true|false, "ai_answer": "...", "basis": "..."}
 
+test_scope 规则：
+- 按 test_scope 的说明检查性能指标和稳定性要求是否齐全；缺失时按上面的 open_questions 规则提问（指标目标值属于项目专有 KPI，通常 needs_user=true，并在 ai_answer 给建议值）。
+
 [User]
 requirements: {requirements_json}
+test_scope: {test_types_note}
 return_schema: {return_schema}

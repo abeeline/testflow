@@ -287,3 +287,80 @@ def test_variants_with_own_expectations_reach_the_executable_cases():
     ama, pro = to_amarisoft(tc)["key_parameters"], to_protocol(tc)["parameter_variations"]
     assert ama[0]["variants"] == variants and pro[0]["variants"] == variants, "每个取值自己的前置和预期要带到执行用例"
     assert "variants" not in ama[1] and "variants" not in pro[1]
+
+
+def _design_record():
+    reqs = [{"req_id": "AR-1", "title": "小区禁止时重选", "priority": "P1", "group": ["SR 10 选网", "AR 1 小区禁止时重选"]},
+            {"req_id": "AR-2", "title": "定时器处理", "priority": "P0", "group": ["SR 10 选网", "AR 2 定时器处理"]},
+            {"req_id": "AR-3", "title": "位置上报", "priority": "P2", "group": ["SR 20 位置", "AR 3 位置上报"]}]
+    env = {"primary": "AMARISOFT", "primary_label": "Amarisoft模拟基站"}
+    rows = [{"row_id": "ROW-1-1", "req_id": "AR-1", "objective_id": "TO-1", "technique": "normal", "scenario": "重选到邻区", "test_environment": env,
+             "test_purpose": {"with": "A", "when": "B", "then": "C"}, "pass_criteria": ["PRACH 次数为 0"]},
+            {"row_id": "ROW-1-2", "req_id": "AR-1", "objective_id": "TO-1", "technique": "negative", "scenario": "没有可用邻区</script>", "test_environment": env},
+            {"row_id": "ROW-2-1", "req_id": "AR-2", "objective_id": "TO-2", "technique": "normal", "scenario": "定时器正常启动", "test_environment": env}]
+    return {"title": "选网测试设计", "requirement_spec": {"final_requirements": reqs},
+            "test_design_spec": {"integrated_matrix": rows, "objectives": [{"objective_id": "TO-1", "goal": "验证禁止小区处理"}]}}
+
+
+def test_design_map_shows_structure_and_gaps():
+    from core.design_map import build_design_map, render_design_map_html
+
+    record = _design_record()
+    data = build_design_map(record)
+    assert [(m["name"], [r["id"] for r in m["requirements"]]) for m in data["modules"]] == [("SR 10 选网", ["AR-1", "AR-2"]), ("SR 20 位置", ["AR-3"])]
+    ar1 = data["modules"][0]["requirements"][0]
+    assert ar1["techniques"] == {"normal": 1, "abnormal": 1} and ar1["goal"] == "验证禁止小区处理" and not ar1["flags"]
+    assert {(g["req_id"], g["kind"]) for g in data["gaps"]} == {("AR-2", "normal_only"), ("AR-3", "no_point")}, \
+        "高优先级只有正常流程、需求没有测试点，都要作为评审关注点列出来"
+    assert data["stats"]["points"] == 3 and not data["has_cases"]
+
+    record["test_case_spec"] = {"testcases": [
+        {"tc_id": "TC-001", "title": "重选", "trace": {"req_ids": ["AR-1"], "source_refs": ["ROW-1-1"]}},
+        {"tc_id": "TC-002", "title": "补充", "trace": {"req_ids": ["AR-2"], "source_refs": ["ROW-9-9"]}}]}
+    record["executable_cases"] = {"traceability": [{"tc_id": "TC-001", "exec_case_ids": ["AMS-001"]}]}
+    data = build_design_map(record)
+    assert data["modules"][0]["requirements"][0]["points"][0]["cases"][0] == {"id": "TC-001", "title": "重选", "priority": "", "exec_ids": ["AMS-001"], "open_points": 0}
+    kinds = {(g["req_id"], g["kind"]) for g in data["gaps"]}
+    assert ("AR-1", "no_case") in kinds and ("AR-2", "loose_case") in kinds, "出了用例以后，没有用例的测试点和没挂上测试点的用例也要列出来"
+
+    page = render_design_map_html(record)
+    assert "选网测试设计 - 测试架构图" in page and "__MAP_" not in page
+    assert "没有可用邻区<\\/script>" in page, "数据里的 </script> 不能截断页面脚本"
+    assert "http://" not in page and "https://" not in page, "页面要能离线打开，不引用外部资源"
+
+
+def test_design_map_endpoint_serves_the_archived_design(tmp_path, monkeypatch):
+    import main
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(main, "HISTORY_DIR", tmp_path)
+    record = main._write_design_history_record(dict(_design_record(), record_id="abcdef123456"))
+    assert main._history_summary(record)["map_url"] == "/api/design-history/abcdef123456/map"
+    resp = TestClient(main.app).get("/api/design-history/abcdef123456/map")
+    assert resp.status_code == 200 and "text/html" in resp.headers["content-type"] and "SR 10 选网" in resp.text
+
+
+def test_selected_test_types_drive_design_advice_and_map():
+    from core.design_map import build_design_map
+    from core.scope import review_note, scope_note, selected_test_types, type_gaps
+
+    assert selected_test_types({}) == ["functional"], "没选时只做功能"
+    shared = {"product_profile": {"test_types": ["性能", "stability", "functional"]}}
+    types = selected_test_types(shared)
+    assert types == ["functional", "performance", "stability"]
+    assert "样本量" in scope_note(types) and "acceptance.kpi" in review_note(types) and "性能" not in review_note(["functional"]).split("。", 1)[1]
+
+    record = _design_record()
+    reqs, rows = record["requirement_spec"]["final_requirements"], record["test_design_spec"]["integrated_matrix"]
+    rows.append({"row_id": "ROW-1-3", "req_id": "AR-1", "technique": "performance", "scenario": "重选时延统计"})
+    gaps = {(g["module"], g["test_type"]) for g in type_gaps(rows, reqs, types)}
+    assert gaps == {("SR 10 选网", "stability"), ("SR 20 位置", "performance"), ("SR 20 位置", "stability")}
+    assert type_gaps(rows, reqs, ["functional"]) == []
+
+    record["test_design_spec"]["test_types"] = types
+    data = build_design_map(record)
+    assert data["stats"]["by_type"] == {"functional": 3, "performance": 1}
+    assert sum(1 for g in data["gaps"] if g["kind"] == "type_missing") == 3
+    assert [t["selected"] for t in data["test_types"]] == [True, True, True]
+    record["test_design_spec"]["test_types"] = ["functional"]
+    assert not [g for g in build_design_map(record)["gaps"] if g["kind"] == "type_missing"], "没选的类型不算缺口"

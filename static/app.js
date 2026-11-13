@@ -82,6 +82,8 @@ const openQuestionsPanel = document.getElementById("openQuestionsPanel");
 const downloadExcelBtn = document.getElementById("downloadExcelBtn");
 const designDocActions = document.getElementById("designDocActions");
 const designDocLink = document.getElementById("designDocLink");
+const designMapLink = document.getElementById("designMapLink");
+const designHistoryMapLink = document.getElementById("designHistoryMapLink");
 const refreshDesignHistoryBtn = document.getElementById("refreshDesignHistoryBtn");
 const designHistoryList = document.getElementById("designHistoryList");
 const designHistoryDetailTitle = document.getElementById("designHistoryDetailTitle");
@@ -322,6 +324,7 @@ function getSelectedProductProfile() {
   return {
     selected,
     selected_flat: selectedFlat,
+    test_types: getSelectedTestTypes(),
     selected_count: selectedFlat.length,
     selected_groups: Object.keys(selected).length,
     profile_display: PRODUCT_PROFILE_GROUPS.filter((g) => selected[g.key]?.length).map((g) => ({
@@ -339,6 +342,33 @@ function setSelectedProductProfile(selectedMap = {}) {
       const el = document.getElementById(id);
       if (el) el.checked = values.includes(opt);
     });
+  });
+}
+
+const TEST_TYPE_OPTIONS = [
+  { id: "functional", label: "功能", description: "正常、异常、边界、定时器、冲突、移动性、互操作、能力组合。", checked: true },
+  { id: "performance", label: "性能", description: "时延、成功率、吞吐、精度等指标，带样本量和统计口径。" },
+  { id: "stability", label: "稳定性", description: "长时间保持、反复执行、异常后恢复（鲁棒性）。" },
+];
+
+function renderTestTypeOptions() {
+  const host = document.getElementById("testTypeOptions");
+  if (!host) return;
+  host.innerHTML = `<div class="feature-profile-group"><div class="feature-option-grid env-grid">${TEST_TYPE_OPTIONS.map((t) =>
+    `<label class="feature-option"><input type="checkbox" id="tt_${t.id}"${t.checked ? " checked" : ""} /><span><strong>${esc(t.label)}</strong><span class="feature-hint">${esc(t.description)}</span></span></label>`
+  ).join("")}</div></div>`;
+}
+
+function getSelectedTestTypes() {
+  const picked = TEST_TYPE_OPTIONS.filter((t) => document.getElementById(`tt_${t.id}`)?.checked).map((t) => t.id);
+  return picked.length ? picked : ["functional"];
+}
+
+function setSelectedTestTypes(ids) {
+  const set = new Set(Array.isArray(ids) && ids.length ? ids.map(String) : ["functional"]);
+  TEST_TYPE_OPTIONS.forEach((t) => {
+    const el = document.getElementById(`tt_${t.id}`);
+    if (el) el.checked = set.has(t.id);
   });
 }
 
@@ -994,6 +1024,13 @@ function buildDesignDocumentHtml() {
 
 function refreshDesignDocumentLink() {
   revokeDesignDocUrl();
+  // 测试架构图按归档记录现算：有归档（测试设计完成后自动归档）才显示入口
+  const mapUrl = stageState.test_design_spec && stageState.design_history_doc_url
+    ? stageState.design_history_doc_url.replace(/\/document$/, "/map") : "";
+  if (designMapLink) {
+    designMapLink.classList.toggle("hidden", !mapUrl);
+    if (mapUrl) designMapLink.href = mapUrl; else designMapLink.removeAttribute("href");
+  }
   if (!stageState.test_design_spec) {
     designDocActions?.classList.add("hidden");
     if (designDocLink) designDocLink.removeAttribute("href");
@@ -1218,6 +1255,7 @@ function renderDesignHistoryDetail(record) {
     if (designHistoryDocLink) {
       designHistoryDocLink.classList.add("hidden");
       designHistoryDocLink.removeAttribute("href");
+      designHistoryMapLink?.classList.add("hidden");
     }
     if (designHistoryLoadBtn) designHistoryLoadBtn.disabled = true;
     if (designHistoryCasesBtn) designHistoryCasesBtn.disabled = true;
@@ -1228,6 +1266,10 @@ function renderDesignHistoryDetail(record) {
   if (designHistoryDocLink) {
     designHistoryDocLink.href = record.document_url || summary.document_url || "#";
     designHistoryDocLink.classList.remove("hidden");
+  }
+  if (designHistoryMapLink) {
+    designHistoryMapLink.href = record.map_url || summary.map_url || "#";
+    designHistoryMapLink.classList.remove("hidden");
   }
   if (designHistoryLoadBtn) designHistoryLoadBtn.disabled = false;
   if (designHistoryCasesBtn) {
@@ -1328,6 +1370,7 @@ function applyHistoryRecordToCurrentSession(record) {
   if (requirementsEl) requirementsEl.value = reqInput[0] || "";
   setSelectedTestEnvironments(record.test_environments?.selected_ids || record.test_environments?.selected || []);
   setSelectedProductProfile(record.product_profile?.selected || {});
+  setSelectedTestTypes(record.product_profile?.test_types || record.test_design_spec?.test_types);
   stageState.requirement_spec = record.requirement_spec || null;
   stageState.persona_reviews = record.persona_reviews || null;
   stageState.requirement_review_history = record.requirement_review_history || null;
@@ -1385,6 +1428,7 @@ function restoreLastResultUI(snapshot) {
   if (bzExcludedEl) bzExcludedEl.value = snapshot.form?.bz_excluded || "";
   setSelectedTestEnvironments(snapshot.form?.test_environment_selected || []);
   setSelectedProductProfile(snapshot.form?.product_profile_selected || {});
+  setSelectedTestTypes(snapshot.form?.test_types);
   statusEl.textContent = snapshot.status || "已恢复上次结果";
 
   latestStructured = snapshot.artifacts_structured || null;
@@ -1423,6 +1467,7 @@ function persistCurrentState(customStatus) {
       bz_excluded: bzExcludedEl?.value || "",
       test_environment_selected: getSelectedTestEnvironments().selected_ids,
       product_profile_selected: getSelectedProductProfile().selected,
+      test_types: getSelectedTestTypes(),
     },
   });
 }
@@ -2982,6 +3027,7 @@ goExecCasesBtn?.addEventListener("click", () => {
 initTheme();
 initTabs();
 resetBotConversation();
+renderTestTypeOptions();
 renderTestEnvironmentOptions();
 renderProductProfileOptions();
 renderDesignHistoryDetail(null);

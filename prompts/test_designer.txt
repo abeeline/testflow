@@ -16,6 +16,8 @@
    - performance：时延、成功率、吞吐等 KPI
    - stability：长稳、恢复、重启后状态
    P0/P1 需求至少要有 normal 和一个非 normal 的测试点；不要为凑数编造与需求无关的场景。
+   测试类型由 constraints.test_types 决定（功能 / 性能 / 稳定性）：performance、stability 两种技术只在选了对应类型时主动设计，
+   并按其中的说明以模块为单位安排（挂在该模块最相关的那条需求上），写清指标、样本量或时长、统计口径和判据；没选的类型不要凑。
 3) 每行写测试目的 test_purpose，采用 3GPP TP 写法的三段：with（初始状态）/ when（触发事件）/ then（期望行为，含可判定的消息或数值）。
 4) 每行选择测试环境 test_environment.primary（REAL_NETWORK / AMARISOFT / PROTOCOL_ANALYZER），依据 constraints.environments 中每个环境“能做 / 不能做”的能力边界：
    需要构造指定 IE、指定拒绝原因或精确定时器的 → 模拟基站或仪表；关注真实网络体验、互通、长稳的 → 实网。
