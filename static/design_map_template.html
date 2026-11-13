@@ -190,6 +190,7 @@ tfoot td { font-weight: 650; background: var(--bg); }
   <button class="btn" id="dlMd" title="Markdown 大纲，XMind 可以导入">导出大纲 .md</button>
 </div>
 <div class="bar" id="filters">
+  <span class="lbl">测试类型</span><div class="chips" id="fType"></div>
   <span class="lbl">测试技术</span><div class="chips" id="fTech"></div>
   <span class="lbl">优先级</span><div class="chips" id="fPri"></div>
   <span class="lbl">执行平台</span><div class="chips" id="fEnv"></div>
@@ -226,7 +227,9 @@ const DATA = /*__MAP_DATA__*/null;
   const priorities = [...new Set(DATA.modules.flatMap(m => m.requirements.map(r => r.priority || "未定")))].sort();
   const envs = [...new Set(allPoints.map(p => (p.env && p.env.short) || "未定"))];
   const usedTech = DATA.techniques.filter(t => DATA.stats.by_technique[t.key]);
-  const state = { tech: new Set(), pri: new Set(), env: new Set(), q: "", zoom: 1 };
+  const TYPES = DATA.test_types || [];
+  const TYPE = Object.fromEntries(TYPES.map(t => [t.key, t.label]));
+  const state = { type: new Set(), tech: new Set(), pri: new Set(), env: new Set(), q: "", zoom: 1 };
 
   // ---------- 头部 ----------
   $("title").textContent = DATA.title + " · 测试架构图";
@@ -235,6 +238,7 @@ const DATA = /*__MAP_DATA__*/null;
   const stat = (n, label, warn) => h("div", { class: "stat" + (warn ? " warn" : "") }, h("b", {}, n), h("span", {}, label));
   $("stats").append(stat(s.modules, "个模块"), stat(s.requirements, "条需求"), stat(s.points, "个测试点"),
     DATA.has_cases ? stat(s.cases, "条用例") : null,
+    ...TYPES.filter(t => t.key !== "functional" && (t.selected || s.by_type[t.key])).map(t => stat(s.by_type[t.key] || 0, t.label + "测试点", t.selected && !s.by_type[t.key])),
     ...Object.entries(s.by_env).map(([k, v]) => stat(v, k)),
     stat(DATA.gaps.length, "个评审关注点", DATA.gaps.length > 0));
 
@@ -305,23 +309,25 @@ const DATA = /*__MAP_DATA__*/null;
       host.append(chip);
     });
   }
+  chipSet($("fType"), TYPES.map(t => t.key), state.type, k => TYPE[k], null, k => s.by_type[k] || 0);
   chipSet($("fTech"), usedTech.map(t => t.key), state.tech, k => TECH[k], tcolor, k => s.by_technique[k]);
   chipSet($("fPri"), priorities, state.pri, k => k, null, k => s.by_priority[k] || 0);
   chipSet($("fEnv"), envs, state.env, k => k, null, k => s.by_env[k] || 0);
   function refreshChips() { document.querySelectorAll("#filters .chip").forEach(c => c.classList.toggle("off", c._set.has(c._key))); }
-  $("reset").onclick = () => { state.tech.clear(); state.pri.clear(); state.env.clear(); state.q = ""; $("q").value = ""; refreshChips(); applyFilter(); };
+  $("reset").onclick = () => { state.type.clear(); state.tech.clear(); state.pri.clear(); state.env.clear(); state.q = ""; $("q").value = ""; refreshChips(); applyFilter(); };
   let timer = 0;
   $("q").addEventListener("input", e => { clearTimeout(timer); timer = setTimeout(() => { state.q = e.target.value.trim().toLowerCase(); applyFilter(); }, 150); });
   const pointText = p => [p.id, p.scenario, TECH[p.technique], ...p.cases.flatMap(c => [c.id, c.title, ...c.exec_ids])].join(" ").toLowerCase();
   const reqText = r => [r.id, r.name, r.title].join(" ").toLowerCase();
   function pointVisible(p, r, reqHit) {
-    if (state.tech.has(p.technique)) return false;
+    if (state.tech.has(p.technique) || state.type.has(p.test_type)) return false;
     if (state.env.has((p.env && p.env.short) || "未定")) return false;
     if (state.q && !reqHit && !pointText(p).includes(state.q)) return false;
     return true;
   }
   function applyFilter() {
-    const active = state.tech.size || state.pri.size || state.env.size || state.q;
+    const narrow = state.type.size || state.tech.size || state.env.size;
+    const active = narrow || state.pri.size || state.q;
     let shown = 0;
     moduleEls.forEach((mEl, mi) => {
       let modShown = 0;
@@ -336,9 +342,9 @@ const DATA = /*__MAP_DATA__*/null;
           if (ok) n++;
         });
         // 没有测试点的需求本身就是关注点：没有按技术 / 平台筛选时照常显示
-        const keep = priOk && (n > 0 || (!r.points.length && !state.tech.size && !state.env.size && (!state.q || reqHit)));
+        const keep = priOk && (n > 0 || (!r.points.length && !narrow && (!state.q || reqHit)));
         el.classList.toggle("hide", !keep);
-        if (active && n > 0 && (state.q || state.tech.size || state.env.size)) el.classList.add("open");
+        if (active && n > 0 && (state.q || narrow)) el.classList.add("open");
         if (keep) modShown++;
         shown += n;
         fixEnds(el);
@@ -390,6 +396,7 @@ const DATA = /*__MAP_DATA__*/null;
     document.querySelectorAll("[data-for]").forEach(el => { el.style.display = el.dataset.for === view ? "" : "none"; });
     $("filters").style.display = view === "tree" ? "" : "none";
     $("q").style.display = view === "tree" ? "" : "none";
+    $("shown").style.display = view === "tree" ? "" : "none";
   }
   $("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) show(b.dataset.view); });
   function jump(reqId, technique) {
@@ -442,19 +449,22 @@ const DATA = /*__MAP_DATA__*/null;
       return entries.map(([label, v, key]) => h("div", { class: "hb", style: color ? `--c:${color(key)}` : null },
         h("span", { title: label }, label), h("div", { class: "track" }, h("div", { class: "fill", style: `width:${(v / max) * 100}%` })), h("span", { class: "v" }, v)));
     };
-    const kinds = { no_point: "没有测试点的需求", normal_only: "高优先级需求只有正常流程", single_point: "高优先级需求只有 1 个测试点", no_case: "测试点还没有用例", loose_case: "用例没有挂到测试点" };
+    const kinds = { type_missing: "选了这类测试但模块里没有对应测试点", no_point: "没有测试点的需求", normal_only: "高优先级需求只有正常流程", single_point: "高优先级需求只有 1 个测试点", no_case: "测试点还没有用例", loose_case: "用例没有挂到测试点" };
     const gapCards = Object.entries(kinds).map(([kind, label]) => {
       const items = DATA.gaps.filter(g => g.kind === kind);
       if (!items.length) return null;
       return h("div", { class: "card" }, h("h3", {}, `${label}（${items.length}）`),
         h("ul", { class: "gap-list" }, items.map(g => h("li", { onclick: () => jump(g.req_id) }, h("b", {}, g.name || g.req_id), h("small", {}, `${g.module} · ${g.text}`)))));
     }).filter(Boolean);
-    const unused = DATA.techniques.filter(t => !s.by_technique[t.key]).map(t => t.label);
+    const inScope = k => !TYPE[k] || TYPES.some(t => t.key === k && t.selected);   // performance / stability 只在选了对应类型时才算缺
+    const unused = DATA.techniques.filter(t => !s.by_technique[t.key] && inScope(t.key)).map(t => t.label);
+    const outScope = TYPES.filter(t => !t.selected && !s.by_type[t.key]).map(t => t.label);
     $("v-overview").append(h("div", { class: "cards" },
       h("div", { class: "card" }, h("h3", {}, "测试技术分布（测试点数）"), bars(DATA.techniques.map(t => [t.label, s.by_technique[t.key] || 0, t.key]), tcolor),
-        unused.length ? h("p", { class: "flag" }, "本次设计没有用到：" + unused.join("、")) : null),
+        unused.length ? h("p", { class: "flag" }, "本次设计没有用到：" + unused.join("、")) : null,
+        outScope.length ? h("p", { class: "lbl" }, "不在本次测试范围：" + outScope.join("、") + "（需求页“测试类型”没有勾选）") : null),
       h("div", { class: "card" }, h("h3", {}, "各模块的测试点数"), bars(DATA.modules.map(m => [m.name, m.points]))),
-      h("div", { class: "card" }, h("h3", {}, "执行平台与需求优先级"), bars(Object.entries(s.by_env)), h("div", { style: "height:10px" }), bars(Object.entries(s.by_priority).sort())),
+      h("div", { class: "card" }, h("h3", {}, "测试类型、执行平台与需求优先级"), bars(TYPES.map(t => [t.label + (t.selected ? "" : "（未选）"), s.by_type[t.key] || 0])), h("div", { style: "height:10px" }), bars(Object.entries(s.by_env)), h("div", { style: "height:10px" }), bars(Object.entries(s.by_priority).sort())),
       gapCards.length ? gapCards : h("div", { class: "card" }, h("h3", {}, "评审关注点"), h("p", { class: "ok" }, "没有发现结构性的缺口：每条需求都有测试点，高优先级需求不止正常流程" + (DATA.has_cases ? "，每个测试点都有用例。" : "。"))),
       DATA.design_advice.length ? h("div", { class: "card" }, h("h3", {}, "设计阶段的提示"), h("ul", { class: "plain" }, DATA.design_advice.map(x => h("li", {}, x)))) : null,
       DATA.de_scoped.length ? h("div", { class: "card" }, h("h3", {}, "本次没有纳入的范围"), h("ul", { class: "plain" }, DATA.de_scoped.map(x => h("li", {}, x)))) : null));

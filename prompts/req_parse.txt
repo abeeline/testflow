@@ -13,6 +13,7 @@ Rules:
   · Only values actually written in the input; never add guessed values here (put guesses in assumptions).
 - Keep the req_id of every input item unchanged, output exactly one requirement per input item in the same order, and do not merge or drop items.
 - group: if an input item carries "group" ([level-1 module, level-2 module]), copy it unchanged. Test cases are exported under this two-level grouping.
+- test_scope 说明本次要做的测试类型：按其中的要求提取性能指标（acceptance.kpi）和稳定性要求，需求没有给出的不要编造数值，写进 open_questions。
 - Do NOT invent spec citations. If evidence text is not provided, keep source.evidence_refs empty.
 - All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, IDs, enum values, and structured field names unchanged. 最终以“简体中文”输出。
 
@@ -23,4 +24,5 @@ requirement_text_chunk: {text_chunk}
 rag_context: {rag_context}
 review_feedback_from_previous_rounds: {review_feedback}
 product_profile: {product_profile_json}
+test_scope: {test_types_note}
 output_schema: {output_schema}

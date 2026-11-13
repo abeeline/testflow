@@ -47,6 +47,7 @@ from core.quality import (
     rows_for_tcs,
     split_tcs_by_rows,
 )
+from core.scope import review_note, selected_test_types, scope_note, type_gaps
 from core.tcd import TCD_LIST_SCHEMA, TECHNIQUES, normalize_tcd, normalize_technique, renumber, summarize_for_prompt
 from utils.req_configs import normalize_explicit_configs, restore_explicit_configs
 from utils.schema_validation import validate_jsonschema, validate_list_of_dict
@@ -279,6 +280,7 @@ class ReqParseNode(ThreadedNode):
                     "rag_context": prep_res.get("rag_context", ""),
                     "review_feedback": prep_res.get("review_feedback", ""),
                     "product_profile_json": json.dumps(prep_res.get("product_profile", {}), ensure_ascii=False),
+                    "test_types_note": review_note(selected_test_types(prep_res)),
                     "output_schema": json.dumps(REQUIREMENT_LIST_SCHEMA, ensure_ascii=False),
                 },
                 schema=REQUIREMENT_LIST_SCHEMA,
@@ -369,6 +371,7 @@ class TriPersonaReviewNode(AsyncNode):
             variables={
                 "requirements_json": json.dumps(requirements, ensure_ascii=False),
                 "history_risk_json": json.dumps([], ensure_ascii=False),
+                "test_types_note": review_note(selected_test_types(shared)),
                 "return_schema": json.dumps(PERSONA_REVIEW_SCHEMA, ensure_ascii=False),
                 "output_schema": json.dumps(PERSONA_REVIEW_SCHEMA, ensure_ascii=False),
             },
@@ -618,6 +621,7 @@ class TestDesignNode(ThreadedNode):
             "assumptions": spec.get("assumptions", []),
             "confirmed_answers": _confirmed_answers(shared),
             "product_profile": shared.get("product_profile", {}),
+            "test_types": selected_test_types(shared),
             "test_environments": shared.get("test_environments", {}),
             "supervisor_feedback": shared.get("design_supervisor_feedback", ""),
             "knowledge_references": shared.get("knowledge_context", ""),
@@ -641,6 +645,7 @@ class TestDesignNode(ThreadedNode):
                     "assumptions": prep_res.get("assumptions", []),
                     "confirmed_answers": prep_res.get("confirmed_answers", []),
                     "product_profile": prep_res.get("product_profile", {}),
+                    "test_types": scope_note(prep_res.get("test_types") or []),
                     "environments": envs.environment_brief(available),
                     "available_test_environments": available,
                     "supervisor_feedback": prep_res.get("supervisor_feedback", ""),
@@ -762,7 +767,9 @@ class TestDesignNode(ThreadedNode):
         if patched["metrics"]:
             _warn(shared, f"设计质量门: {patched['metrics']} 条需求验收门限没有测试点承接，已补入对应测试点的通过标准")
         design["integrated_matrix"] = rows
-        design["design_advice"] = design_advice(rows, reqs)
+        types = prep_res.get("test_types") or ["functional"]
+        design["test_types"] = types
+        design["design_advice"] = design_advice(rows, reqs) + [g["text"] for g in type_gaps(rows, reqs, types)]
         design["knowledge_references"] = str(prep_res.get("knowledge_references") or "")[:KNOWLEDGE_CHARS_FOR_CASES]
         design["generation_meta"] = {
             "design_generated_by_llm": by_llm,

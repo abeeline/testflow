@@ -338,3 +338,29 @@ def test_design_map_endpoint_serves_the_archived_design(tmp_path, monkeypatch):
     assert main._history_summary(record)["map_url"] == "/api/design-history/abcdef123456/map"
     resp = TestClient(main.app).get("/api/design-history/abcdef123456/map")
     assert resp.status_code == 200 and "text/html" in resp.headers["content-type"] and "SR 10 选网" in resp.text
+
+
+def test_selected_test_types_drive_design_advice_and_map():
+    from core.design_map import build_design_map
+    from core.scope import review_note, scope_note, selected_test_types, type_gaps
+
+    assert selected_test_types({}) == ["functional"], "没选时只做功能"
+    shared = {"product_profile": {"test_types": ["性能", "stability", "functional"]}}
+    types = selected_test_types(shared)
+    assert types == ["functional", "performance", "stability"]
+    assert "样本量" in scope_note(types) and "acceptance.kpi" in review_note(types) and "性能" not in review_note(["functional"]).split("。", 1)[1]
+
+    record = _design_record()
+    reqs, rows = record["requirement_spec"]["final_requirements"], record["test_design_spec"]["integrated_matrix"]
+    rows.append({"row_id": "ROW-1-3", "req_id": "AR-1", "technique": "performance", "scenario": "重选时延统计"})
+    gaps = {(g["module"], g["test_type"]) for g in type_gaps(rows, reqs, types)}
+    assert gaps == {("SR 10 选网", "stability"), ("SR 20 位置", "performance"), ("SR 20 位置", "stability")}
+    assert type_gaps(rows, reqs, ["functional"]) == []
+
+    record["test_design_spec"]["test_types"] = types
+    data = build_design_map(record)
+    assert data["stats"]["by_type"] == {"functional": 3, "performance": 1}
+    assert sum(1 for g in data["gaps"] if g["kind"] == "type_missing") == 3
+    assert [t["selected"] for t in data["test_types"]] == [True, True, True]
+    record["test_design_spec"]["test_types"] = ["functional"]
+    assert not [g for g in build_design_map(record)["gaps"] if g["kind"] == "type_missing"], "没选的类型不算缺口"

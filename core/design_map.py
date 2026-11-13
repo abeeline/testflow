@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 
 from core.grouping import UNGROUPED, requirement_group
 from core.tcd import TECHNIQUE_LABELS, TECHNIQUES, normalize_technique
+from core.scope import TEST_TYPE_LABELS, TEST_TYPES, selected_test_types, type_of_technique, type_gaps
 from utils.paths import STATIC_DIR
 
 TEMPLATE_NAME = "design_map_template.html"
@@ -40,9 +41,11 @@ def _env(env: Any) -> Dict[str, str]:
 def _point(row: Dict[str, Any]) -> Dict[str, Any]:
     purpose = row.get("test_purpose") if isinstance(row.get("test_purpose"), dict) else {}
     config = row.get("key_configuration") if isinstance(row.get("key_configuration"), dict) else {}
+    technique = normalize_technique(row.get("technique"))[0]
     return {
         "id": _text(row.get("row_id")),
-        "technique": normalize_technique(row.get("technique"))[0],
+        "technique": technique,
+        "test_type": type_of_technique(technique),
         "scenario": _text(row.get("scenario")),
         "purpose": {k: _text(purpose.get(k)) for k in ("with", "when", "then") if _text(purpose.get(k))},
         "config": {_text(k): _text(json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v) for k, v in config.items()},
@@ -113,7 +116,7 @@ def build_design_map(record: Dict[str, Any]) -> Dict[str, Any]:
     has_cases = bool(tcs)
     gaps: List[Dict[str, str]] = []
     stats = {"modules": 0, "requirements": 0, "points": 0, "cases": len(tcs),
-             "by_technique": {}, "by_env": {}, "by_priority": {}}
+             "by_technique": {}, "by_env": {}, "by_priority": {}, "by_type": {}}
     for module in modules.values():
         module["points"] = 0
         for node in module["requirements"]:
@@ -124,6 +127,7 @@ def build_design_map(record: Dict[str, Any]) -> Dict[str, Any]:
             stats["by_priority"][node["priority"] or "未定"] = stats["by_priority"].get(node["priority"] or "未定", 0) + 1
             for p in node["points"]:
                 stats["by_technique"][p["technique"]] = stats["by_technique"].get(p["technique"], 0) + 1
+                stats["by_type"][p["test_type"]] = stats["by_type"].get(p["test_type"], 0) + 1
                 env = p["env"].get("short") or "未定"
                 stats["by_env"][env] = stats["by_env"].get(env, 0) + 1
             flags = []
@@ -143,6 +147,13 @@ def build_design_map(record: Dict[str, Any]) -> Dict[str, Any]:
             gaps += [{"kind": kind, "module": module["name"], "req_id": node["id"], "name": node["name"], "text": text} for kind, text in flags]
         stats["points"] += module["points"]
     stats["modules"] = len(modules)
+    # 选了性能 / 稳定性，但某个模块没有对应测试点
+    types = design.get("test_types") or selected_test_types(record)
+    for gap in type_gaps(rows, reqs, types):
+        module = modules.get(gap["module"]) or {}
+        first = (module.get("requirements") or [{}])[0]
+        gaps.append({"kind": "type_missing", "module": gap["module"], "req_id": first.get("id", ""), "name": gap["module"],
+                     "text": f"没有{TEST_TYPE_LABELS[gap['test_type']]}测试点"})
 
     title = _text(record.get("title")) or (_text(reqs[0].get("title")) if reqs else "") or "测试设计"
     return {
@@ -150,6 +161,7 @@ def build_design_map(record: Dict[str, Any]) -> Dict[str, Any]:
         "generated_at": time.strftime("%Y-%m-%d %H:%M", time.localtime()),
         "has_cases": has_cases,
         "techniques": [{"key": t, "label": TECHNIQUE_LABELS[t]} for t in TECHNIQUES],
+        "test_types": [{"key": t, "label": TEST_TYPE_LABELS[t], "selected": t in types} for t in TEST_TYPES],
         "stats": stats,
         "modules": list(modules.values()),
         "gaps": gaps,
