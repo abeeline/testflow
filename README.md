@@ -49,6 +49,12 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
   这些分支会原样带到 Amarisoft 的 `key_parameters` 和协议仪表的 `parameter_variations`
 - 协议仪表用例除 `signaling_flow` 外还带完整的有序 `procedure`（含位置注入、等待、检查等非消息步骤）和 `ue_config`，
   `signaling_flow` / `checkpoints` 里的 `step` 与它对应；Excel 的“测试用例”页有“测试点”列，重跑后用例编号变了也能对上
+- 测试架构图（`core/design_map.py`，模板 `static/design_map_template.html`）：测试设计完成后，测试设计页和历史记录里有“查看测试架构图”，
+  地址是 `/api/design-history/{record_id}/map`（加 `?download=1` 下载）。一份可离线打开的 HTML，三个视图：
+  - 脑图：模块 → 需求 → 测试点，测试点按测试技术着色，带执行平台和用例编号；可按技术 / 优先级 / 平台筛选、搜索，点测试点看测试目的和通过条件
+  - 覆盖矩阵：需求 × 测试技术的测试点数，空格就是没覆盖的地方
+  - 概览与关注点：没有测试点的需求、高优先级需求只有正常流程或只有 1 个测试点、测试点还没有用例、用例没挂到测试点
+  用例和可执行用例生成后重新打开，同一张图上会带出用例编号。页面里可以导出 FreeMind `.mm`（XMind 等可导入）和 Markdown 大纲
 - 专家评审（提示词 `test_case_reviewer.txt`，测试设计页可关）：用例写完后另起一次调用，让模型以评审者身份检查协议正确性
   （消息名、方向、顺序、定时器和原因值语义）、测试目的能否判定、是否与需求和测试点一致、实网用例是否依赖了网络侧控制；
   严重问题并入返工反馈，一般意见留在用例的 `review_notes` 里（页面和 Excel 可见）

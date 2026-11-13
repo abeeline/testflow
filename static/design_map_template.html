@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__MAP_TITLE__ - 测试架构图</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --ink: #1c2330; --muted: #667085; --line: #c5ccd8; --border: #e1e5ec;
+  --accent: #2456c9; --accent-soft: #e8eefb; --warn: #b54708; --warn-soft: #fff4e5; --root: #1c2330; --root-ink: #ffffff;
+  --hit: #fff3b0; --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  --t-normal: #2f6fde; --t-abnormal: #d6453d; --t-boundary: #c9820a; --t-timer: #7a52d1; --t-collision: #cf3f8c;
+  --t-mobility: #0f9467; --t-interworking: #0b8fa8; --t-capability: #5b6b82; --t-performance: #dd6b1f; --t-stability: #6a8f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1b1f27; --ink: #e6e9ef; --muted: #9aa4b5; --line: #4a5364; --border: #2c323d;
+    --accent: #7ea6ff; --accent-soft: #1f2b47; --warn: #ffb866; --warn-soft: #3a2a12; --root: #e6e9ef; --root-ink: #12151b;
+    --hit: #5c4a00; --shadow: none;
+    --t-normal: #6b9bff; --t-abnormal: #ff7a70; --t-boundary: #f0b040; --t-timer: #a98bff; --t-collision: #f277b6;
+    --t-mobility: #3fcf9b; --t-interworking: #39c3dc; --t-capability: #9aa8bd; --t-performance: #ff9a57; --t-stability: #a6cf3d;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1b1f27; --ink: #e6e9ef; --muted: #9aa4b5; --line: #4a5364; --border: #2c323d;
+  --accent: #7ea6ff; --accent-soft: #1f2b47; --warn: #ffb866; --warn-soft: #3a2a12; --root: #e6e9ef; --root-ink: #12151b;
+  --hit: #5c4a00; --shadow: none;
+  --t-normal: #6b9bff; --t-abnormal: #ff7a70; --t-boundary: #f0b040; --t-timer: #a98bff; --t-collision: #f277b6;
+  --t-mobility: #3fcf9b; --t-interworking: #39c3dc; --t-capability: #9aa8bd; --t-performance: #ff9a57; --t-stability: #a6cf3d;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; display: flex; flex-direction: column; }
+button { font: inherit; color: inherit; cursor: pointer; }
+header.top { padding: 14px 20px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+header.top h1 { margin: 0; font-size: 18px; font-weight: 650; }
+header.top .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; }
+.stat b { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12.5px; margin-left: 4px; }
+.stat.warn b { color: var(--warn); }
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 5px 12px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--accent); color: #fff; }
+:root[data-theme="dark"] .seg button.on { color: #12151b; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .seg button.on { color: #12151b; } }
+.btn { border: 1px solid var(--border); background: var(--panel); border-radius: 8px; padding: 5px 10px; }
+.btn:hover, .seg button:not(.on):hover { background: var(--accent-soft); }
+input.q { border: 1px solid var(--border); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 6px 10px; width: 220px; font: inherit; }
+.grow { flex: 1 1 auto; }
+.lbl { color: var(--muted); font-size: 12.5px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip { border: 1px solid var(--border); background: var(--panel); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chip.off { opacity: .4; text-decoration: line-through; }
+.chip i, .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--c, var(--muted)); flex: none; }
+.chip small { color: var(--muted); font-variant-numeric: tabular-nums; }
+main { flex: 1 1 auto; min-height: 0; position: relative; }
+.view { position: absolute; inset: 0; overflow: auto; padding: 20px; display: none; }
+.view.on { display: block; }
+
+/* ---------- 脑图 ---------- */
+#tree { width: max-content; padding: 4px 40px 60px 0; }
+.n { display: flex; align-items: center; position: relative; }
+.kids { display: flex; flex-direction: column; margin-left: 30px; position: relative; }
+.n:not(.open) > .kids { display: none; }
+.kids::before { content: ""; position: absolute; left: -30px; top: 50%; width: 30px; border-top: 1.5px solid var(--line); }
+.kids > .n { padding: 3px 0 3px 22px; }
+.kids > .n::before { content: ""; position: absolute; left: 0; top: 50%; width: 22px; border-top: 1.5px solid var(--line); }
+.kids > .n::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; border-left: 1.5px solid var(--line); }
+.kids > .n.first:not(.last)::before, .kids > .n.last:not(.first)::before { display: none; }
+.kids > .n.first:not(.last)::after { top: 50%; width: 22px; border-top: 1.5px solid var(--line); border-top-left-radius: 10px; }
+.kids > .n.last:not(.first)::after { bottom: 50%; width: 22px; border-bottom: 1.5px solid var(--line); border-bottom-left-radius: 10px; }
+.kids > .n.first.last::after { display: none; }
+/* 根和模块靠上对齐并吸顶：树很高时不用来回找父节点 */
+.d0, .d1 { align-items: flex-start; }
+.d0 > .box, .d1 > .box { position: sticky; top: 0; z-index: 3; }
+.d0 > .kids::before, .d1 > .kids::before { display: none; }
+.d0.open > .box::after, .d1.open > .box::after { content: ""; position: absolute; left: 100%; top: 20px; width: 31px; border-top: 1.5px solid var(--line); }
+.d0 > .kids > .n::before { top: 23px; }
+.d0 > .kids > .n.first:not(.last)::before, .d1 > .kids > .n.first:not(.last)::before { display: block; }
+.d0 > .kids > .n.first:not(.last)::after, .d1 > .kids > .n.first:not(.last)::after { top: 20px; width: 0; border-top: 0; border-radius: 0; }
+.d0 > .kids > .n.last:not(.first)::after { bottom: auto; height: 23px; }
+.d0 > .kids > .n.first.last::before { top: 23px; }
+.n.hide { display: none; }
+.box { position: relative; z-index: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px 10px; box-shadow: var(--shadow); display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.box:hover { border-color: var(--accent); }
+.box.flash { outline: 3px solid var(--accent); outline-offset: 2px; }
+.tg { flex: none; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); font-size: 11px; line-height: 18px; padding: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.n.open > .box > .tg { background: var(--bg); }
+.d0 > .box { background: var(--root); color: var(--root-ink); border-color: var(--root); font-size: 16px; font-weight: 650; padding: 10px 16px; max-width: 280px; }
+.d1 > .box { background: var(--accent-soft); border-color: transparent; border-left: 4px solid var(--accent); font-weight: 600; max-width: 300px; }
+.d2 > .box { max-width: 380px; align-items: flex-start; }
+.d2 > .box.warn { border-color: var(--warn); background: var(--warn-soft); }
+.d3 > .box { max-width: 560px; border-left: 4px solid var(--c); padding: 4px 9px; font-size: 13px; align-items: flex-start; }
+.cnt { color: var(--muted); font-weight: 400; font-size: 12px; white-space: nowrap; }
+.d0 .cnt { color: inherit; opacity: .75; }
+.pri { flex: none; font-size: 11px; font-weight: 650; border-radius: 4px; padding: 0 5px; border: 1px solid var(--line); color: var(--muted); margin-top: 2px; }
+.pri.P0 { background: var(--t-abnormal); border-color: var(--t-abnormal); color: #fff; }
+.pri.P1 { border-color: var(--t-abnormal); color: var(--t-abnormal); }
+.dots { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+.dots .dot { width: 8px; height: 8px; }
+.flag { color: var(--warn); font-size: 12px; margin-top: 2px; }
+.tag { flex: none; font-size: 11.5px; border-radius: 4px; padding: 0 6px; color: var(--c); border: 1px solid var(--c); white-space: nowrap; margin-top: 1px; }
+.env, .case { flex: none; font-size: 11.5px; border-radius: 4px; padding: 0 6px; background: var(--bg); color: var(--muted); white-space: nowrap; margin-top: 1px; }
+.case { color: var(--accent); background: var(--accent-soft); }
+mark { background: var(--hit); color: inherit; border-radius: 2px; }
+.empty { color: var(--muted); padding: 30px; }
+
+/* ---------- 覆盖矩阵 ---------- */
+table { border-collapse: collapse; background: var(--panel); font-size: 13px; }
+th, td { border: 1px solid var(--border); padding: 5px 8px; text-align: center; }
+thead th { position: sticky; top: -20px; background: var(--panel); z-index: 2; font-weight: 600; vertical-align: bottom; }
+thead th .dot { display: block; margin: 0 auto 4px; }
+th.vert { min-width: 46px; font-size: 12px; line-height: 1.25; }
+td.name, th.name { text-align: left; min-width: 320px; max-width: 460px; }
+tr.mod td { background: var(--accent-soft); font-weight: 600; text-align: left; }
+tr.mod td.num { text-align: center; }
+td.cell { font-variant-numeric: tabular-nums; min-width: 46px; }
+td.cell.z { color: var(--line); }
+td.cell.has { color: #fff; font-weight: 650; background: var(--c); cursor: pointer; }
+tr.req td.name { cursor: pointer; }
+tr.req:hover td.name { color: var(--accent); }
+tr.req.warn td.name { background: var(--warn-soft); }
+tfoot td { font-weight: 650; background: var(--bg); }
+
+/* ---------- 概览 ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; max-width: 1280px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.card h3 { margin: 0 0 10px; font-size: 14px; }
+.card.wide { grid-column: 1 / -1; }
+.hb { display: grid; grid-template-columns: 140px 1fr 40px; gap: 8px; align-items: center; margin: 5px 0; font-size: 13px; }
+.hb .track { height: 12px; background: var(--bg); border-radius: 6px; overflow: hidden; }
+.hb .fill { height: 100%; background: var(--c, var(--accent)); border-radius: 6px; }
+.hb > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hb .v { text-align: right; font-variant-numeric: tabular-nums; }
+.gap-list { margin: 0; padding: 0; list-style: none; }
+.gap-list li { padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.gap-list li:first-child { border-top: 0; }
+.gap-list li:hover b { color: var(--accent); }
+.gap-list small { color: var(--muted); display: block; }
+.plain { margin: 0; padding-left: 18px; }
+.ok { color: var(--t-mobility); }
+
+/* ---------- 详情 ---------- */
+#drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(460px, 100vw); background: var(--panel); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0, 0, 0, .12); padding: 16px 18px; overflow: auto; transform: translateX(105%); transition: transform .15s; z-index: 10; }
+#drawer.on { transform: none; }
+#drawer h2 { font-size: 15px; margin: 0 30px 8px 0; }
+#drawer h4 { margin: 14px 0 4px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+#drawer .x { position: absolute; top: 10px; right: 12px; border: 0; background: transparent; font-size: 20px; color: var(--muted); }
+#drawer dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 10px; font-size: 13px; }
+#drawer dt { color: var(--muted); }
+#drawer dd { margin: 0; word-break: break-word; }
+#drawer ul { margin: 0; padding-left: 18px; }
+@media print {
+  .bar, #drawer { display: none; }
+  body { display: block; }
+  main { position: static; }
+  .view { position: static; overflow: visible; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1 id="title"></h1>
+  <div class="sub" id="sub"></div>
+  <div class="stats" id="stats"></div>
+</header>
+<div class="bar">
+  <div class="seg" id="tabs">
+    <button data-view="tree" class="on">脑图</button>
+    <button data-view="matrix">覆盖矩阵</button>
+    <button data-view="overview">概览与关注点</button>
+  </div>
+  <span class="lbl" data-for="tree">展开到</span>
+  <div class="seg" id="levels" data-for="tree">
+    <button data-level="1">模块</button>
+    <button data-level="2">需求</button>
+    <button data-level="3">测试点</button>
+  </div>
+  <div class="seg" data-for="tree">
+    <button id="zoomOut" title="缩小">−</button>
+    <button id="zoomIn" title="放大">+</button>
+  </div>
+  <input class="q" id="q" type="search" placeholder="搜索需求、场景、用例编号">
+  <span class="lbl" id="shown"></span>
+  <span class="grow"></span>
+  <button class="btn" id="dlMm" title="FreeMind 格式，XMind / MindManager / Freeplane 都可以导入">导出脑图 .mm</button>
+  <button class="btn" id="dlMd" title="Markdown 大纲，XMind 可以导入">导出大纲 .md</button>
+</div>
+<div class="bar" id="filters">
+  <span class="lbl">测试技术</span><div class="chips" id="fTech"></div>
+  <span class="lbl">优先级</span><div class="chips" id="fPri"></div>
+  <span class="lbl">执行平台</span><div class="chips" id="fEnv"></div>
+  <button class="btn" id="reset">清除筛选</button>
+</div>
+<main>
+  <section class="view on" id="v-tree"><div id="tree"></div></section>
+  <section class="view" id="v-matrix"></section>
+  <section class="view" id="v-overview"></section>
+</main>
+<aside id="drawer"><button class="x" id="closeDrawer" aria-label="关闭">×</button><div id="drawerBody"></div></aside>
+<script>
+const DATA = /*__MAP_DATA__*/null;
+(function () {
+  "use strict";
+  if (!DATA) { document.body.textContent = "没有测试设计数据"; return; }
+  const TECH = Object.fromEntries(DATA.techniques.map(t => [t.key, t.label]));
+  const tcolor = k => `var(--t-${k}, var(--muted))`;
+  const $ = id => document.getElementById(id);
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v == null || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k === "style") el.style.cssText = v;
+      else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+    return el;
+  }
+  const allPoints = [];
+  DATA.modules.forEach(m => m.requirements.forEach(r => r.points.forEach(p => allPoints.push(p))));
+  const priorities = [...new Set(DATA.modules.flatMap(m => m.requirements.map(r => r.priority || "未定")))].sort();
+  const envs = [...new Set(allPoints.map(p => (p.env && p.env.short) || "未定"))];
+  const usedTech = DATA.techniques.filter(t => DATA.stats.by_technique[t.key]);
+  const state = { tech: new Set(), pri: new Set(), env: new Set(), q: "", zoom: 1 };
+
+  // ---------- 头部 ----------
+  $("title").textContent = DATA.title + " · 测试架构图";
+  $("sub").textContent = `生成于 ${DATA.generated_at}。结构：模块 → 需求 → 测试点` + (DATA.has_cases ? "（带用例编号）" : "（用例尚未生成）") + "。点测试点看测试目的和通过条件。";
+  const s = DATA.stats;
+  const stat = (n, label, warn) => h("div", { class: "stat" + (warn ? " warn" : "") }, h("b", {}, n), h("span", {}, label));
+  $("stats").append(stat(s.modules, "个模块"), stat(s.requirements, "条需求"), stat(s.points, "个测试点"),
+    DATA.has_cases ? stat(s.cases, "条用例") : null,
+    ...Object.entries(s.by_env).map(([k, v]) => stat(v, k)),
+    stat(DATA.gaps.length, "个评审关注点", DATA.gaps.length > 0));
+
+  // ---------- 脑图 ----------
+  const reqEls = new Map();
+  function node(depth, box, kids, open) {
+    const el = h("div", { class: `n d${depth}` + (open ? " open" : "") }, box);
+    if (kids && kids.length) {
+      const tg = h("button", { class: "tg", title: "展开 / 收起" }, kids.length);
+      box.append(tg);
+      box.addEventListener("click", e => { if (!e.target.closest("[data-detail]")) el.classList.toggle("open"); });
+      kids.forEach((k, i) => { if (i === 0) k.classList.add("first"); if (i === kids.length - 1) k.classList.add("last"); });
+      el.append(h("div", { class: "kids" }, kids));
+    }
+    return el;
+  }
+  function pointEl(p, req) {
+    const box = h("div", { class: "box", style: `--c:${tcolor(p.technique)}`, "data-detail": "1", title: p.id, onclick: () => openDrawer(p, req) },
+      h("span", { class: "tag" }, TECH[p.technique] || p.technique),
+      h("span", { class: "txt" }, p.scenario || p.id),
+      p.env && p.env.short ? h("span", { class: "env" }, p.env.short) : null,
+      p.cases.map(c => h("span", { class: "case" }, c.id)));
+    const el = node(3, box, null, false);
+    el._point = p;
+    return el;
+  }
+  function reqEl(r) {
+    const warn = r.flags.length > 0;
+    const dots = Object.entries(r.techniques).flatMap(([k, n]) => Array.from({ length: n }, () => h("span", { class: "dot", style: `--c:${tcolor(k)}`, title: TECH[k] })));
+    const body = h("div", {},
+      h("div", { class: "txt" }, r.name || r.id),
+      dots.length ? h("div", { class: "dots" }, dots) : null,
+      r.flags.map(f => h("div", { class: "flag" }, "⚠ " + f)));
+    const box = h("div", { class: "box" + (warn ? " warn" : ""), title: r.goal || "" }, r.priority ? h("span", { class: "pri " + r.priority }, r.priority) : null, body);
+    const el = node(2, box, r.points.map(p => pointEl(p, r)), false);
+    el._req = r;
+    reqEls.set(r.id, el);
+    return el;
+  }
+  const moduleEls = DATA.modules.map(m => {
+    const box = h("div", { class: "box" }, h("span", { class: "txt" }, m.name), h("span", { class: "cnt" }, `${m.requirements.length} 需求 · ${m.points} 点`));
+    return node(1, box, m.requirements.map(reqEl), true);
+  });
+  const rootEl = node(0, h("div", { class: "box" }, h("span", {}, DATA.title), h("span", { class: "cnt" }, `${s.points} 点`)), moduleEls, true);
+  $("tree").append(rootEl);
+  const allNodes = [...rootEl.querySelectorAll(".n")];
+  function setLevel(level) {
+    allNodes.forEach(el => { const d = +el.className.match(/d(\d)/)[1]; el.classList.toggle("open", d < level); });
+    rootEl.classList.add("open");
+  }
+  $("levels").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setLevel(+b.dataset.level); });
+  const applyZoom = () => { $("tree").style.zoom = state.zoom; };
+  $("zoomIn").onclick = () => { state.zoom = Math.min(1.6, +(state.zoom + 0.1).toFixed(2)); applyZoom(); };
+  $("zoomOut").onclick = () => { state.zoom = Math.max(0.4, +(state.zoom - 0.1).toFixed(2)); applyZoom(); };
+
+  // ---------- 筛选与搜索 ----------
+  function chipSet(host, items, set, label, color, count) {
+    items.forEach(k => {
+      const chip = h("button", { class: "chip", style: color ? `--c:${color(k)}` : null }, color ? h("i") : null, label(k), h("small", {}, count(k)));
+      chip.onclick = () => {
+        // 第一次点某一项：只看这一项；之后点其他项是加选 / 取消
+        if (set.size === 0) items.forEach(x => { if (x !== k) set.add(x); });
+        else if (set.has(k)) set.delete(k); else set.add(k);
+        if (set.size === items.length) set.clear();
+        refreshChips(); applyFilter();
+      };
+      chip._key = k; chip._set = set;
+      host.append(chip);
+    });
+  }
+  chipSet($("fTech"), usedTech.map(t => t.key), state.tech, k => TECH[k], tcolor, k => s.by_technique[k]);
+  chipSet($("fPri"), priorities, state.pri, k => k, null, k => s.by_priority[k] || 0);
+  chipSet($("fEnv"), envs, state.env, k => k, null, k => s.by_env[k] || 0);
+  function refreshChips() { document.querySelectorAll("#filters .chip").forEach(c => c.classList.toggle("off", c._set.has(c._key))); }
+  $("reset").onclick = () => { state.tech.clear(); state.pri.clear(); state.env.clear(); state.q = ""; $("q").value = ""; refreshChips(); applyFilter(); };
+  let timer = 0;
+  $("q").addEventListener("input", e => { clearTimeout(timer); timer = setTimeout(() => { state.q = e.target.value.trim().toLowerCase(); applyFilter(); }, 150); });
+  const pointText = p => [p.id, p.scenario, TECH[p.technique], ...p.cases.flatMap(c => [c.id, c.title, ...c.exec_ids])].join(" ").toLowerCase();
+  const reqText = r => [r.id, r.name, r.title].join(" ").toLowerCase();
+  function pointVisible(p, r, reqHit) {
+    if (state.tech.has(p.technique)) return false;
+    if (state.env.has((p.env && p.env.short) || "未定")) return false;
+    if (state.q && !reqHit && !pointText(p).includes(state.q)) return false;
+    return true;
+  }
+  function applyFilter() {
+    const active = state.tech.size || state.pri.size || state.env.size || state.q;
+    let shown = 0;
+    moduleEls.forEach((mEl, mi) => {
+      let modShown = 0;
+      DATA.modules[mi].requirements.forEach(r => {
+        const el = reqEls.get(r.id);
+        const priOk = !state.pri.has(r.priority || "未定");
+        const reqHit = !!state.q && reqText(r).includes(state.q);
+        let n = 0;
+        el.querySelectorAll(":scope > .kids > .n").forEach(pEl => {
+          const ok = priOk && pointVisible(pEl._point, r, reqHit);
+          pEl.classList.toggle("hide", !ok);
+          if (ok) n++;
+        });
+        // 没有测试点的需求本身就是关注点：没有按技术 / 平台筛选时照常显示
+        const keep = priOk && (n > 0 || (!r.points.length && !state.tech.size && !state.env.size && (!state.q || reqHit)));
+        el.classList.toggle("hide", !keep);
+        if (active && n > 0 && (state.q || state.tech.size || state.env.size)) el.classList.add("open");
+        if (keep) modShown++;
+        shown += n;
+        fixEnds(el);
+      });
+      mEl.classList.toggle("hide", modShown === 0);
+      if (active && modShown) mEl.classList.add("open");
+      fixEnds(mEl);
+    });
+    fixEnds(rootEl);
+    $("shown").textContent = active ? `显示 ${shown} / ${s.points} 个测试点` : "";
+  }
+  function fixEnds(el) {   // 隐藏兄弟节点后，连接线的首尾要跟着变
+    const kids = [...el.querySelectorAll(":scope > .kids > .n")];
+    const vis = kids.filter(k => !k.classList.contains("hide"));
+    kids.forEach(k => k.classList.remove("first", "last"));
+    if (vis.length) { vis[0].classList.add("first"); vis[vis.length - 1].classList.add("last"); }
+  }
+
+  // ---------- 详情 ----------
+  function openDrawer(p, r) {
+    const body = $("drawerBody");
+    body.textContent = "";
+    const list = items => h("ul", {}, items.map(x => h("li", {}, x)));
+    body.append(
+      h("h2", {}, p.scenario || p.id),
+      h("div", { class: "chips" },
+        h("span", { class: "chip", style: `--c:${tcolor(p.technique)}` }, h("i"), TECH[p.technique] || p.technique),
+        p.env && p.env.label ? h("span", { class: "chip" }, p.env.label) : null,
+        h("span", { class: "chip" }, p.id)),
+      h("h4", {}, "所属需求"), h("div", {}, (r.priority ? r.priority + " · " : "") + (r.name || r.id)),
+      r.goal ? h("div", { class: "lbl" }, "测试目标：" + r.goal) : null);
+    if (Object.keys(p.purpose).length) body.append(h("h4", {}, "测试目的"),
+      h("dl", {}, Object.entries({ with: "前置", when: "触发", then: "预期" }).filter(([k]) => p.purpose[k]).flatMap(([k, label]) => [h("dt", {}, label), h("dd", {}, p.purpose[k])])));
+    if (p.pass_criteria.length) body.append(h("h4", {}, "通过条件"), list(p.pass_criteria));
+    if (Object.keys(p.config).length) body.append(h("h4", {}, "关键配置"), h("dl", {}, Object.entries(p.config).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)])));
+    if (p.references.length) body.append(h("h4", {}, "依据"), list(p.references));
+    body.append(h("h4", {}, "用例"), p.cases.length
+      ? list(p.cases.map(c => `${c.id}${c.exec_ids.length ? "（" + c.exec_ids.join("、") + "）" : ""} ${c.title}` + (c.open_points ? `，待确认 ${c.open_points} 项` : "")))
+      : h("div", { class: "lbl" }, DATA.has_cases ? "这个测试点还没有用例" : "用例尚未生成"));
+    $("drawer").classList.add("on");
+  }
+  $("closeDrawer").onclick = () => $("drawer").classList.remove("on");
+  document.addEventListener("keydown", e => { if (e.key === "Escape") $("drawer").classList.remove("on"); });
+
+  // ---------- 视图切换 ----------
+  function show(view) {
+    document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+    document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + view));
+    document.querySelectorAll("[data-for]").forEach(el => { el.style.display = el.dataset.for === view ? "" : "none"; });
+    $("filters").style.display = view === "tree" ? "" : "none";
+    $("q").style.display = view === "tree" ? "" : "none";
+  }
+  $("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) show(b.dataset.view); });
+  function jump(reqId, technique) {
+    $("reset").click();
+    if (technique) { usedTech.forEach(t => { if (t.key !== technique) state.tech.add(t.key); }); refreshChips(); applyFilter(); }
+    show("tree");
+    const el = reqEls.get(reqId);
+    if (!el) return;
+    el.classList.add("open");
+    el.parentElement.closest(".n").classList.add("open");
+    const box = el.querySelector(".box");
+    box.scrollIntoView({ block: "center", inline: "center" });
+    box.classList.add("flash");
+    setTimeout(() => box.classList.remove("flash"), 1600);
+  }
+
+  // ---------- 覆盖矩阵 ----------
+  (function matrix() {
+    const cols = DATA.techniques;
+    const head = h("tr", {}, h("th", { class: "name" }, "需求"), h("th", {}, "优先级"),
+      cols.map(t => h("th", { class: "vert" }, h("span", { class: "dot", style: `--c:${tcolor(t.key)}` }), t.label)), h("th", {}, "合计"));
+    const body = h("tbody");
+    const total = Object.fromEntries(cols.map(t => [t.key, 0]));
+    DATA.modules.forEach(m => {
+      const sum = Object.fromEntries(cols.map(t => [t.key, 0]));
+      m.requirements.forEach(r => cols.forEach(t => { sum[t.key] += r.techniques[t.key] || 0; }));
+      body.append(h("tr", { class: "mod" }, h("td", { colspan: 2 }, m.name), cols.map(t => h("td", { class: "num" }, sum[t.key] || "")), h("td", { class: "num" }, m.points)));
+      m.requirements.forEach(r => {
+        body.append(h("tr", { class: "req" + (r.flags.length ? " warn" : ""), title: r.flags.join("；") },
+          h("td", { class: "name", onclick: () => jump(r.id) }, (r.flags.length ? "⚠ " : "") + (r.name || r.id)),
+          h("td", {}, r.priority || ""),
+          cols.map(t => {
+            const n = r.techniques[t.key] || 0;
+            total[t.key] += n;
+            return n ? h("td", { class: "cell has", style: `--c:${tcolor(t.key)}`, onclick: () => jump(r.id, t.key) }, n) : h("td", { class: "cell z" }, "·");
+          }),
+          h("td", { class: "cell" }, r.points.length)));
+      });
+    });
+    const foot = h("tfoot", {}, h("tr", {}, h("td", { colspan: 2 }, "合计"), cols.map(t => h("td", {}, total[t.key] || "0")), h("td", {}, s.points)));
+    $("v-matrix").append(
+      h("p", { class: "lbl" }, "每格是该需求用这种测试技术设计的测试点数，空格表示没有覆盖。整列为 0 的技术说明本次设计完全没有用到。点数字跳到脑图里对应的测试点。"),
+      h("table", {}, h("thead", {}, head), body, foot));
+  })();
+
+  // ---------- 概览与关注点 ----------
+  (function overview() {
+    const bars = (entries, color) => {
+      const max = Math.max(1, ...entries.map(e => e[1]));
+      return entries.map(([label, v, key]) => h("div", { class: "hb", style: color ? `--c:${color(key)}` : null },
+        h("span", { title: label }, label), h("div", { class: "track" }, h("div", { class: "fill", style: `width:${(v / max) * 100}%` })), h("span", { class: "v" }, v)));
+    };
+    const kinds = { no_point: "没有测试点的需求", normal_only: "高优先级需求只有正常流程", single_point: "高优先级需求只有 1 个测试点", no_case: "测试点还没有用例", loose_case: "用例没有挂到测试点" };
+    const gapCards = Object.entries(kinds).map(([kind, label]) => {
+      const items = DATA.gaps.filter(g => g.kind === kind);
+      if (!items.length) return null;
+      return h("div", { class: "card" }, h("h3", {}, `${label}（${items.length}）`),
+        h("ul", { class: "gap-list" }, items.map(g => h("li", { onclick: () => jump(g.req_id) }, h("b", {}, g.name || g.req_id), h("small", {}, `${g.module} · ${g.text}`)))));
+    }).filter(Boolean);
+    const unused = DATA.techniques.filter(t => !s.by_technique[t.key]).map(t => t.label);
+    $("v-overview").append(h("div", { class: "cards" },
+      h("div", { class: "card" }, h("h3", {}, "测试技术分布（测试点数）"), bars(DATA.techniques.map(t => [t.label, s.by_technique[t.key] || 0, t.key]), tcolor),
+        unused.length ? h("p", { class: "flag" }, "本次设计没有用到：" + unused.join("、")) : null),
+      h("div", { class: "card" }, h("h3", {}, "各模块的测试点数"), bars(DATA.modules.map(m => [m.name, m.points]))),
+      h("div", { class: "card" }, h("h3", {}, "执行平台与需求优先级"), bars(Object.entries(s.by_env)), h("div", { style: "height:10px" }), bars(Object.entries(s.by_priority).sort())),
+      gapCards.length ? gapCards : h("div", { class: "card" }, h("h3", {}, "评审关注点"), h("p", { class: "ok" }, "没有发现结构性的缺口：每条需求都有测试点，高优先级需求不止正常流程" + (DATA.has_cases ? "，每个测试点都有用例。" : "。"))),
+      DATA.design_advice.length ? h("div", { class: "card" }, h("h3", {}, "设计阶段的提示"), h("ul", { class: "plain" }, DATA.design_advice.map(x => h("li", {}, x)))) : null,
+      DATA.de_scoped.length ? h("div", { class: "card" }, h("h3", {}, "本次没有纳入的范围"), h("ul", { class: "plain" }, DATA.de_scoped.map(x => h("li", {}, x)))) : null));
+  })();
+
+  // ---------- 导出 ----------
+  function outline() {   // [depth, text]
+    const out = [[0, DATA.title]];
+    DATA.modules.forEach(m => {
+      out.push([1, m.name]);
+      m.requirements.forEach(r => {
+        out.push([2, (r.priority ? `[${r.priority}] ` : "") + (r.name || r.id)]);
+        r.points.forEach(p => {
+          out.push([3, `[${TECH[p.technique] || p.technique}] ${p.scenario || p.id}` + (p.env && p.env.short ? `（${p.env.short}）` : "")]);
+          p.cases.forEach(c => out.push([4, `${c.id} ${c.title}`]));
+        });
+      });
+    });
+    return out;
+  }
+  function download(name, text, type) {
+    const a = h("a", { href: URL.createObjectURL(new Blob([text], { type })), download: name });
+    document.body.append(a); a.click(); a.remove();
+  }
+  const xml = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  $("dlMd").onclick = () => download("test-architecture.md",
+    outline().map(([d, t]) => d === 0 ? `# ${t}\n` : d === 1 ? `\n## ${t}\n` : `${"  ".repeat(d - 2)}- ${t}`).join("\n") + "\n", "text/markdown;charset=utf-8");
+  $("dlMm").onclick = () => {
+    const rows = outline();
+    let out = '<map version="1.0.1">\n', depth = -1;
+    rows.forEach(([d, t]) => {
+      for (; depth >= d; depth--) out += "  ".repeat(depth) + "</node>\n";
+      out += "  ".repeat(d) + `<node TEXT="${xml(t)}"${d === 1 ? ' POSITION="right"' : ""}${d === 2 ? ' FOLDED="true"' : ""}>\n`;
+      depth = d;
+    });
+    for (; depth >= 0; depth--) out += "  ".repeat(depth) + "</node>\n";
+    download("test-architecture.mm", out + "</map>\n", "application/x-freemind;charset=utf-8");
+  };
+
+  show("tree");
+  applyFilter();
+})();
+</script>
+</body>
+</html>

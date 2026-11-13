@@ -6,13 +6,14 @@ import uuid
 import time
 import re
 import html
+from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -25,6 +26,7 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from core.events import EventLog
+from core.design_map import render_design_map_html
 from core.grouping import ensure_suite, requirement_group, suite_tree
 from core.llm import call_llm, summarize_usage
 from core.tcd import TECHNIQUE_LABELS, purpose_text
@@ -213,6 +215,10 @@ def _history_document_url(record_id: str) -> str:
     return f"/api/design-history/{record_id}/document"
 
 
+def _history_map_url(record_id: str) -> str:
+    return f"/api/design-history/{record_id}/map"
+
+
 def _safe_json_text(value: Any) -> str:
     try:
         return json.dumps(value, ensure_ascii=False, indent=2)
@@ -267,6 +273,7 @@ def _history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "testcase_count": counts["testcases"],
         "has_testcases": counts["testcases"] > 0,
         "document_url": _history_document_url(record_id),
+        "map_url": _history_map_url(record_id),
     }
 
 
@@ -864,7 +871,19 @@ def get_design_history(record_id: str):
         **record,
         "summary": _history_summary(record),
         "document_url": _history_document_url(record_id),
+        "map_url": _history_map_url(record_id),
     }
+
+
+@app.get("/api/design-history/{record_id}/map")
+def get_design_history_map(record_id: str, download: int = 0):
+    """测试架构图：模块 → 需求 → 测试点 → 用例的脑图、覆盖矩阵和评审关注点。按当前记录现算，用例生成后自动带上用例编号。"""
+    record = _load_design_history_record(record_id)
+    headers = {}
+    if download:
+        name = quote(f"{record.get('title', record_id)}-测试架构图.html")
+        headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{name}"
+    return HTMLResponse(render_design_map_html(record), headers=headers)
 
 
 @app.get("/api/design-history/{record_id}/document")

@@ -82,6 +82,8 @@ const openQuestionsPanel = document.getElementById("openQuestionsPanel");
 const downloadExcelBtn = document.getElementById("downloadExcelBtn");
 const designDocActions = document.getElementById("designDocActions");
 const designDocLink = document.getElementById("designDocLink");
+const designMapLink = document.getElementById("designMapLink");
+const designHistoryMapLink = document.getElementById("designHistoryMapLink");
 const refreshDesignHistoryBtn = document.getElementById("refreshDesignHistoryBtn");
 const designHistoryList = document.getElementById("designHistoryList");
 const designHistoryDetailTitle = document.getElementById("designHistoryDetailTitle");
@@ -994,6 +996,13 @@ function buildDesignDocumentHtml() {
 
 function refreshDesignDocumentLink() {
   revokeDesignDocUrl();
+  // 测试架构图按归档记录现算：有归档（测试设计完成后自动归档）才显示入口
+  const mapUrl = stageState.test_design_spec && stageState.design_history_doc_url
+    ? stageState.design_history_doc_url.replace(/\/document$/, "/map") : "";
+  if (designMapLink) {
+    designMapLink.classList.toggle("hidden", !mapUrl);
+    if (mapUrl) designMapLink.href = mapUrl; else designMapLink.removeAttribute("href");
+  }
   if (!stageState.test_design_spec) {
     designDocActions?.classList.add("hidden");
     if (designDocLink) designDocLink.removeAttribute("href");
@@ -1218,6 +1227,7 @@ function renderDesignHistoryDetail(record) {
     if (designHistoryDocLink) {
       designHistoryDocLink.classList.add("hidden");
       designHistoryDocLink.removeAttribute("href");
+      designHistoryMapLink?.classList.add("hidden");
     }
     if (designHistoryLoadBtn) designHistoryLoadBtn.disabled = true;
     if (designHistoryCasesBtn) designHistoryCasesBtn.disabled = true;
@@ -1228,6 +1238,10 @@ function renderDesignHistoryDetail(record) {
   if (designHistoryDocLink) {
     designHistoryDocLink.href = record.document_url || summary.document_url || "#";
     designHistoryDocLink.classList.remove("hidden");
+  }
+  if (designHistoryMapLink) {
+    designHistoryMapLink.href = record.map_url || summary.map_url || "#";
+    designHistoryMapLink.classList.remove("hidden");
   }
   if (designHistoryLoadBtn) designHistoryLoadBtn.disabled = false;
   if (designHistoryCasesBtn) {
