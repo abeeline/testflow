@@ -20,8 +20,6 @@ const themeToggle = document.getElementById("themeToggle");
 
 const requirementsEl = document.getElementById("requirements");
 const ragEl = document.getElementById("rag");
-const capabilityEl = document.getElementById("capability");
-const actionVocabEl = document.getElementById("actionVocab");
 const testEnvironmentOptionsEl = document.getElementById("testEnvironmentOptions");
 const productProfileGroupsEl = document.getElementById("productProfileGroups");
 const ragFileEl = document.getElementById("ragFile");
@@ -97,6 +95,9 @@ const designHistoryAllProjects = document.getElementById("designHistoryAllProjec
 const ragTargetEl = document.getElementById("ragTarget");
 const projectSelect = document.getElementById("projectSelect");
 const currentProjectTag = document.getElementById("currentProjectTag");
+const reqProjectSelect = document.getElementById("reqProjectSelect");
+const reqProjectHint = document.getElementById("reqProjectHint");
+const reqProjectManageBtn = document.getElementById("reqProjectManageBtn");
 const projectListEl = document.getElementById("projectList");
 const projectFormTitle = document.getElementById("projectFormTitle");
 const projectNameEl = document.getElementById("projectName");
@@ -404,23 +405,6 @@ function setSelectedTestEnvironments(selectedIds = []) {
     const el = document.getElementById(`te_${env.id.toLowerCase()}`);
     if (el) el.checked = set.has(env.id);
   });
-}
-
-function buildFrameworkCapabilityCatalog() {
-  const base = (capabilityEl?.value || "").trim();
-  const productProfile = getSelectedProductProfile();
-  const testEnvironments = getSelectedTestEnvironments();
-  const productSummary = (productProfile.profile_display || [])
-    .map((x) => `${x.group}: ${x.values.join(", ")}`)
-    .join(" | ");
-  const envSummary = (testEnvironments.selected_details || []).map((x) => `${x.label}`).join(", ");
-  const extra = [
-    productSummary ? `Product Profile: ${productSummary}` : "",
-    envSummary ? `Available Test Environments: ${envSummary}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-  return [base, extra].filter(Boolean).join("\n");
 }
 
 function esc(s) {
@@ -1422,8 +1406,6 @@ function restoreLastResultUI(snapshot) {
   if (!snapshot) return;
   requirementsEl.value = snapshot.form?.requirements || "";
   ragEl.value = snapshot.form?.rag || "";
-  capabilityEl.value = snapshot.form?.framework_capability_catalog || "";
-  actionVocabEl.value = snapshot.form?.action_vocab || "";
   if (bzIdsEl) bzIdsEl.value = snapshot.form?.bz_ids || "";
   if (bzExcludedEl) bzExcludedEl.value = snapshot.form?.bz_excluded || "";
   setSelectedTestEnvironments(snapshot.form?.test_environment_selected || []);
@@ -1461,8 +1443,6 @@ function persistCurrentState(customStatus) {
     form: {
       requirements: requirementsEl.value,
       rag: ragEl.value,
-      framework_capability_catalog: capabilityEl.value,
-      action_vocab: actionVocabEl.value,
       bz_ids: bzIdsEl?.value || "",
       bz_excluded: bzExcludedEl?.value || "",
       test_environment_selected: getSelectedTestEnvironments().selected_ids,
@@ -1607,6 +1587,29 @@ function renderProjectSelect() {
       .join("");
   }
   if (currentProjectTag) currentProjectTag.textContent = projectLabel(currentProject());
+  renderReqProjectSelect();
+}
+
+// 需求准备页的项目选择：“不选择项目”即默认项目，保持原来的行为；选了项目后各阶段和问答助手都查该项目的知识库。
+function renderReqProjectSelect() {
+  if (!reqProjectSelect) return;
+  const others = projects.filter((p) => p.project_id !== DEFAULT_PROJECT_ID);
+  reqProjectSelect.innerHTML = [
+    `<option value="${esc(DEFAULT_PROJECT_ID)}" ${currentProjectId === DEFAULT_PROJECT_ID ? "selected" : ""}>不选择项目</option>`,
+    ...others.map((p) => `<option value="${esc(p.project_id)}" ${p.project_id === currentProjectId ? "selected" : ""}>${esc(projectLabel(p))}</option>`),
+  ].join("");
+  if (!reqProjectHint) return;
+  const p = currentProject();
+  if (!p || currentProjectId === DEFAULT_PROJECT_ID) {
+    reqProjectHint.textContent = others.length
+      ? "未选择项目：只检索公共知识库和公共资料，测试设计归入“默认项目”。"
+      : "还没有项目。可以在“项目管理”里新建项目并配置它的知识库（MCP 地址）和资料。";
+    return;
+  }
+  const parts = [];
+  parts.push(p.kb_mcp_url ? "已配置项目知识库" : "未配置项目知识库（可在“项目管理”里填写 MCP 地址）");
+  parts.push(`项目资料 ${p.doc_count || 0} 份`);
+  reqProjectHint.textContent = `需求评审、测试设计、评审问题查证和问答助手会检索“${projectLabel(p)}”的资料 + 公共资料。${parts.join("，")}。`;
 }
 
 async function loadProjects() {
@@ -1828,7 +1831,6 @@ async function generateRequirementsRound(round) {
       requirements,
       requirement_meta: requirementMeta(),
       rag_context: ragEl.value,
-      framework_capability_catalog: buildFrameworkCapabilityCatalog(),
       product_profile: productProfile,
       test_environments: testEnvironments,
       project_id: currentProjectId,
@@ -1902,14 +1904,12 @@ async function generateCases() {
   if (!stageState.test_design_spec) throw new Error("请先生成测试设计稿");
   const productProfile = getSelectedProductProfile();
   const testEnvironments = getSelectedTestEnvironments();
-  const actionVocab = parseCSVLine(actionVocabEl.value);
   const data = await startStageJobAndWait("testcases", {
     requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
     persona_reviews: stageState.persona_reviews,
     requirement_review_history: stageState.requirement_review_history || {},
     test_design_spec: stageState.test_design_spec,
-    action_vocabulary: actionVocab,
     product_profile: productProfile,
     test_environments: testEnvironments,
     history_record_id: stageState.design_history_record_id || "",
@@ -2100,10 +2100,8 @@ async function generateAll() {
   const data = await startStageJobAndWait("auto", {
     requirement_input: requirements,
     rag_context: ragEl.value,
-    framework_capability_catalog: buildFrameworkCapabilityCatalog(),
     product_profile: getSelectedProductProfile(),
     test_environments: getSelectedTestEnvironments(),
-    action_vocabulary: parseCSVLine(actionVocabEl.value),
     bug_ids: stageState.bug_ids || [],
     project_id: currentProjectId,
   }, { onStageResult });
@@ -2670,6 +2668,12 @@ projectSelect?.addEventListener("change", () => {
   setCurrentProject(projectSelect.value);
 });
 
+reqProjectSelect?.addEventListener("change", () => {
+  setCurrentProject(reqProjectSelect.value);
+});
+
+reqProjectManageBtn?.addEventListener("click", () => switchSheetById("sheet9"));
+
 projectListEl?.addEventListener("click", (ev) => {
   const btn = ev.target.closest("[data-project-id]");
   if (!btn) return;
@@ -2997,7 +3001,12 @@ async function sendBotMessage() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: q, history: botHistory.slice(0, -1), context: buildChatContext() }),
+      body: JSON.stringify({
+        message: q,
+        history: botHistory.slice(0, -1),
+        context: buildChatContext(),
+        project_id: currentProjectId === DEFAULT_PROJECT_ID ? "" : currentProjectId,
+      }),
     });
     const text = await resp.text();
     if (!resp.ok) {
@@ -3011,7 +3020,11 @@ async function sendBotMessage() {
     }
     const data = JSON.parse(text);
     const reply = (data.reply || "").trim() || "收到，我再想想。";
-    appendBotMessage("assistant", reply);
+    const refs = Array.isArray(data.references) ? data.references : [];
+    const refLine = refs.length
+      ? "\n\n参考资料：" + refs.map((r) => `[${r.ref}] ${r.scope_label} · ${r.filename}`).join("；")
+      : "";
+    appendBotMessage("assistant", reply + refLine);
     botHistory.push({ role: "assistant", content: reply });
   } finally {
     setSingleButtonBusy(botSendBtn, false);

@@ -167,7 +167,6 @@ class IntakeNode(Node):
             "requirement_meta": shared.get("requirement_meta") or [],
             "rag_context": shared.get("rag_context", ""),
             "review_feedback": shared.get("review_feedback", ""),
-            "framework_capability_catalog": shared.get("framework_capability_catalog", ""),
             "product_profile": shared.get("product_profile", {}),
             "action_vocabulary": shared.get("action_vocabulary") or DEFAULT_ACTION_VOCABULARY,
             "assertion_vocabulary": shared.get("assertion_vocabulary") or DEFAULT_ASSERTION_VOCABULARY,
@@ -231,7 +230,6 @@ class IntakeNode(Node):
             "_renamed_req_ids": renamed,
             "rag_context": prep_res["rag_context"].strip(),
             "review_feedback": prep_res["review_feedback"].strip(),
-            "framework_capability_catalog": prep_res["framework_capability_catalog"].strip(),
             "product_profile": prep_res.get("product_profile") or {},
             "action_vocabulary": prep_res["action_vocabulary"],
             "assertion_vocabulary": prep_res["assertion_vocabulary"],
@@ -246,8 +244,6 @@ class IntakeNode(Node):
         missing_inputs = []
         if not exec_res["rag_context"]:
             missing_inputs.append("缺少RAG文档上下文（3GPP/运营商/历史缺陷等）")
-        if not exec_res["framework_capability_catalog"]:
-            missing_inputs.append("缺少测试脚本框架能力清单（驱动、日志采集、报告能力）")
         shared["missing_inputs"] = missing_inputs
         _trace(shared, "IntakeNode")
         return "default"
@@ -1212,7 +1208,6 @@ class AssembleResultNode(Node):
             "input": {
                 "requirements": [r.get("title", "") for r in req_spec.get("final_requirements", [])],
                 "rag_context_provided": bool(prep_res.get("rag_context")),
-                "framework_capability_catalog_provided": bool(prep_res.get("framework_capability_catalog")),
             },
             "missing_inputs": prep_res.get("missing_inputs", []),
             "warnings": prep_res.get("warnings", []),
