@@ -955,20 +955,28 @@ def _requirement_text(req: Dict[str, Any]) -> str:
 
 
 def _build_design_knowledge(requirement_spec: Dict[str, Any], project_id: str) -> tuple[str, List[Dict[str, Any]]]:
-    """测试设计阶段：每条需求单独查知识库（公共知识库用协议关键词补参数、定时器、流程和条款；项目知识库查产品行为）。"""
+    """测试设计阶段：每条需求单独查知识库（公共知识库用协议关键词补参数、定时器、流程和条款；项目知识库查产品行为），
+    同时检索上传的本地资料（当前项目资料 + 公共资料）。"""
     reqs = [r for r in (requirement_spec or {}).get("final_requirements", []) or [] if isinstance(r, dict)][:8]
+    if not reqs:
+        return "", []
     cfg = KBSettings().read()
     keys = _kb_sources(project_id)
-    if not reqs or not any(keys.values()):
-        return "", []
+    local_stores = (("project", project_store.rag_store(project_id)), ("public", rag_store))
+    hits: List[Dict[str, Any]] = []
     jobs = []
     for r in reqs:
         text = _requirement_text(r)
         if not text:
             continue
+        rid = r.get("req_id", "")
+        for scope, store in local_stores:
+            hits.extend({**h, "scope": scope, "req_id": rid, "filename": f"{h.get('filename', '')}（{rid}）" if rid else h.get("filename", "")}
+                        for h in store.retrieve(text, top_k=2))
         jobs.append((r.get("req_id", ""), "kb_public", protocol_query(text)))
         jobs.append((r.get("req_id", ""), "kb_project", str(r.get("title") or text)))
-    hits: List[Dict[str, Any]] = []
+    if not hits and not any(keys.values()):
+        return "", []
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [(rid, pool.submit(_query_kb, scope, keys[scope], q, cfg)) for rid, scope, q in jobs if keys[scope]]
         for rid, f in futures:
@@ -976,7 +984,7 @@ def _build_design_knowledge(requirement_spec: Dict[str, Any], project_id: str) -
             hits.extend({**x, "req_id": rid, "filename": f"{x['filename']}（{rid}）" if rid else x["filename"]} for x in h)
             for err in errs:
                 print(f"[kb] {err}")
-    return format_context("", hits, max_hits={"kb_project": 8, "kb_public": 10}, max_total=9000)
+    return format_context("", hits, max_hits={"kb_project": 8, "project": 6, "kb_public": 10, "public": 4}, max_total=9000)
 
 
 def _kb_resolve_questions(user_qs: List[Dict[str, Any]], auto_qs: List[Dict[str, Any]], project_id: str,

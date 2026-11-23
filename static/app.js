@@ -1535,8 +1535,12 @@ async function fetchRagDocs() {
     fetchJson(projectDocsUrl(currentProjectId)).catch(() => ({ docs: [] })),
     fetchJson("/api/rag/docs"),
   ]);
+  const noProject = currentProjectId === DEFAULT_PROJECT_ID;
+  const projectName = noProject ? "未选择项目，归入默认项目" : projectLabel(currentProject());
+  const targetOpt = document.getElementById("ragTargetProject");
+  if (targetOpt) targetOpt.textContent = noProject ? "存入默认项目资料（未选择项目）" : `存入项目资料（${projectLabel(currentProject())}）`;
   ragDocsEl.innerHTML = `
-    <div class="rag-scope-title">当前项目资料（${esc(currentProject()?.name || "")}）</div>
+    <div class="rag-scope-title">项目资料（${esc(projectName)}）</div>
     ${renderDocRows(projectData.docs || [], "project", currentProjectId)}
     <div class="rag-scope-title">公共资料</div>
     ${renderDocRows(publicData.docs || [], "public")}`;

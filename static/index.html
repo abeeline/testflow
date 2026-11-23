@@ -123,13 +123,13 @@
 
             <details class="fold">
               <summary>参考资料（RAG）<span class="tag">可选</span></summary>
-              <p class="feature-hint">生成测试需求时会自动检索“当前项目资料 + 公共资料”，命中片段带入评审上下文。</p>
+              <p class="feature-hint">上传的文档按上面选的项目归档：存入项目资料的只给这个项目用，存入公共资料的所有项目共享。需求评审、测试设计和问答助手都会检索“当前项目资料 + 公共资料”。已上传的文档列在下面，可以删除；项目资料也可以在“项目管理 → 项目资料”里维护。</p>
               <label for="rag">直接粘贴上下文</label>
               <textarea class="ui-input" id="rag" placeholder="例如：3GPP 条款、运营商验收口径、历史缺陷知识"></textarea>
               <label for="ragFile">或上传文档（txt / md / pdf）</label>
               <div class="btn-row">
                 <select id="ragTarget" class="ui-input rag-target">
-                  <option value="project">存入当前项目资料</option>
+                  <option value="project" id="ragTargetProject">存入当前项目资料</option>
                   <option value="public">存入公共资料（所有项目共享）</option>
                 </select>
                 <input id="ragFile" class="ui-input" type="file" multiple />
@@ -322,7 +322,7 @@
                     <h4>项目资料</h4>
                     <span id="projectDocsHint" class="feature-hint"></span>
                   </div>
-                  <p class="feature-hint">放这个项目相关的规格书、运营商需求、Feature List、历史问题等（txt / md / csv / json / pdf）。测试设计时自动检索。</p>
+                  <p class="feature-hint">放这个项目相关的规格书、运营商需求、Feature List、历史问题等（txt / md / csv / json / pdf）。在需求准备页选这个项目后，需求评审、测试设计和问答助手会自动检索。需求准备页“参考资料”里上传到项目资料的文档也会出现在这里。</p>
                   <div class="btn-row">
                     <input id="projectDocFile" class="ui-input" type="file" multiple />
                     <button id="uploadProjectDocBtn" class="ui-btn ui-btn-secondary" type="button">上传入库</button>
