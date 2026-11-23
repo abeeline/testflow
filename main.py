@@ -100,6 +100,7 @@ class ChatRequest(BaseModel):
     message: str
     history: List[ChatTurn] = Field(default_factory=list)
     context: Optional[Dict[str, Any]] = None  # 当前会话摘要（需求、设计、用例、告警），让助手能回答“为什么这样设计”
+    project_id: str = ""  # 需求准备页选了项目时传入：回答前先查该项目的知识库和项目资料
 
 
 class RequirementImportRequest(BaseModel):
@@ -111,7 +112,6 @@ class RequirementHITLStartRequest(BaseModel):
     requirements: List[str] = Field(..., min_length=1)
     requirement_meta: Optional[List[Dict[str, Any]]] = None  # 需求清单导入时带来的编号和分组，与 requirements 一一对应
     rag_context: str = ""
-    framework_capability_catalog: str = ""
     product_profile: Optional[Dict[str, Any]] = None
     test_environments: Optional[Dict[str, Any]] = None
     project_id: str = ""
@@ -126,7 +126,6 @@ class StageGenerateRequest(BaseModel):
     requirement_meta: Optional[List[Dict[str, Any]]] = None  # 与 requirement_input 一一对应：{"req_id", "group"}
     requirement_spec: Optional[Dict[str, Any]] = None
     rag_context: str = ""  # 一键全流程（auto）用
-    framework_capability_catalog: str = ""
     persona_reviews: Optional[Dict[str, Any]] = None
     requirement_review_history: Optional[Dict[str, Any]] = None
     test_design_spec: Optional[Dict[str, Any]] = None
@@ -923,6 +922,20 @@ def _gather_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[
     return hits, errors
 
 
+def _gather_project_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[Dict[str, Any]], List[str]]:
+    """只查某个项目自己的资料：项目资料（本地）+ 项目知识库（MCP）。没选项目时返回空。"""
+    pid = str(project_id or "").strip()
+    if not text.strip() or not pid or pid == DEFAULT_PROJECT_ID or not project_store.get(pid):
+        return [], []
+    hits: List[Dict[str, Any]] = [{**h, "scope": "project"} for h in project_store.rag_store(pid).retrieve(text, top_k=top_k)]
+    url = project_store.kb_mcp_url(pid)
+    errors: List[str] = []
+    if url:
+        h, errors = _query_kb("kb_project", url, text, KBSettings().read())
+        hits.extend(h)
+    return hits, errors
+
+
 def _build_effective_rag_context(
     requirements: List[str], manual_rag_context: str, project_id: str = ""
 ) -> tuple[str, List[Dict[str, Any]], List[str]]:
@@ -1178,10 +1191,17 @@ async def chat(payload: ChatRequest):
         context_text = json.dumps(payload.context, ensure_ascii=False)
         if len(context_text) > _CHAT_CONTEXT_CHARS:
             context_text = context_text[:_CHAT_CONTEXT_CHARS] + "…（已截断）"
-    messages: List[Dict[str, str]] = [{
-        "role": "system",
-        "content": CHAT_SYSTEM_PROMPT + (f"\n\n【当前会话上下文】\n{context_text}" if context_text else "\n\n（当前还没有生成内容）"),
-    }]
+    kb_text, kb_used = "", []
+    if payload.project_id:
+        hits, errors = await asyncio.to_thread(_gather_project_knowledge, message, payload.project_id)
+        for err in errors:
+            print(f"[kb] {err}")
+        kb_text, kb_used = format_context("", hits, max_total=6000)
+    system_content = CHAT_SYSTEM_PROMPT + (f"\n\n【当前会话上下文】\n{context_text}" if context_text else "\n\n（当前还没有生成内容）")
+    if kb_text:
+        system_content += (f"\n\n【项目“{project_store.name_of(payload.project_id)}”的资料检索结果】"
+                           "回答涉及产品行为、项目约定时优先依据这些资料，并注明引用编号（如 [K-1]）。\n" + kb_text)
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
     for turn in (payload.history or [])[-8:]:
         txt = (turn.content or "").strip()
         if txt and turn.role in ("user", "assistant"):
@@ -1192,7 +1212,10 @@ async def chat(payload: ChatRequest):
         resp = await asyncio.to_thread(call_llm, client, messages, temperature=0.3)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
-    return {"reply": resp.text}
+    return {
+        "reply": resp.text,
+        "references": [{"ref": h.get("ref", ""), "scope_label": h.get("scope_label", ""), "filename": h.get("filename", "")} for h in kb_used],
+    }
 
 
 def _collect_review_issues(persona_reviews: Dict[str, Any]) -> List[str]:
@@ -1316,7 +1339,6 @@ async def _run_requirement_hitl_job(job_id: str):
     events: EventLog = job["events"]
     reqs: List[str] = job["requirements"]
     rag_context: str = job["rag_context"]
-    framework_capability_catalog: str = job["framework_capability_catalog"]
     product_profile: Dict[str, Any] = job.get("product_profile") or {}
     test_environments: Dict[str, Any] = job.get("test_environments") or {}
 
@@ -1329,7 +1351,6 @@ async def _run_requirement_hitl_job(job_id: str):
                 "input_requirements": reqs,
                 "requirement_meta": job.get("requirement_meta") or [],
                 "rag_context": effective_rag_context,
-                "framework_capability_catalog": framework_capability_catalog,
                 "product_profile": product_profile,
                 "test_environments": test_environments,
                 "capabilities": DEFAULT_CAPABILITIES,
@@ -1475,7 +1496,6 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
     job_id = uuid.uuid4().hex[:12]
     answer_event = asyncio.Event()
     _prune_jobs(requirement_hitl_jobs)
-    framework_capability_catalog = payload.framework_capability_catalog.strip()
 
     requirement_hitl_jobs[job_id] = {
         "job_id": job_id,
@@ -1485,7 +1505,6 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
         "requirement_meta": req_meta,
         "rag_context": payload.rag_context.strip(),
         "project_id": project_store.resolve_id(payload.project_id),
-        "framework_capability_catalog": framework_capability_catalog,
         "product_profile": payload.product_profile or {},
         "test_environments": payload.test_environments or {},
         "review_feedback": "",
@@ -1690,7 +1709,6 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
         "input_requirements": reqs,
         "requirement_meta": req_meta,
         "rag_context": rag_context,
-        "framework_capability_catalog": payload.framework_capability_catalog or "",
         "capabilities": DEFAULT_CAPABILITIES,
         "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
         "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,

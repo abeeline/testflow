@@ -66,13 +66,27 @@
           <header class="page-head">
             <div>
               <h2>需求准备 <span class="tag project-tag" id="currentProjectTag"></span></h2>
-              <p>填写一个完整需求（或从 Bugzilla 导入），勾选产品形态和可用测试环境后生成测试需求。测试设计会归档到当前项目，并自动检索该项目资料。</p>
+              <p>填写一个完整需求（或从 Bugzilla 导入），勾选产品形态和可用测试环境后生成测试需求。可选一个项目：之后的需求评审、测试设计和问答助手都会查这个项目的知识库。</p>
             </div>
           </header>
 
           <div id="llmBanner" class="banner hidden">
             <span>还没有配置大模型，生成结果会使用降级模板。</span>
             <button id="llmBannerBtn" class="ui-btn ui-btn-sm" type="button">去配置</button>
+          </div>
+
+          <div class="card ui-card">
+            <div class="card-head">
+              <h3>项目 <span class="tag">可选</span></h3>
+              <button id="reqProjectManageBtn" class="ui-btn ui-btn-sm ui-btn-secondary" type="button">项目管理</button>
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="reqProjectSelect">使用哪个项目的知识库</label>
+                <select id="reqProjectSelect" class="ui-input"></select>
+              </div>
+            </div>
+            <span id="reqProjectHint" class="feature-hint"></span>
           </div>
 
           <div class="card ui-card">
@@ -124,13 +138,6 @@
               <div id="ragDocs" class="visual"></div>
             </details>
 
-            <details class="fold">
-              <summary>执行平台能力 <span class="tag">可选</span></summary>
-              <label for="capability">执行平台能力说明（供需求分析参考）</label>
-              <textarea class="ui-input" id="capability" placeholder="例如：pytest+allure，支持日志采集"></textarea>
-              <label for="actionVocab">偏好的步骤动作名（逗号分隔，可选，仅作建议）</label>
-              <input class="ui-input" id="actionVocab" type="text" placeholder="SET_DEVICE_STATE,TRIGGER_REGISTRATION,WAIT,CHECK,COLLECT_LOG" />
-            </details>
           </div>
 
           <div class="card ui-card">

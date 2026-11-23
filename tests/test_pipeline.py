@@ -462,3 +462,49 @@ def test_api_smoke():
         "message_contents": [{"msg_id": "M1", "message": "RRCSetup", "ies": [{"path": "a.b", "value": 1}]}]})]}})
     assert r.status_code == 200 and len(r.content) > 1000
     assert client.post("/api/stage/auto/start", json={"requirement_input": []}).status_code == 400
+
+
+def test_chat_queries_selected_project_knowledge(monkeypatch):
+    """问答助手：选了项目才查该项目的知识库和资料；没选项目（或默认项目）保持原来的行为。"""
+    import main
+
+    project = main.project_store.create({"name": "KB 测试项目", "kb_mcp_url": "http://kb.example.com/mcp/server/x/mcp"})
+    pid = project["project_id"]
+    calls = []
+
+    def fake_query(scope, url, text, cfg):
+        calls.append((scope, url, text))
+        return [{"scope": scope, "filename": "产品规格 3.2", "chunk_id": "", "score": 1.0, "text": "T3346 到期后自动重试注册"}], []
+
+    monkeypatch.setattr(main, "_query_kb", fake_query)
+    try:
+        assert main._gather_project_knowledge("T3346 到期后行为", "") == ([], [])
+        assert main._gather_project_knowledge("T3346 到期后行为", main.DEFAULT_PROJECT_ID) == ([], [])
+        assert not calls
+        hits, errors = main._gather_project_knowledge("T3346 到期后行为", pid)
+        assert not errors and calls == [("kb_project", project["kb_mcp_url"], "T3346 到期后行为")]
+        assert any(h["scope"] == "kb_project" for h in hits)
+
+        captured = {}
+
+        class FakeClient:
+            enabled = True
+
+        def fake_call_llm(client, messages, temperature=0.3):
+            captured["system"] = messages[0]["content"]
+            return LLMResponse(text="会在 T3346 到期后重试 [K-1]")
+
+        monkeypatch.setattr(main, "LLMClient", FakeClient)
+        monkeypatch.setattr(main, "call_llm", fake_call_llm)
+        from fastapi.testclient import TestClient
+
+        client = TestClient(main.app)
+        data = client.post("/api/chat", json={"message": "T3346 到期后行为", "project_id": pid}).json()
+        assert "KB 测试项目" in captured["system"] and "T3346 到期后自动重试注册" in captured["system"]
+        assert data["references"] and data["references"][0]["ref"] == "K-1"
+
+        calls.clear()
+        data = client.post("/api/chat", json={"message": "T3346 到期后行为"}).json()
+        assert not calls and data["references"] == [] and "资料检索结果" not in captured["system"]
+    finally:
+        main.project_store.delete(pid)
