@@ -508,3 +508,22 @@ def test_chat_queries_selected_project_knowledge(monkeypatch):
         assert not calls and data["references"] == [] and "资料检索结果" not in captured["system"]
     finally:
         main.project_store.delete(pid)
+
+
+def test_design_knowledge_includes_uploaded_project_docs(monkeypatch):
+    """测试设计阶段：没配 MCP 知识库时，也会检索上传到项目资料里的文档。"""
+    import main
+
+    project = main.project_store.create({"name": "本地资料项目"})
+    pid = project["project_id"]
+    monkeypatch.setattr(main, "_kb_sources", lambda _pid: {"kb_project": "", "kb_public": ""})
+    try:
+        main.project_store.rag_store(pid).ingest_file("产品规格.md", "T3346 定时器到期后模组自动重新发起注册。".encode("utf-8"))
+        spec = {"final_requirements": [{"req_id": "REQ-001", "title": "T3346 定时器到期后重新注册"}]}
+        context, used = main._build_design_knowledge(spec, pid)
+        assert "自动重新发起注册" in context
+        assert any(h["scope"] == "project" and "REQ-001" in h["filename"] for h in used)
+        # 默认项目没有这份资料
+        assert "自动重新发起注册" not in main._build_design_knowledge(spec, main.DEFAULT_PROJECT_ID)[0]
+    finally:
+        main.project_store.delete(pid)
