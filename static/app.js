@@ -491,15 +491,11 @@ function closeStageStream() {
 let hitlRequestInFlight = false;
 
 function handleHitlStreamEvent(ev) {
+  // 评审结果和待确认问题由 generateRequirementsRound 汇总成一条消息；这里只处理进度和异常，避免同一件事刷多条。
   const et = ev?.type || "";
   const payload = ev?.payload || {};
   if (et === "state") {
-    if (payload.status && payload.status !== "starting") {
-      pushSystemBotMessage(`HITL状态：${payload.status}（round=${payload.round || 0}）`);
-    }
-    if (payload.error) {
-      pushSystemBotMessage(`HITL后台异常：${payload.error}`, { actionNeeded: true });
-    }
+    if (payload.error) pushSystemBotMessage(`测试需求评审后台出错：${payload.error}`, { actionNeeded: true });
     return;
   }
   if (et === "node_running") {
@@ -507,30 +503,12 @@ function handleHitlStreamEvent(ev) {
     if (hitlRequestInFlight) setStatus(`测试需求评审执行中：${nodeLabel(payload.node, payload)}`);
     return;
   }
-  if (et === "round_ready") {
-    const r = payload.round || 0;
-    const oq = (payload.open_questions || []).length;
-    if (oq > 0) {
-      pushSystemBotMessage(`HITL轮次 v${r} 完成，待确认问题 ${oq} 个。`, { actionNeeded: true });
-    } else {
-      pushSystemBotMessage(`HITL轮次 v${r} 完成。`);
-    }
-    return;
-  }
-  if (et === "waiting_answers") {
-    const r = payload.round || 0;
-    const n = (payload.open_questions || []).length;
-    pushSystemBotMessage(`HITL等待人工补充（v${r}，${n} 个问题）。`, { actionNeeded: true });
-    return;
-  }
   if (et === "completed") {
-    const r = payload.round || 0;
-    pushSystemBotMessage(`HITL流程已完成（终稿 v${r}）。`);
     closeHitlStream();
     return;
   }
   if (et === "error") {
-    pushSystemBotMessage(`HITL流程异常：${payload.error || "unknown error"}`, { actionNeeded: true });
+    pushSystemBotMessage(`测试需求评审出错：${payload.error || "未知错误"}`, { actionNeeded: true });
     closeHitlStream();
   }
 }
@@ -563,7 +541,7 @@ function ensureHitlStream(jobId) {
         if (st?.status === "completed") return;
       }
     } catch (_) {}
-    pushSystemBotMessage("HITL实时通道中断，请稍后重试或继续操作。", { actionNeeded: true });
+    pushSystemBotMessage("测试需求评审的进度通道中断，请稍后重试或继续操作。", { actionNeeded: true });
   };
 }
 
@@ -587,6 +565,266 @@ function usageLine(result) {
   return result?.llm_usage_text ? `\n${result.llm_usage_text}` : "";
 }
 
+// ---------- 运行进度：阶段流程条 + 助手里的单张进度卡 ----------
+// 一键生成 / 分步生成都走这里：主区顶部显示阶段流程条，侧栏步骤打状态标记，助手对话框里只保留一张原地刷新的进度卡，
+// 不再每个节点刷一条消息。
+const RUN_STAGE_PLANS = {
+  requirements: { label: "测试需求评审", sheet: "sheet2", steps: [
+    ["KnowledgeRetrieve", "检索参考资料"], ["IntakeNode", "需求录入"], ["ReqParseNode", "需求解析"],
+    ["TriPersonaReviewNode", "三方评审"], ["SynthesisNode", "综合定稿"], ["KnowledgeResolve", "查证评审问题"]] },
+  design: { label: "测试设计", sheet: "sheet3", steps: [
+    ["KnowledgeRetrieve", "检索设计资料"], ["TestDesignNode", "设计测试点"], ["TestDesignSupervisorNode", "设计质量门"]] },
+  testcases: { label: "测试用例", sheet: "sheet4", steps: [
+    ["TestCaseBatchGenNode", "编写测试用例"], ["FinalizeTestCaseNode", "汇总测试用例"], ["TestCaseSupervisorNode", "用例质量门"]] },
+  exec_cases: { label: "可执行用例", sheet: "sheet5", steps: [["ExecutableCaseNode", "生成可执行用例"]] },
+};
+const RUN_STATUS_TEXT = { pending: "等待", running: "进行中", done: "完成", failed: "失败" };
+
+let runState = null;
+let runTimer = null;
+let runCardEl = null;
+const runPanelEl = document.getElementById("runProgress");
+
+function fmtDuration(ms) {
+  const sec = Math.max(0, Math.round((ms || 0) / 1000));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? `${m}分${String(s).padStart(2, "0")}秒` : `${s}秒`;
+}
+
+function runStart(title, stageKeys) {
+  runState = {
+    title, status: "running", start: Date.now(), end: 0, error: "", note: "", noteAction: false,
+    stages: stageKeys.map((key) => {
+      const plan = RUN_STAGE_PLANS[key] || { label: stageLabel(key), sheet: "", steps: [] };
+      return { key, label: plan.label, sheet: plan.sheet, status: "pending", start: 0, end: 0, summary: "", collapsed: false,
+        steps: plan.steps.map(([node, label]) => ({ node, label, status: "pending", detail: "", runs: 0 })) };
+    }),
+  };
+  runPanelCollapsed = false;
+  runCardEl = null;
+  if (botMessages) {
+    runCardEl = document.createElement("div");
+    runCardEl.className = "bot-msg bot-run-card";
+    botMessages.appendChild(runCardEl);
+    if (!isBotPanelOpen()) { botUnread += 1; updateBotUnreadUI(); }
+  }
+  clearInterval(runTimer);
+  runTimer = setInterval(renderRun, 1000);
+  if (stageKeys.length === 1) runEnterStage(stageKeys[0]);
+  renderRun();
+}
+
+function runCurrentStage() {
+  if (!runState) return null;
+  return runState.stages.find((s) => s.status === "running") || null;
+}
+
+function runEnterStage(key) {
+  if (!runState) return;
+  const now = Date.now();
+  for (const st of runState.stages) {
+    if (st.key === key) {
+      st.status = "running"; st.start = st.start || now;
+      break;
+    }
+    if (st.status !== "done") { runFinishSteps(st); st.status = "done"; st.end = st.end || now; }
+  }
+  renderRun();
+}
+
+function runFinishSteps(st) {
+  st.steps.forEach((s) => { if (s.status === "running") s.status = "done"; });
+}
+
+function runNode(node, label, detail) {
+  const st = runCurrentStage();
+  if (!st) return;
+  let idx = st.steps.findIndex((s) => s.node === node);
+  if (idx < 0) {
+    st.steps.push({ node, label: label || node, status: "pending", detail: "", runs: 0 });
+    idx = st.steps.length - 1;
+  }
+  const step = st.steps[idx];
+  if (step.status !== "running") step.runs += 1;
+  st.steps.forEach((s, i) => {
+    if (i < idx && s.status !== "done") s.status = "done";
+    if (i > idx && s.status === "running") s.status = "pending";  // 质量门回流重做时，后面的步骤回到等待
+  });
+  step.status = "running";
+  step.detail = detail || "";
+  renderRun();
+}
+
+function summarizeStageResult(key, res) {
+  res = res || {};
+  if (key === "requirements") {
+    const n = (res.requirement_spec?.final_requirements || []).length;
+    const ai = (res.auto_answered_user_questions || []).length;
+    return `${n} 条测试需求` + (ai ? `，${ai} 个问题采用 AI 答案` : "");
+  }
+  if (key === "design") return `${(res.test_design_spec?.integrated_matrix || []).length} 个测试点`;
+  if (key === "testcases") return `${(res.test_case_spec?.testcases || []).length} 条用例`;
+  if (key === "exec_cases") {
+    const s = res.executable_cases?.summary || {};
+    return `Artemis ${s.artemis || 0} · AT ${s.at_agent || 0} · Amarisoft ${s.amarisoft || 0} · 协议 ${s.protocol || 0}`;
+  }
+  return "";
+}
+
+function runStageDone(key, res) {
+  if (!runState) return;
+  const st = runState.stages.find((s) => s.key === key);
+  if (!st || st.status === "done") return;
+  st.steps.forEach((s) => { s.status = "done"; });
+  st.status = "done";
+  st.start = st.start || Date.now();
+  st.end = Date.now();
+  st.summary = summarizeStageResult(key, res);
+  renderRun();
+}
+
+function runFinish(ok, error = "", failedNode = "") {
+  if (!runState || runState.status !== "running") return;
+  runState.end = Date.now();
+  runState.status = ok ? "done" : "failed";
+  if (ok) {
+    runState.stages.forEach((st) => { if (st.status !== "done") { st.steps.forEach((s) => { s.status = "done"; }); st.status = "done"; st.end = st.end || runState.end; } });
+  } else {
+    runState.error = error || "未知错误";
+    const st = runCurrentStage() || runState.stages.find((s) => s.status === "pending");
+    if (st) {
+      st.status = "failed"; st.end = runState.end; st.start = st.start || runState.end;
+      const step = st.steps.find((s) => s.status === "running") || st.steps.find((s) => s.node === failedNode);
+      if (step) step.status = "failed";
+    }
+  }
+  clearInterval(runTimer);
+  runTimer = null;
+  if (!isBotPanelOpen()) { botUnread += 1; updateBotUnreadUI(); }
+  renderRun();
+}
+
+// 阶段跑完后由调用方补一句结果说明（显示在进度卡和流程条底部）
+function runNote(text, options = {}) {
+  if (!runState) return;
+  runState.note = text || "";
+  runState.noteAction = !!options.actionNeeded;
+  renderRun();
+}
+
+function runFailedAlready() {
+  return !!runState && runState.status === "failed";
+}
+
+let runPanelCollapsed = false;
+
+function runStepIcon(status, n) {
+  if (status === "done") return "✓";
+  if (status === "failed") return "✕";
+  if (status === "running") return '<span class="run-spin"></span>';
+  return n == null ? "" : String(n);
+}
+
+function runStepsHtml(steps, compact = false) {
+  return steps.map((s) => {
+    const retry = s.runs > 1 ? `<span class="run-retry">第 ${s.runs} 次</span>` : "";
+    const detail = s.status === "running" && s.detail ? `<span class="run-substep-detail">${esc(s.detail)}</span>` : "";
+    return `<li class="run-substep is-${s.status}"><span class="run-substep-dot">${s.status === "done" ? "✓" : s.status === "failed" ? "✕" : ""}</span>` +
+      `<span class="run-substep-label">${esc(s.label)}${compact ? "" : retry}</span>${detail}</li>`;
+  }).join("");
+}
+
+function runHeaderHtml(withActions) {
+  const r = runState;
+  const elapsed = fmtDuration((r.end || Date.now()) - r.start);
+  const doneN = r.stages.filter((s) => s.status === "done").length;
+  const chip = r.status === "running" ? `进行中 · ${doneN}/${r.stages.length}` : r.status === "done" ? "已完成" : "失败";
+  const actions = withActions
+    ? `<div class="run-actions"><button class="run-icon-btn" data-run-act="toggle" title="${runPanelCollapsed ? "展开" : "收起"}">${runPanelCollapsed ? "▾" : "▴"}</button>` +
+      (r.status !== "running" ? `<button class="run-icon-btn" data-run-act="close" title="关闭">×</button>` : "") + "</div>"
+    : "";
+  return `<div class="run-head"><div class="run-title">${esc(r.title)}</div>` +
+    `<span class="run-chip is-${r.status}">${chip}</span><span class="run-elapsed">${r.status === "running" ? "已用时" : "用时"} ${elapsed}</span>${actions}</div>`;
+}
+
+function runStageSub(st) {
+  if (st.status === "done") return `${st.summary ? esc(st.summary) + " · " : ""}${fmtDuration(st.end - st.start)}`;
+  if (st.status === "running") {
+    const cur = st.steps.find((s) => s.status === "running");
+    return cur ? esc(cur.label + (cur.detail ? `（${cur.detail}）` : "")) : "准备中…";
+  }
+  if (st.status === "failed") return "出错，见下方说明";
+  return "等待";
+}
+
+function renderRunPanel() {
+  if (!runPanelEl) return;
+  if (!runState) { runPanelEl.classList.add("hidden"); runPanelEl.innerHTML = ""; return; }
+  const r = runState;
+  const multi = r.stages.length > 1;
+  let body = "";
+  if (!runPanelCollapsed) {
+    // 多阶段（一键生成）：上面是阶段流程条，下面是当前阶段的细分步骤；单阶段：流程条直接画细分步骤
+    const items = multi
+      ? r.stages.map((st, i) => ({ status: st.status, n: i + 1, label: st.label, sub: runStageSub(st), sheet: st.sheet }))
+      : r.stages[0].steps.map((s, i) => ({ status: s.status, n: i + 1, label: s.label,
+          sub: s.status === "running" ? esc(s.detail || "进行中…") + (s.runs > 1 ? ` · 第 ${s.runs} 次` : "") : RUN_STATUS_TEXT[s.status], sheet: "" }));
+    body += `<ol class="run-stepper">${items.map((it) => `
+      <li class="run-step is-${it.status}${it.sheet && it.status === "done" ? " is-link" : ""}"${it.sheet ? ` data-run-sheet="${it.sheet}"` : ""}>
+        <span class="run-step-icon">${runStepIcon(it.status, it.n)}</span>
+        <span class="run-step-text"><span class="run-step-label">${esc(it.label)}</span><span class="run-step-sub">${it.sub}</span></span>
+      </li>`).join("")}</ol>`;
+    if (multi) {
+      const focus = r.stages.find((s) => s.status === "running" || s.status === "failed");
+      if (focus) body += `<div class="run-detail"><span class="run-detail-label">${esc(focus.label)}</span><ol class="run-substeps">${runStepsHtml(focus.steps)}</ol></div>`;
+    }
+  }
+  if (r.status === "failed") {
+    body += `<div class="run-error"><b>失败原因：</b>${esc(r.error)}<div class="run-error-hint">已完成阶段的结果已保留，可到对应页面检查输入后分步重跑。</div></div>`;
+  }
+  if (r.note) body += `<div class="run-note${r.noteAction ? " is-action" : ""}">${esc(r.note)}</div>`;
+  runPanelEl.className = `run-progress is-${r.status}${runPanelCollapsed ? " is-collapsed" : ""}`;
+  runPanelEl.innerHTML = runHeaderHtml(true) + body;
+}
+
+function renderRunCard() {
+  if (!runCardEl || !runState) return;
+  const r = runState;
+  const rows = r.stages.map((st, i) => {
+    const steps = st.status === "running" || st.status === "failed"
+      ? `<ol class="run-substeps run-substeps-compact">${runStepsHtml(st.steps, true)}</ol>` : "";
+    return `<li class="run-card-stage is-${st.status}"><span class="run-step-icon">${runStepIcon(st.status, i + 1)}</span>` +
+      `<div class="run-card-text"><div class="run-card-row"><b>${esc(st.label)}</b><span class="run-step-sub">${runStageSub(st)}</span></div>${steps}</div></li>`;
+  }).join("");
+  const err = r.status === "failed" ? `<div class="run-error">${esc(r.error)}</div>` : "";
+  const note = r.note ? `<div class="run-note${r.noteAction ? " is-action" : ""}">${esc(r.note)}</div>` : "";
+  runCardEl.className = `bot-msg bot-run-card is-${r.status}${r.noteAction || r.status === "failed" ? " action-needed" : ""}`;
+  runCardEl.innerHTML = runHeaderHtml(false) + `<ol class="run-card-stages">${rows}</ol>` + err + note;
+}
+
+function renderRunNav() {
+  const stages = runState ? runState.stages : [];
+  document.querySelectorAll("#sheetTabs .sheet-tab").forEach((btn) => {
+    btn.classList.remove("run-running", "run-done", "run-failed");
+    const st = stages.find((s) => s.sheet === btn.dataset.sheet);
+    if (st && st.status !== "pending") btn.classList.add(`run-${st.status}`);
+  });
+}
+
+function renderRun() {
+  renderRunPanel();
+  renderRunCard();
+  renderRunNav();
+}
+
+runPanelEl?.addEventListener("click", (e) => {
+  const act = e.target.closest("[data-run-act]")?.dataset.runAct;
+  if (act === "toggle") { runPanelCollapsed = !runPanelCollapsed; renderRunPanel(); return; }
+  if (act === "close") { runState = null; renderRunPanel(); renderRunNav(); return; }
+  const step = e.target.closest(".run-step.is-link");
+  if (step?.dataset.runSheet) switchSheetById(step.dataset.runSheet);
+});
+
 async function startStageJobAndWait(stage, payload, handlers = {}) {
   const startResp = await postJson(`/api/stage/${stage}/start`, { ...payload, requirement_meta: requirementMeta(), expert_review: expertReviewToggle ? expertReviewToggle.checked : true });
   const jobId = startResp.job_id;
@@ -594,7 +832,8 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
 
   closeStageStream();
   activeStageJobId = jobId;
-  pushSystemBotMessage(`任务已提交到服务端：${stageLabel(stage)}（job=${jobId}）。`);
+  if (stage === "auto") runStart(handlers.title || "一键生成", ["requirements", "design", "testcases", "exec_cases"]);
+  else runStart(handlers.title || stageLabel(stage), [stage]);
 
   return await new Promise((resolve, reject) => {
     const es = new EventSource(`/api/stage/${encodeURIComponent(jobId)}/stream`);
@@ -610,28 +849,25 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
       }
       const et = ev?.type || "";
       const p = ev?.payload || {};
-      if (et === "state") {
-        if (p?.status && p.status !== "running") pushSystemBotMessage(`${stageLabel(stage)}任务状态：${p.status}`);
-        return;
-      }
+      if (et === "state") return;
       streamErrors = 0;
-      if (et === "job_started") {
-        pushSystemBotMessage(`${stageLabel(stage)}任务开始执行。`);
-        return;
-      }
+      if (et === "job_started") return;
       if (et === "node_running") {
         const n = nodeLabel(p.node, p);
-        const prefix = handlers.currentStage ? `${stageLabel(stage)} · ${stageLabel(handlers.currentStage)}` : stageLabel(stage);
+        const prefix = handlers.currentStage ? `${stageLabel(stage)} ${handlers.stageIndex}/${handlers.stageTotal} · ${stageLabel(handlers.currentStage)}` : stageLabel(stage);
         setStatus(`${prefix}执行中：${n}`);
-        if (!p.detail) pushSystemBotMessage(`${prefix}：${n}`);
+        runNode(p.node, p.label || NODE_LABELS[p.node], p.detail);
         return;
       }
       if (et === "stage_progress") {
         handlers.currentStage = p.stage;
-        pushSystemBotMessage(`一键生成 ${p.index}/${p.total}：${p.label}`);
+        handlers.stageIndex = p.index;
+        handlers.stageTotal = p.total;
+        runEnterStage(p.stage);
         return;
       }
       if (et === "stage_result") {
+        runStageDone(p.stage, p.result || {});
         try { handlers.onStageResult?.(p.stage, p.result || {}); } catch (e) { console.error(e); }
         return;
       }
@@ -639,14 +875,15 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
         return;
       }
       if (et === "completed") {
-        pushSystemBotMessage(`${stageLabel(stage)}任务已完成。`);
+        if (stage !== "auto") runStageDone(stage, p.result || {});
+        runFinish(true);
         closeStageStream();
         resolve(p.result || {});
         return;
       }
       if (et === "error") {
         const msgText = p.error || "unknown error";
-        pushSystemBotMessage(`${stageLabel(stage)}任务失败：${msgText}`, { actionNeeded: true });
+        runFinish(false, msgText, p.failed_node);
         closeStageStream();
         reject(new Error(msgText));
       }
@@ -664,13 +901,17 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
         if (s.ok) {
           const st = await s.json();
           if (st.status === "completed") {
+            if (stage !== "auto") runStageDone(stage, st.result || {});
+            runFinish(true);
             closeStageStream();
             resolve(st.result || {});
             return;
           }
           if (st.status === "running" && es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;
           closeStageStream();
-          reject(new Error(String(st?.error?.error || (st.status === "running" ? "与服务端的进度通道中断，任务仍在后台运行，请稍后在历史记录中查看" : "任务失败"))));
+          const errText = String(st?.error?.error || (st.status === "running" ? "与服务端的进度通道中断，任务仍在后台运行，请稍后在历史记录中查看" : "任务失败"));
+          runFinish(false, errText, st?.error?.failed_node);
+          reject(new Error(errText));
           return;
         }
         if (s.status !== 404 && es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;
@@ -678,6 +919,7 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
         if (es.readyState !== EventSource.CLOSED && streamErrors <= 20) return;  // 服务暂时连不上，继续等重连
       }
       closeStageStream();
+      runFinish(false, "与服务端的连接中断");
       reject(new Error("与服务端的连接中断"));
     };
   });
@@ -2062,7 +2304,7 @@ async function generateExecCases() {
   const s = stageState.executable_cases?.summary || {};
   setStatus(`可执行用例已生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` + usageLine(data) +
     (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : ""));
-  pushSystemBotMessage("可执行用例已生成，可在“可执行用例”页按验收方案下载。");
+  runNote("可在“可执行用例”页按验收方案下载。");
   persistCurrentState();
 }
 
@@ -2122,7 +2364,9 @@ async function generateAll() {
   setStatus(`一键生成完成：${nRow} 个测试点，${nTc} 条用例；可执行用例 Artemis ${s.artemis || 0} / AT ${s.at_agent || 0} / Amarisoft ${s.amarisoft || 0} / 协议 ${s.protocol || 0}` +
     usageLine(data) + (askedByAi ? `\n有 ${askedByAi} 个原本需要你确认的问题已采用 AI 建议答案，可在“测试需求评审”页查看，必要时改答案后分步重跑。` : "") +
     (data.warnings?.length ? `\n提示:\n- ${data.warnings.slice(0, 12).join("\n- ")}` : ""));
-  pushSystemBotMessage("一键生成完成，可在各页面查看结果；可执行用例页可按验收方案下载 JSON。", { actionNeeded: askedByAi > 0 });
+  runNote(askedByAi
+    ? `有 ${askedByAi} 个原本需要你确认的问题已采用 AI 建议答案，可在“测试需求评审”页查看，必要时改答案后分步重跑。`
+    : "结果已就绪，点上方已完成的阶段可跳到对应页面；可执行用例页可按验收方案下载 JSON。", { actionNeeded: askedByAi > 0 });
   persistCurrentState();
 }
 
@@ -2484,7 +2728,7 @@ autoRunBtn?.addEventListener("click", async () => {
     switchSheetById("sheet5");
   } catch (e) {
     setStatus(`一键生成失败: ${e.message}`);
-    pushSystemBotMessage(`一键生成失败：${e.message}`, { actionNeeded: true });
+    if (!runFailedAlready()) pushSystemBotMessage(`一键生成失败：${e.message}`, { actionNeeded: true });
   } finally {
     setSingleButtonBusy(autoRunBtn, false);
     stageButtons.filter((b) => b !== autoRunBtn).forEach((b) => b && (b.disabled = false));
