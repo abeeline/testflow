@@ -26,7 +26,7 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from core.events import EventLog
-from core.design_map import render_design_map_html
+from core.design_map import render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
 from core.llm import call_llm, summarize_usage
 from core.tcd import TECHNIQUE_LABELS, purpose_text
@@ -592,6 +592,42 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     answered_question_table = _render_answered_question_table(requirement_review_history.get("answered_questions", []))
     knowledge_table = _render_knowledge_refs_table(record)
 
+    questions_to_ask = requirement_spec.get("questions_to_ask", []) or []
+    stats = [(len(reqs), "条需求", False), (len(objectives), "个测试目标", False), (len(integrated), "个测试点", False)]
+    if tcs:
+        stats.append((len(tcs), "条用例", False))
+    stats.append((len(questions_to_ask), "个待确认问题", bool(questions_to_ask)))
+    stats_html = "".join(
+        f"<div class=\"stat{' warn' if warn else ''}\"><b>{n}</b><span>{html.escape(label)}</span></div>" for n, label, warn in stats
+    )
+    sections = [
+        ("doc-info", "一、文档信息", _render_html_kv_table([["项目/Product", project_name], ["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])),
+        ("doc-input", "二、需求输入与产品背景",
+         "<div class=\"grid\">"
+         f"<div><h3>原始需求输入</h3>{_render_html_list(requirement_input)}</div>"
+         f"<div><h3>产品通信背景与支持特性</h3>{_render_html_list(profile_lines)}</div>"
+         f"<div><h3>测试团队可用测试环境</h3>{_render_html_list(test_environment_lines)}</div>"
+         "</div>"),
+        ("doc-reqs", "三、测试需求解读稿", req_table),
+        ("doc-review", "四、三人评审记录",
+         "".join(review_sections)
+         + f"<section><h3>用户已确认问题</h3>{answered_question_table}</section><section><h3>参考资料</h3>{knowledge_table}</section>"),
+        ("doc-objectives", "五、测试目标", objective_table),
+        ("doc-matrices", "六、覆盖矩阵", matrix_html),
+        ("doc-integrated", "七、整合覆盖矩阵", integrated_table),
+        ("doc-notes", "八、设计说明", _render_html_list(test_design_spec.get("design_notes", []))),
+        ("doc-scope", "九、范围裁剪与待跟进项",
+         "<div class=\"grid\">"
+         f"<div><h3>去范围项</h3>{_render_html_list(test_design_spec.get('de_scoped', []))}</div>"
+         f"<div><h3>待确认问题</h3>{_render_html_list(questions_to_ask)}</div>"
+         "</div>"),
+        ("doc-groups", "十、用例分组", f"<p>用例按“一级模块 / 二级模块”分组，导出的 Excel 和可执行用例里带同样的分组。</p>{group_table}"),
+    ]
+    toc_html = "".join(f"<a href=\"#{sid}\">{html.escape(heading)}</a>" for sid, heading, _ in sections)
+    body_html = "\n      ".join(f"<section class=\"card\" id=\"{sid}\"><h2>{html.escape(heading)}</h2>{content}</section>"
+                                for sid, heading, content in sections)
+    sub = " · ".join(x for x in [f"项目：{project_name}" if project_name else "", f"更新于 {updated_at}" if updated_at else ""] if x)
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
@@ -599,59 +635,44 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{html.escape(str(title))} - 测试设计文档</title>
     <style>
-      body {{ margin: 0; padding: 32px; font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f4efe5; color: #1f2937; }}
-      .page {{ max-width: 1180px; margin: 0 auto; background: #fffdf8; border: 1px solid #e5dccd; border-radius: 18px; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08); overflow: hidden; }}
-      .hero {{ padding: 28px 32px 24px; background: linear-gradient(135deg, #f6efe3 0%, #fffaf1 58%, #eef6f7 100%); border-bottom: 1px solid #e9ddcb; }}
-      .hero h1 {{ margin: 0; font-size: 30px; }}
-      .hero p {{ margin: 8px 0 0; color: #5b6472; }}
-      .section {{ padding: 24px 32px; border-top: 1px solid #efe6d8; }}
-      .section:first-of-type {{ border-top: none; }}
-      h2 {{ margin: 0 0 14px; font-size: 20px; }}
-      h3 {{ margin: 0 0 10px; font-size: 16px; }}
-      h4 {{ margin: 0 0 8px; font-size: 14px; }}
-      table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-      th, td {{ border: 1px solid #e5dccd; padding: 9px 10px; text-align: left; vertical-align: top; }}
-      th {{ background: #f8f1e7; }}
-      ul {{ margin: 8px 0 0 18px; }}
-      p {{ line-height: 1.7; margin: 8px 0; }}
-      .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-      .matrix-card {{ border: 1px solid #e7ddcf; border-radius: 12px; padding: 14px; background: #fff; margin-bottom: 12px; }}
-      @media (max-width: 900px) {{ body {{ padding: 12px; }} .section, .hero {{ padding: 18px; }} .grid {{ grid-template-columns: 1fr; }} }}
+{report_theme_css()}
+html {{ scroll-behavior: smooth; }}
+.toc {{ position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }}
+.toc a {{ border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; color: var(--ink); text-decoration: none; white-space: nowrap; }}
+.toc a:hover {{ background: var(--accent-soft); border-color: var(--accent); }}
+main.doc {{ max-width: 1280px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }}
+main.doc > .card {{ overflow-x: auto; scroll-margin-top: 56px; box-shadow: var(--shadow); }}
+.card h2 {{ margin: 0 0 12px; padding-left: 10px; border-left: 4px solid var(--accent); font-size: 15px; font-weight: 650; line-height: 1.3; }}
+.card section {{ margin-top: 14px; }}
+.card h2 + section {{ margin-top: 0; }}
+h4 {{ margin: 0 0 6px; font-size: 13px; font-weight: 600; }}
+p {{ margin: 6px 0; }}
+ul {{ margin: 4px 0 0; padding-left: 18px; }}
+small {{ color: var(--muted); }}
+table {{ width: 100%; border-collapse: collapse; background: var(--panel); font-size: 13px; }}
+th, td {{ border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }}
+thead th {{ background: var(--bg); font-weight: 600; white-space: nowrap; }}
+tbody th {{ background: var(--bg); color: var(--muted); font-weight: 600; width: 180px; }}
+td[rowspan] {{ background: var(--accent-soft); font-weight: 600; }}
+tbody tr:hover td:not([rowspan]) {{ background: var(--accent-soft); }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }}
+.grid h3 {{ color: var(--muted); font-size: 12.5px; font-weight: 600; margin: 0 0 4px; }}
+.matrix-card {{ border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--panel); margin-bottom: 10px; }}
+.matrix-card div, .matrix-card p {{ font-size: 13px; }}
+@media (max-width: 700px) {{ main.doc {{ padding: 12px; }} .toc {{ padding: 8px 12px; flex-wrap: nowrap; overflow-x: auto; }} }}
+@media print {{ .toc {{ display: none; }} body {{ background: var(--panel); }} main.doc > .card {{ box-shadow: none; }} }}
     </style>
   </head>
   <body>
-    <div class="page">
-      <section class="hero">
-        <h1>标准测试设计文档</h1>
-        <p>{html.escape(str(title))}</p>
-      </section>
-      <section class="section">
-        <h2>一、文档信息</h2>
-        {_render_html_kv_table([["项目/Product", project_name], ["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
-      </section>
-      <section class="section">
-        <h2>二、需求输入与产品背景</h2>
-        <div class="grid">
-          <div><h3>原始需求输入</h3>{_render_html_list(requirement_input)}</div>
-          <div><h3>产品通信背景与支持特性</h3>{_render_html_list(profile_lines)}</div>
-          <div><h3>测试团队可用测试环境</h3>{_render_html_list(test_environment_lines)}</div>
-        </div>
-      </section>
-      <section class="section"><h2>三、测试需求解读稿</h2>{req_table}</section>
-      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}<section><h3>用户已确认问题</h3>{answered_question_table}</section><section><h3>参考资料</h3>{knowledge_table}</section></section>
-      <section class="section"><h2>五、测试目标</h2>{objective_table}</section>
-      <section class="section"><h2>六、覆盖矩阵</h2>{matrix_html}</section>
-      <section class="section"><h2>七、整合覆盖矩阵</h2>{integrated_table}</section>
-      <section class="section"><h2>八、设计说明</h2>{_render_html_list(test_design_spec.get("design_notes", []))}</section>
-      <section class="section">
-        <h2>九、范围裁剪与待跟进项</h2>
-        <div class="grid">
-          <div><h3>去范围项</h3>{_render_html_list(test_design_spec.get("de_scoped", []))}</div>
-          <div><h3>待确认问题</h3>{_render_html_list(requirement_spec.get("questions_to_ask", []))}</div>
-        </div>
-      </section>
-      <section class="section"><h2>十、用例分组</h2><p>用例按“一级模块 / 二级模块”分组，导出的 Excel 和可执行用例里带同样的分组。</p>{group_table}</section>
-    </div>
+    <header class="top">
+      <h1>{html.escape(str(title))} · 标准测试设计文档</h1>
+      <div class="sub">{html.escape(sub)}</div>
+      <div class="stats">{stats_html}</div>
+    </header>
+    <nav class="toc">{toc_html}</nav>
+    <main class="doc">
+      {body_html}
+    </main>
   </body>
 </html>"""
 

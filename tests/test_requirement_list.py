@@ -329,6 +329,21 @@ def test_design_map_shows_structure_and_gaps():
     assert "http://" not in page and "https://" not in page, "页面要能离线打开，不引用外部资源"
 
 
+def test_design_document_uses_the_same_theme_as_the_design_map():
+    import main
+    from core.design_map import render_design_map_html, report_theme_css
+
+    record = _design_record()
+    theme = report_theme_css()
+    page = render_design_map_html(record)
+    doc = main._render_design_document_html(record)
+    assert theme in page and "__THEME_CSS__" not in page
+    assert theme in doc, "测试设计文档和测试架构图要用同一套颜色和基础样式"
+    assert '<header class="top">' in doc and "选网测试设计 · 标准测试设计文档" in doc
+    assert "十、用例分组" in doc and 'href="#doc-groups"' in doc
+    assert "http://" not in doc and "https://" not in doc, "导出的文档要能离线打开"
+
+
 def test_design_map_endpoint_serves_the_archived_design(tmp_path, monkeypatch):
     import main
     from fastapi.testclient import TestClient

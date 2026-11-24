@@ -1,0 +1,47 @@
+/* 测试报告共用主题：测试架构图、测试设计文档都内联这份样式，颜色和基础排版保持一致。
+   改颜色只改这里；页面自己的布局写在各自模板里。 */
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --ink: #1c2330; --muted: #667085; --line: #c5ccd8; --border: #e1e5ec;
+  --accent: #2456c9; --accent-soft: #e8eefb; --warn: #b54708; --warn-soft: #fff4e5; --root: #1c2330; --root-ink: #ffffff;
+  --hit: #fff3b0; --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  --t-normal: #2f6fde; --t-abnormal: #d6453d; --t-boundary: #c9820a; --t-timer: #7a52d1; --t-collision: #cf3f8c;
+  --t-mobility: #0f9467; --t-interworking: #0b8fa8; --t-capability: #5b6b82; --t-performance: #dd6b1f; --t-stability: #6a8f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1b1f27; --ink: #e6e9ef; --muted: #9aa4b5; --line: #4a5364; --border: #2c323d;
+    --accent: #7ea6ff; --accent-soft: #1f2b47; --warn: #ffb866; --warn-soft: #3a2a12; --root: #e6e9ef; --root-ink: #12151b;
+    --hit: #5c4a00; --shadow: none;
+    --t-normal: #6b9bff; --t-abnormal: #ff7a70; --t-boundary: #f0b040; --t-timer: #a98bff; --t-collision: #f277b6;
+    --t-mobility: #3fcf9b; --t-interworking: #39c3dc; --t-capability: #9aa8bd; --t-performance: #ff9a57; --t-stability: #a6cf3d;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1b1f27; --ink: #e6e9ef; --muted: #9aa4b5; --line: #4a5364; --border: #2c323d;
+  --accent: #7ea6ff; --accent-soft: #1f2b47; --warn: #ffb866; --warn-soft: #3a2a12; --root: #e6e9ef; --root-ink: #12151b;
+  --hit: #5c4a00; --shadow: none;
+  --t-normal: #6b9bff; --t-abnormal: #ff7a70; --t-boundary: #f0b040; --t-timer: #a98bff; --t-collision: #f277b6;
+  --t-mobility: #3fcf9b; --t-interworking: #39c3dc; --t-capability: #9aa8bd; --t-performance: #ff9a57; --t-stability: #a6cf3d;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+button { font: inherit; color: inherit; cursor: pointer; }
+header.top { padding: 14px 20px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+header.top h1 { margin: 0; font-size: 18px; font-weight: 650; }
+header.top .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; }
+.stat b { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12.5px; margin-left: 4px; }
+.stat.warn b { color: var(--warn); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 5px 12px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--accent); color: #fff; }
+:root[data-theme="dark"] .seg button.on { color: #12151b; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .seg button.on { color: #12151b; } }
+.btn { border: 1px solid var(--border); background: var(--panel); border-radius: 8px; padding: 5px 10px; }
+.btn:hover, .seg button:not(.on):hover { background: var(--accent-soft); }
+.lbl { color: var(--muted); font-size: 12.5px; }
+mark { background: var(--hit); color: inherit; border-radius: 2px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.card h3 { margin: 0 0 10px; font-size: 14px; }
