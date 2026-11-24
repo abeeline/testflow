@@ -152,6 +152,8 @@ class StageGenerateRequest(BaseModel):
     project_id: str = ""
     bug_ids: Optional[List[str]] = None
     route_overrides: Optional[Dict[str, str]] = None
+    # 前端算出的输入指纹（测试用例 / 需求 / 产品形态 / Bug 各一段），随可执行用例保存，用来判断结果是否已过期
+    input_fingerprint: Optional[Dict[str, str]] = None
     expert_review: bool = True  # 用例质量门里是否再让 LLM 以评审者身份检查一遍
     _last_shared: Any = PrivateAttr(default=None)  # 失败时用于报告出错节点
 
@@ -1730,6 +1732,8 @@ async def _stage_exec_cases(payload: "StageGenerateRequest", events: EventLog) -
     finally:
         payload._last_shared = shared  # type: ignore[attr-defined]
     executable_cases = shared.get("executable_cases", {})
+    if payload.input_fingerprint and executable_cases:
+        executable_cases["input_fingerprint"] = payload.input_fingerprint
     history = None
     if payload.history_record_id and _valid_history_record_id(payload.history_record_id):
         try:

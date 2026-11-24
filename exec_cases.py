@@ -380,7 +380,8 @@ def source_lines_coverage(lines: List[Dict[str, Any]], items: List[Dict[str, Any
 
 # ---------- 各平台导出格式 ----------
 
-def _artemis_case(item: Dict[str, Any], tc: Dict[str, Any], trace: Dict[str, Any], profile: str) -> Dict[str, Any]:
+def _artemis_case(item: Dict[str, Any], tc: Dict[str, Any], trace: Dict[str, Any], profile: str,
+                  ordinal: int = 1) -> Dict[str, Any]:
     tc_id = str(tc.get("tc_id") or item.get("source_tc_id") or "")
     goal = _cut(item.get("goal"), _GOAL_MAX) or _cut(tc.get("title"), _GOAL_MAX) or tc_id
     preconditions = _text(item.get("preconditions"))
@@ -400,7 +401,8 @@ def _artemis_case(item: Dict[str, Any], tc: Dict[str, Any], trace: Dict[str, Any
         "priority": _priority(tc, item.get("priority")),
     }
     return {
-        "id": str(uuid.uuid5(_CASE_NS, f"{profile}:{tc_id}:{item.get('title', '')}")),
+        # id 只由用例编号和序号决定：重新生成时大模型改了标题措辞，id 也不变，重新导入不会多出重复用例
+        "id": str(uuid.uuid5(_CASE_NS, f"{profile}:{tc_id}:{ordinal}")),
         "title": _cut(item.get("title") or tc.get("title") or tc_id, _TITLE_MAX),
         "task": task,
     }
@@ -413,9 +415,12 @@ def build_bundle(route: str, items: List[Dict[str, Any]], tc_index: Dict[str, Di
     if route in ("artemis", "at_agent"):
         profile = "flash" if route == "artemis" else "at"
         cases = []
+        ordinals: Dict[str, int] = {}
         for item in items:
-            tc = tc_index.get(str(item.get("source_tc_id") or ""), {})
-            cases.append(_artemis_case(item, tc, _trace_for(tc, req_index, bug_ids), profile))
+            tc_key = str(item.get("source_tc_id") or "")
+            tc = tc_index.get(tc_key, {})
+            ordinals[tc_key] = ordinals.get(tc_key, 0) + 1
+            cases.append(_artemis_case(item, tc, _trace_for(tc, req_index, bug_ids), profile, ordinals[tc_key]))
         # 同一用例拆出多条时 id 可能撞车，按顺序去重。
         seen = set()
         for c in cases:
@@ -527,6 +532,8 @@ class ExecutableCaseNode(AsyncNode):
                                               "requirement_configs": {"type": "array"}}}
             return {"type": "object", "required": [list_key], "properties": {list_key: {"type": "array", "items": item_schema}}}
 
+        draft_only = {r: 0 for r in ROUTES}  # 没经过大模型适配、直接用草稿的用例数
+
         drafts = {str(tc.get("tc_id") or ""): project(routes[str(tc.get("tc_id") or "")], tc) for tc in tcs}
 
         async def llm_batch(route: str, batch_tcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -577,6 +584,7 @@ class ExecutableCaseNode(AsyncNode):
                 shared.setdefault("warnings", []).append(
                     f"ExecutableCaseNode-{route}: {len(missing)} 条用例未被 LLM 覆盖，已用由用例直接映射的草稿补齐")
             items.extend(copy.deepcopy(drafts[str(tc.get("tc_id") or "")]) for tc in missing)
+            draft_only[route] += len(missing)
             if route in CONFIG_ROUTES:
                 patched = 0
                 for it in items:
@@ -625,6 +633,7 @@ class ExecutableCaseNode(AsyncNode):
         return {
             "generated_at": _now(),
             "summary": {r: len(groups[r]) for r in ROUTES},
+            "draft_only": draft_only,
             "route_labels": ROUTE_LABELS,
             "routes": routes,
             "bundles": bundles,

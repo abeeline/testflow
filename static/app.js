@@ -41,6 +41,9 @@ const outDesign = document.getElementById("outDesign");
 const outCases = document.getElementById("outCases");
 const execCasesSummary = document.getElementById("execCasesSummary");
 const execCasesTrace = document.getElementById("execCasesTrace");
+const execCasesFreshnessEl = document.getElementById("execCasesFreshness");
+const execCasesDiffCard = document.getElementById("execCasesDiffCard");
+const execCasesDiffEl = document.getElementById("execCasesDiff");
 const execCasesBundles = document.getElementById("execCasesBundles");
 const bzUrlEl = document.getElementById("bzUrl");
 const bzKeyEl = document.getElementById("bzKey");
@@ -1781,6 +1784,8 @@ function downloadJson(filename, data) {
 
 function renderExecutableCases(data) {
   if (!execCasesSummary) return;
+  refreshExecCasesControls();
+  if (execCasesDiffCard && !data?.bundles) execCasesDiffCard.hidden = true;
   if (!data || !data.bundles) {
     execCasesSummary.innerHTML = "<em>尚未生成。完成测试用例后点击“生成可执行用例”。</em>";
     execCasesTrace.innerHTML = "";
@@ -1865,8 +1870,197 @@ function renderProtocolPreview(bundle) {
   }).join("");
 }
 
+// ---------- 可执行用例：判断结果是否过期、重新生成后对比变化 ----------
+
+function stableStringify(v) {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+function hashText(text) {
+  // FNV-1a 32 位，只用来判断输入有没有变化
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+const EXEC_INPUT_LABELS = { testcases: "测试用例", requirements: "需求", product: "产品形态", bugs: "关联的 Bug" };
+
+// 可执行用例只依赖这几样输入：同样的输入再生成一次，只是让大模型把措辞重写一遍
+function execInputFingerprint() {
+  return {
+    testcases: hashText(stableStringify(stageState.test_case_spec || null)),
+    requirements: hashText(stableStringify({ input: parseRequirements(requirementsEl?.value || ""), spec: stageState.requirement_spec || null })),
+    product: hashText(stableStringify(getSelectedProductProfile().selected || {})),
+    bugs: hashText(stableStringify([...(stageState.bug_ids || [])].map(String).sort())),
+  };
+}
+
+function execCasesFreshness() {
+  const data = stageState.executable_cases;
+  if (!stageState.test_case_spec) return { state: data?.bundles ? "unknown" : "no_input", changed: [] };
+  if (!data?.bundles) return { state: "none", changed: [] };
+  const saved = data.input_fingerprint;
+  if (!saved || typeof saved !== "object") return { state: "unknown", changed: [] };
+  const now = execInputFingerprint();
+  const changed = Object.keys(EXEC_INPUT_LABELS).filter((k) => saved[k] !== now[k]);
+  return { state: changed.length ? "stale" : "fresh", changed };
+}
+
+let execGenBusy = false;
+
+function formatGeneratedAt(iso) {
+  return iso ? String(iso).replace("T", " ").slice(0, 16) : "";
+}
+
+function refreshExecCasesControls() {
+  if (!genExecCasesBtn) return;
+  const { state, changed } = execCasesFreshness();
+  const data = stageState.executable_cases;
+  const tcCount = (stageState.test_case_spec?.testcases || []).length;
+  const draftOnly = Object.values(data?.draft_only || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+  const label = { none: "生成可执行用例", stale: "按最新输入重新生成", fresh: "重新生成", unknown: "重新生成", no_input: "生成可执行用例" }[state];
+  const secondary = state === "fresh" || state === "unknown";
+  genExecCasesBtn.classList.toggle("ui-btn-secondary", secondary);
+  genExecCasesBtn.dataset.defaultText = label;
+  if (!execGenBusy) {
+    genExecCasesBtn.textContent = label;
+    genExecCasesBtn.disabled = state === "no_input";
+  }
+  genExecCasesBtn.title = state === "no_input" ? "请先在“测试用例”页生成测试用例" : "";
+
+  if (!execCasesFreshnessEl) return;
+  const when = formatGeneratedAt(data?.generated_at);
+  let html = "";
+  let cls = "";
+  if (state === "fresh") {
+    cls = "is-fresh";
+    html = `<strong>已是最新。</strong>这份结果基于当前的 ${tcCount} 条测试用例${when ? `，生成于 ${esc(when)}` : ""}。`
+      + "输入没有变化，重新生成只会让大模型把各平台 case 的措辞重写一遍，用例数量和分流不会变，一般不需要再点。";
+    if (draftOnly) html += `<br/>上次有 ${draftOnly} 条用例因大模型不可用，直接用了由测试用例映射的草稿；如果大模型现在可用，重新生成可以得到平台适配后的版本。`;
+  } else if (state === "stale") {
+    cls = "is-stale";
+    html = `<strong>${esc(changed.map((k) => EXEC_INPUT_LABELS[k]).join("、"))}在上次生成后有变化</strong>，下面的可执行用例已过期，请点击右上角“按最新输入重新生成”。`;
+  } else if (state === "unknown") {
+    html = stageState.test_case_spec
+      ? "这份可执行用例来自旧版本的记录，无法判断是否基于当前的测试用例。如果刚改过测试用例、需求或产品形态，请重新生成。"
+      : "当前会话没有测试用例，这份可执行用例无法重新生成。";
+  } else if (state === "no_input") {
+    html = "请先在“测试用例”页生成测试用例，再生成可执行用例。";
+  }
+  // 输入变了以后，上一次的对比已不代表当前结果
+  if (state !== "fresh" && execCasesDiffCard) execCasesDiffCard.hidden = true;
+  execCasesFreshnessEl.className = `exec-freshness ${cls}`.trim();
+  execCasesFreshnessEl.innerHTML = html;
+  execCasesFreshnessEl.hidden = !html;
+}
+
+function execCaseTcId(route, c) {
+  return String((route === "artemis" || route === "at_agent" ? c?.task?.case_code : (c?.trace?.tc_id || c?.source_tc_id)) || "");
+}
+
+function execCaseComparable(c) {
+  const { id, case_id, ...rest } = c || {};  // 编号按顺序生成，不算内容变化
+  return rest;
+}
+
+function execCaseChangedFields(a, b) {
+  const fields = new Set();
+  const walk = (x, y, prefix) => {
+    Object.keys({ ...(x || {}), ...(y || {}) }).forEach((k) => {
+      if (stableStringify(x?.[k]) === stableStringify(y?.[k])) return;
+      if (k === "task" && !prefix) walk(x?.task, y?.task, "task.");
+      else fields.add(prefix + k);
+    });
+  };
+  walk(execCaseComparable(a), execCaseComparable(b), "");
+  return [...fields];
+}
+
+function diffExecutableCases(prev, next) {
+  const routes = Object.keys(EXEC_ROUTE_FILES);
+  const casesOf = (data, r) => (data?.bundles?.[r]?.cases || data?.bundles?.[r]?.items || []);
+  const counts = routes.map((r) => ({ route: r, before: casesOf(prev, r).length, after: casesOf(next, r).length }));
+  const prevRoutes = prev?.routes || {};
+  const nextRoutes = next?.routes || {};
+  const added = Object.keys(nextRoutes).filter((t) => !(t in prevRoutes));
+  const removed = Object.keys(prevRoutes).filter((t) => !(t in nextRoutes));
+  const moved = Object.keys(nextRoutes).filter((t) => t in prevRoutes && prevRoutes[t] !== nextRoutes[t])
+    .map((t) => ({ tc: t, from: prevRoutes[t], to: nextRoutes[t] }));
+  const changed = [];
+  routes.forEach((r) => {
+    const group = (data) => {
+      const m = {};
+      casesOf(data, r).forEach((c) => (m[execCaseTcId(r, c)] = m[execCaseTcId(r, c)] || []).push(c));
+      return m;
+    };
+    const a = group(prev);
+    const b = group(next);
+    Object.keys(b).forEach((tc) => {
+      if (!a[tc]) return;
+      const fields = new Set();
+      const n = Math.max(a[tc].length, b[tc].length);
+      for (let i = 0; i < n; i++) execCaseChangedFields(a[tc][i], b[tc][i]).forEach((f) => fields.add(f));
+      if (a[tc].length !== b[tc].length) fields.add("case 条数");
+      if (fields.size) changed.push({ tc, route: r, fields: [...fields] });
+    });
+  });
+  const countsChanged = counts.some((c) => c.before !== c.after);
+  return { counts, countsChanged, added, removed, moved, changed,
+    identical: !countsChanged && !added.length && !removed.length && !moved.length && !changed.length };
+}
+
+function renderExecCasesDiff(prev, next) {
+  if (!execCasesDiffCard || !execCasesDiffEl) return;
+  if (!prev?.bundles || !next?.bundles) {
+    execCasesDiffCard.hidden = true;
+    return null;
+  }
+  const d = diffExecutableCases(prev, next);
+  const labels = next.route_labels || {};
+  const rl = (r) => esc(labels[r] || r);
+  const total = d.counts.reduce((a, c) => a + c.after, 0);
+  const parts = [];
+  if (d.identical) {
+    parts.push(`<p class="exec-diff-headline"><strong>与上次结果完全一致</strong>（共 ${total} 条可执行 case）。输入没有变化时，重新生成不会带来新内容。</p>`);
+  } else {
+    const head = [];
+    if (!d.countsChanged && !d.added.length && !d.removed.length && !d.moved.length) head.push("用例数量和分流都没变");
+    if (d.changed.length) head.push(`${d.changed.length} 条用例对应的 case 内容有改写`);
+    parts.push(`<p class="exec-diff-headline"><strong>${esc(head.join("，") || "结果有变化")}</strong>${
+      formatGeneratedAt(prev.generated_at) ? `（对比 ${esc(formatGeneratedAt(prev.generated_at))} 那次的结果）` : ""}。</p>`);
+    if (d.countsChanged) {
+      parts.push(`<table class="ui-table"><thead><tr><th>验收方案</th><th>上次</th><th>本次</th></tr></thead><tbody>${
+        d.counts.filter((c) => c.before || c.after).map((c) => `<tr><td>${rl(c.route)}</td><td>${c.before}</td><td>${c.after}${
+          c.after !== c.before ? `（${c.after > c.before ? "+" : ""}${c.after - c.before}）` : ""}</td></tr>`).join("")
+      }</tbody></table>`);
+    }
+    const items = [];
+    if (d.added.length) items.push(`新增用例：${esc(d.added.join("、"))}`);
+    if (d.removed.length) items.push(`移除用例：${esc(d.removed.join("、"))}`);
+    d.moved.forEach((m) => items.push(`${esc(m.tc)} 从 ${rl(m.from)} 改分流到 ${rl(m.to)}`));
+    if (items.length) parts.push(`<ul class="exec-diff-list">${items.map((x) => `<li>${x}</li>`).join("")}</ul>`);
+    if (d.changed.length) {
+      parts.push(`<details><summary>查看内容改写明细（${d.changed.length} 条）</summary><table class="ui-table"><thead><tr><th>用例</th><th>验收方案</th><th>变化的字段</th></tr></thead><tbody>${
+        d.changed.map((c) => `<tr><td>${esc(c.tc)}</td><td>${rl(c.route)}</td><td>${esc(c.fields.join("、"))}</td></tr>`).join("")
+      }</tbody></table></details>`);
+    }
+  }
+  execCasesDiffEl.innerHTML = parts.join("");
+  execCasesDiffCard.hidden = false;
+  return d;
+}
+
 async function generateExecCases() {
   if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
+  const previous = stageState.executable_cases?.bundles ? stageState.executable_cases : null;
+  const fingerprint = execInputFingerprint();
   const data = await startStageJobAndWait("exec_cases", {
     requirement_input: parseRequirements(requirementsEl?.value || ""),
     requirement_spec: stageState.requirement_spec || {},
@@ -1875,15 +2069,20 @@ async function generateExecCases() {
     test_environments: getSelectedTestEnvironments(),
     bug_ids: stageState.bug_ids || [],
     history_record_id: stageState.design_history_record_id || "",
+    input_fingerprint: fingerprint,
   });
   stageState.executable_cases = data.executable_cases || null;
+  if (stageState.executable_cases && !stageState.executable_cases.input_fingerprint) stageState.executable_cases.input_fingerprint = fingerprint;
   latestStructured = latestStructured || {};
   latestStructured.executable_cases = stageState.executable_cases;
   renderExecutableCases(stageState.executable_cases);
+  const diff = renderExecCasesDiff(previous, stageState.executable_cases);
   const s = stageState.executable_cases?.summary || {};
-  setStatus(`可执行用例已生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` + usageLine(data) +
+  const diffLine = !diff ? "" : diff.identical ? "\n与上次结果完全一致。"
+    : `\n与上次相比：${diff.changed.length} 条用例的 case 内容有改写${diff.countsChanged || diff.moved.length || diff.added.length || diff.removed.length ? "，数量或分流有变化" : "，数量和分流没变"}（详见“本次重新生成的变化”）。`;
+  setStatus(`可执行用例已${previous ? "重新" : ""}生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` + diffLine + usageLine(data) +
     (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : ""));
-  pushSystemBotMessage("可执行用例已生成，可在“可执行用例”页按验收方案下载。");
+  pushSystemBotMessage(previous ? "可执行用例已重新生成，变化见“可执行用例”页顶部。" : "可执行用例已生成，可在“可执行用例”页按验收方案下载。");
   persistCurrentState();
 }
 
@@ -1917,6 +2116,9 @@ async function generateAll() {
       latestStructured.test_case_spec = res.test_case_spec;
     } else if (stage === "exec_cases") {
       stageState.executable_cases = res.executable_cases;
+      if (stageState.executable_cases && !stageState.executable_cases.input_fingerprint) {
+        stageState.executable_cases.input_fingerprint = execInputFingerprint();
+      }
       latestStructured.executable_cases = res.executable_cases;
     }
     applyStageOutputs();
@@ -2258,6 +2460,7 @@ function switchSheetById(id) {
   document.querySelectorAll(".sheet").forEach((s) => {
     s.classList.toggle("active", s.id === id);
   });
+  if (id === "sheet5") refreshExecCasesControls();
   if (id === "sheet6" && !flowVizLoaded) {
     loadFlowVisualization()
       .then(() => { flowVizLoaded = true; })
@@ -2361,6 +2564,11 @@ genCasesBtn.addEventListener("click", async () => {
 });
 
 genExecCasesBtn.addEventListener("click", async () => {
+  const { state } = execCasesFreshness();
+  if (state === "fresh" && !confirm("当前可执行用例已基于最新的测试用例、需求和产品形态生成。\n\n"
+    + "输入没有变化，重新生成只会让大模型把各平台 case 的措辞重写一遍，用例数量和分流不会变，生成完会列出与上次的差异。\n\n确定要重新生成吗？")) return;
+  if (state === "unknown" && !confirm("无法判断这份可执行用例是否基于当前的测试用例。重新生成会用当前的测试用例覆盖现有结果，生成完会列出与上次的差异。\n\n确定要重新生成吗？")) return;
+  execGenBusy = true;
   setSingleButtonBusy(genExecCasesBtn, true, "生成中...");
   stageButtons.filter((b) => b !== genExecCasesBtn).forEach((b) => b && (b.disabled = true));
   try {
@@ -2370,8 +2578,10 @@ genExecCasesBtn.addEventListener("click", async () => {
   } catch (e) {
     setStatus(`生成可执行用例失败: ${e.message}`);
   } finally {
+    execGenBusy = false;
     setSingleButtonBusy(genExecCasesBtn, false);
     stageButtons.filter((b) => b !== genExecCasesBtn).forEach((b) => b && (b.disabled = false));
+    refreshExecCasesControls();
   }
 });
 
@@ -2857,8 +3067,10 @@ async function sendBotMessage() {
 }
 
 goExecCasesBtn?.addEventListener("click", () => {
+  const { state } = execCasesFreshness();
   switchSheetById("sheet5");
-  genExecCasesBtn?.click();
+  // 已有结果且没过期（或无法判断）时只跳转查看，要不要重新生成由用户在页面上决定
+  if (state === "none" || state === "stale") genExecCasesBtn?.click();
 });
 
 // init
@@ -2871,6 +3083,7 @@ renderProductProfileOptions();
 renderDesignHistoryDetail(null);
 try { currentProjectId = localStorage.getItem(CURRENT_PROJECT_KEY) || DEFAULT_PROJECT_ID; } catch (_) {}
 restoreLastResultUI(loadLastResult());
+refreshExecCasesControls();
 loadBugzillaSettings().catch(() => {});
 loadLlmSettings().catch(() => {});
 loadKbSettings().catch(() => {});
