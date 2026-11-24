@@ -785,12 +785,6 @@ function renderDocList(items = []) {
   return `<ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
 }
 
-function renderDocKeyValueTable(rows = []) {
-  const arr = Array.isArray(rows) ? rows.filter((x) => Array.isArray(x) && x.length >= 2) : [];
-  if (!arr.length) return "<p>无</p>";
-  return `<table><tbody>${arr.map((x) => `<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td></tr>`).join("")}</tbody></table>`;
-}
-
 function renderAnsweredQuestionsTable(items = []) {
   const rows = Array.isArray(items) ? items.filter((x) => x && typeof x === "object") : [];
   if (!rows.length) return "<p>无</p>";
@@ -804,206 +798,27 @@ function renderAnsweredQuestionsTable(items = []) {
     .join("")}</tbody></table>`;
 }
 
-function buildDesignDocumentHtml() {
-  const design = stageState.test_design_spec || {};
-  const requirementSpec = stageState.requirement_spec || {};
-  const personaReviews = stageState.persona_reviews || {};
-  const requirementReviewHistory = stageState.requirement_review_history || {};
-  const requirementInputs = parseRequirements(requirementsEl?.value || "");
-  const productProfile = getSelectedProductProfile();
-  const testEnvironments = getSelectedTestEnvironments();
-  const nowText = new Date().toLocaleString("zh-CN", { hour12: false });
-  const reqs = Array.isArray(requirementSpec.final_requirements) ? requirementSpec.final_requirements : [];
-  const objectives = Array.isArray(design.objectives) ? design.objectives : [];
-  const matrices = Array.isArray(design.coverage_matrices) ? design.coverage_matrices : [];
-  const integrated = Array.isArray(design.integrated_matrix) ? design.integrated_matrix : [];
-  const title = reqs[0]?.title || requirementInputs[0] || "测试设计文档";
 
-  const reqTable = reqs.length
-    ? `<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th><th>RAT范围</th><th>通过标准</th></tr></thead><tbody>${reqs
-        .map(
-          (r) =>
-            `<tr><td>${esc(r.req_id || "")}</td><td>${esc(r.title || "")}</td><td>${esc(r.priority || "")}</td><td>${esc(
-              (r.rat_scope || []).join("、")
-            )}</td><td>${esc(((r.acceptance || {}).pass_fail || []).join(" / "))}</td></tr>`
-        )
-        .join("")}</tbody></table>`
-    : "<p>无</p>";
-
-  const reviewSections = [
-    ["规范评审", (personaReviews.spec || {}).reviews || []],
-    ["运营商评审", (personaReviews.carrier || {}).reviews || []],
-    ["现网体验评审", (personaReviews.ux || {}).reviews || []],
-  ]
-    .map(([label, items]) => {
-      const list = Array.isArray(items) ? items : [];
-      const body = list.length
-        ? `<table><thead><tr><th>需求ID</th><th>问题项</th><th>待确认问题</th><th>改写建议</th></tr></thead><tbody>${list
-            .map(
-              (it) =>
-                `<tr><td>${esc(it.req_id || "")}</td><td>${esc((it.issues || []).join("；"))}</td><td>${esc(
-                  (it.open_questions || []).join("；")
-                )}</td><td>${esc(it.rewrite_suggestion || "")}</td></tr>`
-            )
-            .join("")}</tbody></table>`
-        : "<p>无</p>";
-      return `<section><h3>${esc(label)}</h3>${body}</section>`;
-    })
-    .join("");
-
-  const objectiveTable = objectives.length
-    ? `<table><thead><tr><th>目标ID</th><th>关联需求</th><th>目标</th><th>成功标准</th><th>证据</th><th>优先级</th></tr></thead><tbody>${objectives
-        .map(
-          (o) =>
-            `<tr><td>${esc(o.objective_id || "")}</td><td>${esc((o.linked_reqs || []).join("、"))}</td><td>${esc(
-              o.goal || ""
-            )}</td><td>${esc((o.success_criteria || []).join(" / "))}</td><td>${esc((o.evidence || []).join(" / "))}</td><td>${esc(
-              o.priority || ""
-            )}</td></tr>`
-        )
-        .join("")}</tbody></table>`
-    : "<p>无</p>";
-
-  const matrixText = matrices.length
-    ? matrices
-        .map((m) => {
-          const dims = Array.isArray(m.dimensions)
-            ? m.dimensions.map((d) => `${d.name || ""}: ${Array.isArray(d.values) ? d.values.join("、") : `${d.values || ""}`}`).join("<br/>")
-            : "";
-          const sampling = m.sampling_strategy || {};
-          return `<article class="matrix-card"><h4>${esc(m.matrix_id || "覆盖矩阵")}</h4><div>${dims}</div><p><strong>采样策略：</strong>${esc(
-            sampling.type || ""
-          )}</p><p><strong>必选组合：</strong>${esc(JSON.stringify(sampling.must_include || [], null, 0))}</p><p><strong>排除组合：</strong>${esc(
-            JSON.stringify(sampling.exclude || [], null, 0)
-          )}</p></article>`;
-        })
-        .join("")
-    : "<p>无</p>";
-
-  const integratedTable = integrated.length
-    ? `<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead><tbody>${integrated
-        .map((r, idx) => {
-          const cfg = r.key_configuration || {};
-          const cfgText = Object.keys(cfg)
-            .map((k) => `${k}: ${cfg[k]}`)
-            .join(" / ");
-          const envText = formatTestEnvironmentSummary(r.test_environment);
-          const riskText = formatTestEnvironmentRisk(r.test_environment);
-          return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(
-            r.objective_id || ""
-          )}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgText)}</td><td>${esc(
-            (r.pass_criteria || []).join(" / ")
-          )}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td></tr>`;
-        })
-        .join("")}</tbody></table>`
-    : "<p>无</p>";
-  const answeredQuestionTable = renderAnsweredQuestionsTable(requirementReviewHistory.answered_questions || []);
-
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${esc(title)} - 测试设计文档</title>
-    <style>
-      :root { color-scheme: light; }
-      body { margin: 0; padding: 32px; font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f4efe5; color: #1f2937; }
-      .page { max-width: 1180px; margin: 0 auto; background: #fffdf8; border: 1px solid #e5dccd; border-radius: 18px; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08); overflow: hidden; }
-      .hero { padding: 28px 32px 24px; background: linear-gradient(135deg, #f6efe3 0%, #fffaf1 58%, #eef6f7 100%); border-bottom: 1px solid #e9ddcb; }
-      .hero h1 { margin: 0; font-size: 30px; }
-      .hero p { margin: 8px 0 0; color: #5b6472; }
-      .section { padding: 24px 32px; border-top: 1px solid #efe6d8; }
-      .section:first-of-type { border-top: none; }
-      h2 { margin: 0 0 14px; font-size: 20px; }
-      h3 { margin: 0 0 10px; font-size: 16px; }
-      h4 { margin: 0 0 8px; font-size: 14px; }
-      table { width: 100%; border-collapse: collapse; font-size: 13px; }
-      th, td { border: 1px solid #e5dccd; padding: 9px 10px; text-align: left; vertical-align: top; }
-      th { background: #f8f1e7; width: auto; }
-      ul { margin: 8px 0 0 18px; }
-      p { line-height: 1.7; margin: 8px 0; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      .matrix-card { border: 1px solid #e7ddcf; border-radius: 12px; padding: 14px; background: #fff; margin-bottom: 12px; }
-      .meta td:first-child, .meta th:first-child { width: 180px; }
-      @media (max-width: 900px) { body { padding: 12px; } .section, .hero { padding: 18px; } .grid { grid-template-columns: 1fr; } }
-    </style>
-  </head>
-  <body>
-    <div class="page">
-      <section class="hero">
-        <h1>标准测试设计文档</h1>
-        <p>${esc(title)}</p>
-      </section>
-      <section class="section">
-        <h2>一、文档信息</h2>
-        ${renderDocKeyValueTable([
-          ["生成时间", nowText],
-          ["需求条目数", `${reqs.length}`],
-          ["测试目标数", `${objectives.length}`],
-          ["整合矩阵条目数", `${integrated.length}`],
-        ])}
-      </section>
-      <section class="section">
-        <h2>二、需求输入与产品背景</h2>
-        <div class="grid">
-          <div>
-            <h3>原始需求输入</h3>
-            ${renderDocList(requirementInputs)}
-          </div>
-          <div>
-            <h3>产品通信背景与支持特性</h3>
-            ${renderDocList((productProfile.profile_display || []).map((x) => `${x.group}: ${x.values.join("、")}`))}
-          </div>
-          <div>
-            <h3>测试团队可用测试环境</h3>
-            ${renderDocList(testEnvironments.display || [])}
-          </div>
-        </div>
-      </section>
-      <section class="section">
-        <h2>三、测试需求解读稿</h2>
-        ${reqTable}
-      </section>
-      <section class="section">
-        <h2>四、三人评审记录</h2>
-        ${reviewSections}
-        <section>
-          <h3>用户已确认问题</h3>
-          ${answeredQuestionTable}
-        </section>
-      </section>
-      <section class="section">
-        <h2>五、测试目标</h2>
-        ${objectiveTable}
-      </section>
-      <section class="section">
-        <h2>六、覆盖矩阵</h2>
-        ${matrixText}
-      </section>
-      <section class="section">
-        <h2>七、整合覆盖矩阵</h2>
-        ${integratedTable}
-      </section>
-      <section class="section">
-        <h2>八、设计说明</h2>
-        ${renderDocList(design.design_notes || [])}
-      </section>
-      <section class="section">
-        <h2>九、范围裁剪与待跟进项</h2>
-        <div class="grid">
-          <div>
-            <h3>去范围项</h3>
-            ${renderDocList(design.de_scoped || [])}
-          </div>
-          <div>
-            <h3>待确认问题</h3>
-            ${renderDocList(requirementSpec.questions_to_ask || [])}
-          </div>
-        </div>
-      </section>
-    </div>
-  </body>
-</html>`;
+// 还没归档时的预览：交给后端用归档文档同一个模板生成，页面样式和测试架构图保持一致
+let designDocPreviewSeq = 0;
+async function buildDesignDocumentPreview() {
+  const res = await fetch("/api/export/design-document.html", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requirement_input: parseRequirements(requirementsEl?.value || ""),
+      requirement_spec: stageState.requirement_spec || {},
+      persona_reviews: stageState.persona_reviews || {},
+      requirement_review_history: stageState.requirement_review_history || {},
+      test_design_spec: stageState.test_design_spec || {},
+      test_case_spec: stageState.test_case_spec || {},
+      product_profile: getSelectedProductProfile(),
+      test_environments: getSelectedTestEnvironments(),
+      project_id: currentProjectId,
+    }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
 }
 
 function refreshDesignDocumentLink() {
@@ -1029,13 +844,19 @@ function refreshDesignDocumentLink() {
     return;
   }
   const title = (stageState.requirement_spec?.final_requirements || [])[0]?.title || "测试设计文档";
-  const html = buildDesignDocumentHtml();
-  latestDesignDocUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-  if (designDocLink) {
-    designDocLink.href = latestDesignDocUrl;
-    designDocLink.title = `${title} - 测试设计文档`;
-  }
-  designDocActions?.classList.remove("hidden");
+  const seq = ++designDocPreviewSeq;
+  buildDesignDocumentPreview()
+    .then((html) => {
+      if (seq !== designDocPreviewSeq) return;
+      revokeDesignDocUrl();
+      latestDesignDocUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+      if (designDocLink) {
+        designDocLink.href = latestDesignDocUrl;
+        designDocLink.title = `${title} - 测试设计文档`;
+      }
+      designDocActions?.classList.remove("hidden");
+    })
+    .catch((err) => console.warn("测试设计文档预览生成失败", err));
 }
 
 function renderDesign(design) {
@@ -2336,11 +2157,11 @@ function renderFlowGraph(graph, promptRoles = [], startNodeId = "") {
     }));
     g.appendChild(el("text", {
       x: 12, y: NODE_H / 2 + 4, "font-size": 11, "font-weight": 700,
-      fill: isStart ? "#fff" : c("--muted-foreground"),
+      fill: isStart ? c("--primary-foreground") : c("--muted-foreground"),
     }, String(p.idx + 1).padStart(2, "0")));
     g.appendChild(el("text", {
       x: 34, y: NODE_H / 2 + 4, "font-size": 12, "font-weight": 600,
-      fill: isStart ? "#fff" : c("--foreground"),
+      fill: isStart ? c("--primary-foreground") : c("--foreground"),
     }, String(n.label || "").replace(/Node$|Flow$/, "")));
     (rolesByNode[id] || []).forEach((r, i) => {
       const ry = NODE_H + 14 + i * (ROLE_H + 6);

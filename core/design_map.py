@@ -16,6 +16,12 @@ from core.scope import TEST_TYPE_LABELS, TEST_TYPES, selected_test_types, type_o
 from utils.paths import STATIC_DIR
 
 TEMPLATE_NAME = "design_map_template.html"
+THEME_CSS_NAMES = ("theme.css", "report_theme.css")
+# 报告页单独打开（从主程序同源地址）时沿用主程序选的浅色/深色；离线打开的文件跟随系统
+THEME_SYNC_SCRIPT = (
+    '<script>try{var t=localStorage.getItem("pocketflow_theme");'
+    'if(t==="dark"||t==="light")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>'
+)
 HIGH_PRIORITIES = ("P0", "P1")
 _ENV_SHORT = {"AMARISOFT": "Amarisoft", "PROTOCOL_ANALYZER": "协议仪表", "ARTEMIS": "Artemis", "AT_AGENT": "AT", "FIELD": "外场"}
 
@@ -170,9 +176,15 @@ def build_design_map(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def report_theme_css() -> str:
+    """测试架构图和测试设计文档共用的颜色与基础排版（内联进页面，导出的文件单独打开也能显示）。"""
+    return "\n".join((STATIC_DIR / name).read_text(encoding="utf-8") for name in THEME_CSS_NAMES)
+
+
 def render_design_map_html(record: Dict[str, Any]) -> str:
     data = build_design_map(record)
-    template = (STATIC_DIR / TEMPLATE_NAME).read_text(encoding="utf-8")
+    template = (STATIC_DIR / TEMPLATE_NAME).read_text(encoding="utf-8").replace("/*__THEME_CSS__*/", report_theme_css(), 1)
+    template = template.replace("<!--__THEME_SYNC__-->", THEME_SYNC_SCRIPT, 1)
     payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     page_title = data["title"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return template.replace("__MAP_TITLE__", page_title).replace("/*__MAP_DATA__*/null", payload, 1)
