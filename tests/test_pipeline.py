@@ -239,6 +239,17 @@ def test_no_llm_still_produces_everything():
     _run(create_exec_case_flow(), shared)
     item = shared["executable_cases"]["bundles"]["protocol"]["items"][0]
     assert item["cell_config"]["band"] == "n78"
+    assert shared["executable_cases"]["draft_only"]["protocol"] == 1, "没经过大模型适配的用例要记下来，界面据此提示可以重新生成"
+
+
+def test_artemis_case_id_stable_when_title_reworded():
+    from exec_cases import build_bundle
+    tc_index = {"TC-1": {"tc_id": "TC-1", "title": "注册"}}
+    first = build_bundle("artemis", [{"source_tc_id": "TC-1", "title": "注册被拒后不重发"}], tc_index, {}, [])
+    again = build_bundle("artemis", [{"source_tc_id": "TC-1", "title": "被拒后 T3346 期间不再注册"}], tc_index, {}, [])
+    assert first["cases"][0]["id"] == again["cases"][0]["id"], "重新生成只改了措辞时 id 不变，重新导入不会出现重复用例"
+    two = build_bundle("artemis", [{"source_tc_id": "TC-1", "title": "a"}, {"source_tc_id": "TC-1", "title": "b"}], tc_index, {}, [])
+    assert len({c["id"] for c in two["cases"]}) == 2
 
 
 def test_legacy_testcase_projects():
