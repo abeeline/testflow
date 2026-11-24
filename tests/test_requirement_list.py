@@ -354,6 +354,16 @@ def test_design_map_endpoint_serves_the_archived_design(tmp_path, monkeypatch):
     resp = TestClient(main.app).get("/api/design-history/abcdef123456/map")
     assert resp.status_code == 200 and "text/html" in resp.headers["content-type"] and "SR 10 选网" in resp.text
 
+    # 旧记录归档的是旧样式 HTML：查看时按当前模板重新生成，并能直接在浏览器里打开
+    main._history_document_path("abcdef123456").write_text("<html>old</html>", encoding="utf-8")
+    client = TestClient(main.app)
+    doc = client.get("/api/design-history/abcdef123456/document")
+    assert doc.status_code == 200 and "attachment" not in doc.headers.get("content-disposition", "")
+    assert '<header class="top">' in doc.text and "old" not in main._history_document_path("abcdef123456").read_text(encoding="utf-8")
+    assert "attachment" in client.get("/api/design-history/abcdef123456/document?download=1").headers["content-disposition"]
+    preview = client.post("/api/export/design-document.html", json={"requirement_spec": _design_record()["requirement_spec"]})
+    assert preview.status_code == 200 and "标准测试设计文档" in preview.text
+
 
 def test_selected_test_types_drive_design_advice_and_map():
     from core.design_map import build_design_map

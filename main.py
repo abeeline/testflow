@@ -26,7 +26,7 @@ from flow import (
 )
 from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from core.events import EventLog
-from core.design_map import render_design_map_html, report_theme_css
+from core.design_map import THEME_SYNC_SCRIPT, render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
 from core.llm import call_llm, summarize_usage
 from core.tcd import TECHNIQUE_LABELS, purpose_text
@@ -59,6 +59,19 @@ class ExportTestCasesRequest(BaseModel):
     test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Dict[str, Any]
     executable_cases: Optional[Dict[str, Any]] = None
+
+
+class DesignDocumentPreviewRequest(BaseModel):
+    """还没归档的设计结果，按归档文档同一个模板生成预览。"""
+    requirement_input: Optional[List[str]] = None
+    requirement_spec: Optional[Dict[str, Any]] = None
+    persona_reviews: Optional[Dict[str, Any]] = None
+    requirement_review_history: Optional[Dict[str, Any]] = None
+    test_design_spec: Optional[Dict[str, Any]] = None
+    test_case_spec: Optional[Dict[str, Any]] = None
+    product_profile: Optional[Dict[str, Any]] = None
+    test_environments: Optional[Dict[str, Any]] = None
+    project_id: str = ""
 
 
 class RAGUploadBase64Request(BaseModel):
@@ -634,12 +647,15 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{html.escape(str(title))} - 测试设计文档</title>
+    {THEME_SYNC_SCRIPT}
     <style>
 {report_theme_css()}
 html {{ scroll-behavior: smooth; }}
 .toc {{ position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }}
 .toc a {{ border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; color: var(--ink); text-decoration: none; white-space: nowrap; }}
 .toc a:hover {{ background: var(--accent-soft); border-color: var(--accent); }}
+.toc .grow {{ flex: 1 1 auto; }}
+.toc .btn {{ font-size: 12.5px; padding: 2px 10px; white-space: nowrap; }}
 main.doc {{ max-width: 1280px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }}
 main.doc > .card {{ overflow-x: auto; scroll-margin-top: 56px; box-shadow: var(--shadow); }}
 .card h2 {{ margin: 0 0 12px; padding-left: 10px; border-left: 4px solid var(--accent); font-size: 15px; font-weight: 650; line-height: 1.3; }}
@@ -651,8 +667,8 @@ ul {{ margin: 4px 0 0; padding-left: 18px; }}
 small {{ color: var(--muted); }}
 table {{ width: 100%; border-collapse: collapse; background: var(--panel); font-size: 13px; }}
 th, td {{ border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }}
-thead th {{ background: var(--bg); font-weight: 600; white-space: nowrap; }}
-tbody th {{ background: var(--bg); color: var(--muted); font-weight: 600; width: 180px; }}
+thead th {{ background: var(--subtle); font-weight: 600; white-space: nowrap; }}
+tbody th {{ background: var(--subtle); color: var(--muted); font-weight: 600; width: 180px; }}
 td[rowspan] {{ background: var(--accent-soft); font-weight: 600; }}
 tbody tr:hover td:not([rowspan]) {{ background: var(--accent-soft); }}
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }}
@@ -669,7 +685,7 @@ tbody tr:hover td:not([rowspan]) {{ background: var(--accent-soft); }}
       <div class="sub">{html.escape(sub)}</div>
       <div class="stats">{stats_html}</div>
     </header>
-    <nav class="toc">{toc_html}</nav>
+    <nav class="toc">{toc_html}<span class="grow"></span><button class="btn" type="button" onclick="window.print()">打印 / 存为 PDF</button></nav>
     <main class="doc">
       {body_html}
     </main>
@@ -907,12 +923,19 @@ def get_design_history_map(record_id: str, download: int = 0):
 
 
 @app.get("/api/design-history/{record_id}/document")
-def get_design_history_document(record_id: str):
+def get_design_history_document(record_id: str, download: int = 0):
+    """测试设计文档：和测试架构图一样按当前模板现算（旧记录也用新样式），同时刷新归档目录里的 HTML。"""
     record = _load_design_history_record(record_id)
-    html_path = _history_document_path(record_id)
-    if not html_path.exists():
-        html_path.write_text(_render_design_document_html(record), encoding="utf-8")
-    return FileResponse(html_path, media_type="text/html", filename=f"{record.get('title', record_id)}-测试设计文档.html")
+    content = _render_design_document_html(record)
+    try:
+        _history_document_path(record_id).write_text(content, encoding="utf-8")
+    except OSError:
+        pass
+    headers = {}
+    if download:
+        name = quote(f"{record.get('title', record_id)}-测试设计文档.html")
+        headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{name}"
+    return HTMLResponse(content, headers=headers)
 
 
 def _kb_sources(project_id: str) -> Dict[str, str]:
@@ -2002,6 +2025,14 @@ def save_prompts(payload: PromptSettingsRequest):
     return {"message": "saved", "count": len(payload.prompts)}
 
 
+@app.post("/api/export/design-document.html")
+def export_design_document_preview(payload: DesignDocumentPreviewRequest) -> HTMLResponse:
+    record = {k: v for k, v in payload.model_dump().items() if v not in (None, "")}
+    record["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    record.setdefault("status", "preview")
+    return HTMLResponse(_render_design_document_html(record))
+
+
 @app.post("/api/export/testcases.xlsx")
 def export_testcases_excel(payload: ExportTestCasesRequest):
     try:
@@ -2064,7 +2095,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
 
     wb = Workbook()
     header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="2563EB")
+    header_fill = PatternFill("solid", fgColor="2456C9")  # 和 theme.css 的主色一致
     persona_names = {"spec": "规范评审", "carrier": "运营商评审", "ux": "体验评审"}
 
     def _cfg_text(cfg: Any) -> str:
