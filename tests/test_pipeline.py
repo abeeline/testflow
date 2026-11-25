@@ -514,9 +514,58 @@ def test_chat_queries_selected_project_knowledge(monkeypatch):
         assert "KB 测试项目" in captured["system"] and "T3346 到期后自动重试注册" in captured["system"]
         assert data["references"] and data["references"][0]["ref"] == "K-1"
 
+        kinds = {s["scope"]: s["status"] for s in data["knowledge"]["sources"]}
+        assert kinds["kb_project"] == "ok" and data["llm_ready"] is True
+
+        # 关掉“查资料”：不查任何来源
         calls.clear()
-        data = client.post("/api/chat", json={"message": "T3346 到期后行为"}).json()
-        assert not calls and data["references"] == [] and "资料检索结果" not in captured["system"]
+        data = client.post("/api/chat", json={"message": "T3346 到期后行为", "project_id": pid, "use_kb": False}).json()
+        assert not calls and data["references"] == [] and data["knowledge"]["queried"] is False
+        assert "关闭了资料检索" in captured["system"]
+
+        # 没选项目：不查项目知识库；没有协议关键词时也不查公共资料
+        calls.clear()
+        data = client.post("/api/chat", json={"message": "这个页面怎么用"}).json()
+        assert not calls and data["references"] == [] and "的检索结果】" not in captured["system"]
+        assert "未选择项目" in captured["system"]
+    finally:
+        main.project_store.delete(pid)
+
+
+def test_chat_knowledge_reports_each_source(monkeypatch):
+    """助手检索：带协议关键词时同时查公共知识库；某个来源失败只标记它自己。"""
+    import main
+
+    project = main.project_store.create({"name": "来源状态项目"})
+    pid = project["project_id"]
+    monkeypatch.setattr(main, "_kb_sources", lambda _pid: {"kb_project": "", "kb_public": "http://kb.example.com/mcp"})
+    monkeypatch.setattr(main, "_query_kb", lambda scope, url, text, cfg: ([], ["公共知识库: timeout"]))
+    try:
+        hits, sources = main._gather_chat_knowledge("T3346 到期后 Registration 行为", pid)
+        status = {s["scope"]: s for s in sources}
+        assert status["kb_project"]["status"] == "not_configured"
+        assert status["kb_public"]["status"] == "error" and "timeout" in status["kb_public"]["error"]
+        assert {"project", "public"} <= set(status)
+        # 纯产品问题、没有协议关键词：不碰公共来源
+        _, sources = main._gather_chat_knowledge("这个产品默认开启吗", pid)
+        assert {s["scope"] for s in sources} == {"project", "kb_project"}
+    finally:
+        main.project_store.delete(pid)
+
+
+def test_assistant_status_endpoint():
+    import main
+    from fastapi.testclient import TestClient
+
+    project = main.project_store.create({"name": "状态项目", "kb_mcp_url": "http://kb.example.com/mcp/server/y/mcp"})
+    pid = project["project_id"]
+    try:
+        client = TestClient(main.app)
+        data = client.get("/api/assistant/status", params={"project_id": pid}).json()
+        assert data["project"]["selected"] and data["project"]["name"] == "状态项目" and data["project"]["kb_configured"]
+        assert set(data["llm"]) == {"enabled", "model"} and isinstance(data["running_jobs"], list)
+        data = client.get("/api/assistant/status", params={"project_id": main.DEFAULT_PROJECT_ID}).json()
+        assert data["project"]["selected"] is False
     finally:
         main.project_store.delete(pid)
 
