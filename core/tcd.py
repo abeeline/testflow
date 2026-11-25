@@ -193,7 +193,11 @@ def _norm_ies(raw: Any) -> List[Dict[str, Any]]:
         path = _text(ie.get("path") or ie.get("ie") or ie.get("name"))
         if not path:
             continue
-        out.append({"path": path, "value": ie.get("value"), "note": _text(ie.get("note")), "vary": _text(ie.get("vary"))})
+        item = {"path": path, "value": ie.get("value"), "note": _text(ie.get("note")), "vary": _text(ie.get("vary"))}
+        for k in ("asn1", "fixed_from"):  # ASN.1 核对结论（core/ie_gate.py）跟着 IE 走
+            if ie.get(k):
+                item[k] = ie[k]
+        out.append(item)
     return out
 
 
@@ -453,6 +457,13 @@ def patch_explicit_configs(tc: Dict[str, Any], configs: List[Dict[str, Any]]) ->
             record(c, prev["status"], prev.get("note", ""))
         return bool(prev)
 
+    pending = [c for c in configs if c.get("clarification")]
+    for c in pending:
+        record(c, "pending_clarification", f"需求取值待澄清，未写入用例：{c['clarification']}")
+        text = f"待澄清：{c.get('name')}={_text(c.get('value'))}（{c['clarification']}）"
+        if text not in tc["open_points"]:
+            tc["open_points"].append(text)
+    configs = [c for c in configs if not c.get("clarification")]
     for full_group in group_configs(configs):
         sweep = len(full_group) > 1
         group = [c for c in full_group if not keep(c)]

@@ -27,7 +27,10 @@ from schemas import (
     TEST_DESIGN_SCHEMA,
     TEST_OBJECTIVE_REQUIRED_KEYS,
 )
+from core import asn1_paths
 from core import environments as envs
+from core import ie_gate
+from core.clarification import build_clarifications, pending_ids, prompt_view
 from core.events import emit as _emit
 from core.grouping import attach_suites, restore_groups
 from core.llm import MAX_CONCURRENCY, generate_json, generate_json_or_fallback, run_split_on_truncate
@@ -35,6 +38,7 @@ from core.quality import (
     design_advice,
     design_gaps,
     feedback_for_rows,
+    finalize_pending,
     merge_expert_review,
     repair_design_rows,
     req_index,
@@ -138,7 +142,29 @@ def _requirement_view(req: Dict[str, Any]) -> Dict[str, Any]:
     cfgs = normalize_explicit_configs(req)
     if cfgs:
         view["explicit_configs"] = [{k: v for k, v in c.items() if k != "req_id"} for c in cfgs]
+    clar = req.get("clarification") or {}
+    if clar.get("notes"):
+        view["clarification"] = {"status": clar.get("status"), "notes": clar["notes"]}
+    hints = asn1_field_hints(req)
+    if hints:
+        view["asn1_ie_paths"] = hints
     return view
+
+
+def asn1_field_hints(req: Dict[str, Any], limit: int = 8) -> List[Dict[str, Any]]:
+    """需求里提到的 38.331 字段 → ASN.1 里的完整路径和类型，让模型照抄，而不是凭记忆写路径。"""
+    if not asn1_paths.available():
+        return []
+    texts = [json.dumps({k: req.get(k) for k in ("title", "description", "trigger", "expected", "explicit_configs")},
+                        ensure_ascii=False)]
+    for n in (req.get("clarification") or {}).get("notes") or []:
+        texts.append(f"{n.get('field', '')} {n.get('suggestion', '')}")
+    names = [n for n in asn1_paths.mentioned_fields(" ".join(texts)) if asn1_paths.field_exists(n)][:limit]
+    out = []
+    for h in asn1_paths.field_hints(names, max_per_name=1):
+        if h["found"]:
+            out.append({"field": h["field"], "paths": [f"{p['message']}: {p['path']} — {p['type']}" for p in h["paths"][:3]]})
+    return out
 
 
 class ThreadedNode(AsyncNode):
@@ -458,11 +484,45 @@ class SynthesisNode(ThreadedNode):
         for req in exec_res.get("final_requirements", []):
             if isinstance(req, dict):
                 req["persona_sources"] = req.get("persona_sources") or ["PRD", "Carrier", "UX"]
+        attach_clarifications(shared, exec_res, prep_res["reviews"])
         shared["requirement_spec"] = exec_res
         _trace(shared, "SynthesisNode")
         _emit(shared, "module_result", {"module": "requirement_spec", "data": exec_res})
         return "default"
 
+
+
+_KEEP_REQ_VALUE = ("保留需求稿", "沿用需求稿", "按需求原文", "保留需求原值")
+
+
+def attach_clarifications(shared: Dict[str, Any], spec: Dict[str, Any], reviews: Dict[str, Any]) -> Dict[str, Any]:
+    """需求澄清闸门：评审意见 + ASN.1 核对 → 澄清单。规范能定的按规范定，定不了的挂起等需求方回答。
+
+    评审发现了问题却“保留需求稿取值、标注待确认”放行，是错误信令流到仪表的直接原因，这里一并改掉：
+    综合评审冲突的默认处理不再是沿用需求稿。"""
+    reqs = spec.get("final_requirements", []) or []
+    previous = ((shared.get("requirement_spec") or {}).get("clarifications") or {}).get("items")
+    clar = build_clarifications(reqs, raw_requirements=shared.get("input_requirements") or [],
+                                persona_reviews=reviews, conflicts=spec.get("conflicts"),
+                                answered=shared.get("answered_questions") or [], previous=previous)
+    by_id = {it["id"]: it for it in clar["items"]}
+    for req in reqs:
+        info = req.get("clarification") or {}
+        items = [by_id[i] for i in info.get("items") or [] if i in by_id]
+        # 提示词里只放有用的：阻塞未答的、规范已定的（照规范写）、需求方已答的
+        keep = [it for it in items if it["blocking"] or it["status"] != "open"]
+        if keep:
+            info["notes"] = prompt_view(keep[:10])
+    for c in spec.get("conflicts") or []:
+        if isinstance(c, dict) and any(x in str(c.get("default_assumption") or "") for x in _KEEP_REQ_VALUE):
+            c["default_assumption"] = "按需求澄清单处理：规范能确定的按 TS 38.331 ASN.1 写，定不了的待需求方回答，不沿用需求稿取值"
+    spec["clarifications"] = clar
+    if clar["items"]:
+        _warn(shared, clar["summary"])
+    if clar["pending_req_ids"]:
+        _warn(shared, f"需求澄清: {', '.join(clar['pending_req_ids'][:12])} 有阻塞问题待需求方回答；"
+                      "这些需求的测试设计和用例会标为待澄清，可执行用例不作为可执行项输出")
+    return clar
 
 
 # ---------- 测试设计：规范化 ----------
@@ -767,11 +827,33 @@ class TestDesignNode(ThreadedNode):
     def post(self, shared, prep_res, exec_res):
         validate_jsonschema(exec_res, TEST_DESIGN_SCHEMA)
         validate_list_of_dict(exec_res.get("objectives", []), TEST_OBJECTIVE_REQUIRED_KEYS, "objectives")
+        mark_pending_rows(exec_res, shared.get("requirement_spec") or {})
         shared["test_design_spec"] = exec_res
         _trace(shared, "TestDesignNode")
         _emit(shared, "module_result", {"module": "test_design_spec", "data": {
             "objectives": len(exec_res["objectives"]), "rows": len(exec_res["integrated_matrix"])}})
         return "default"
+
+
+def mark_pending_rows(design: Dict[str, Any], spec: Dict[str, Any]) -> int:
+    """需求还有阻塞的澄清问题时，它的测试点照常起草，但标为待澄清（用例、可执行用例跟着标）。"""
+    pending = pending_ids(spec)
+    reqs = req_index(spec.get("final_requirements", []))
+    n = 0
+    for row in design.get("integrated_matrix") or []:
+        rid = str(row.get("req_id"))
+        if rid in pending:
+            info = reqs.get(rid, {}).get("clarification") or {}
+            row["clarification"] = {"status": "pending", "items": info.get("items") or []}
+            n += 1
+        else:
+            row.pop("clarification", None)
+    if n:
+        notes = design.setdefault("design_notes", [])
+        text = f"{n} 个测试点所属需求有待澄清的问题（{', '.join(sorted(pending)[:8])}），测试点按评审建议起草并标为待澄清"
+        if text not in notes:
+            notes.append(text)
+    return n
 
 
 class TestDesignSupervisorNode(Node):
@@ -1060,6 +1142,7 @@ class TestCaseSupervisorNode(AsyncNode):
             "reqs": shared.get("requirement_spec", {}).get("final_requirements", []),
             "rows": (shared.get("test_design_spec") or {}).get("integrated_matrix", []),
             "tcs": shared.get("test_case_spec", {}).get("testcases", []),
+            "spec": shared.get("requirement_spec") or {},
             "retry_count": retry_count,
             "max_retries": int(shared.get("testcase_max_retries", 1)),
             "llm_enabled": llm_enabled,
@@ -1135,6 +1218,13 @@ class TestCaseSupervisorNode(AsyncNode):
             _warn(shared, f"用例质量门: {len(exec_res['retry_rows'])} 个测试点的用例需要改进，只返工这些（第{retry}次）")
             return "retry"
         # 确定性修复的统计只在收尾这一轮报（返工的用例会重新核对，之前的数字已经不作数）
+        gate = finalize_pending(prep_res["tcs"], prep_res["spec"])
+        if exec_res.get("ie_fixed"):
+            _warn(shared, f"用例质量门: {exec_res['ie_fixed']} 条消息 IE 路径漏写中间层或放错父结构，已按 TS 38.331 ASN.1 改正（见用例评审意见）")
+        if gate["ie_invalid"]:
+            _warn(shared, f"用例质量门: {gate['ie_invalid']} 条用例的消息 IE 不符合 TS 38.331 ASN.1 且无法确定改法，已标为待澄清（见 open_points）")
+        if gate["req_pending"]:
+            _warn(shared, f"用例质量门: {gate['req_pending']} 条用例所属需求还有阻塞的澄清问题，已标为待澄清")
         final = review_stats(prep_res["tcs"])
         if final["patched"]:
             _warn(shared, f"用例质量门: {final['patched']} 项需求写明的配置未出现在用例中，已按需求原值补入（requirement_configs 标为 patched）")

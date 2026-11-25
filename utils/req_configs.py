@@ -213,6 +213,8 @@ def normalize_explicit_configs(req: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "layer": str(c.get("layer") or ""),
                 "target": str(c.get("target") or "").lower(),
                 "source_text": str(c.get("source_text") or ""),
+                # 需求澄清单判定该取值与规范不符、等需求方回答：后面的补入逻辑不再把它原样写进用例
+                **({"clarification": str(c["clarification"])} if c.get("clarification") else {}),
             })
     return out
 

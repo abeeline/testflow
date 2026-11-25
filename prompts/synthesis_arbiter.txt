@@ -4,6 +4,10 @@ Rules:
 - Preserve traceability: keep req_id, source, and list which persona raised which issue.
 - Keep every requirement's explicit_configs unchanged (same name, value and source_text). Reviews may add notes, but never drop, round or rewrite a configuration value that came from the original requirement.
 - If conflicts exist, record conflict and propose a default assumption plus an open question.
+- Conflicts about 3GPP conformance (IE name, IE location / container, enumerated value, value type or unit, clause) must NOT default to
+  "keep the requirement draft value". If the spec answer is certain, rewrite the requirement with the spec-correct wording and say so in the conflict;
+  if it is not certain, set default_assumption to "待需求方澄清" and add the question to questions_to_ask. A code gate checks IE names against the
+  TS 38.331 ASN.1 after you and holds requirements with unresolved problems.
 - Output ONLY JSON.
 - All human-readable natural language inside JSON values must be written in Simplified Chinese. Keep schema keys, req_id, source fields, and other structured field names unchanged. 最终以“简体中文”输出。
 
