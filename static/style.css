@@ -309,13 +309,6 @@ details.raw-json > .ui-pre { margin-top: 8px; }
 .visual tbody tr:hover td, .ui-table tbody tr:hover td { background: color-mix(in srgb, var(--primary) 4%, transparent); }
 
 .feature-hint { display: block; margin-top: 4px; color: var(--muted-foreground); font-size: 13px; line-height: 1.5; }
-.mini-label { margin: 0 0 4px; font-size: 12px; color: var(--muted-foreground); }
-
-.matrix-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 10px; background: var(--card); }
-.matrix-card h4 { margin: 0 0 6px; }
-
-.rag-doc-list { margin: 0; padding-left: 18px; }
-.rag-doc-list li { margin: 3px 0; color: var(--muted-foreground); }
 
 .oq-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; background: var(--card); }
 .oq-item input { margin-top: 8px; }
@@ -361,20 +354,6 @@ details.raw-json > .ui-pre { margin-top: 8px; }
 .design-history-meta-card strong { display: block; margin-bottom: 4px; font-size: 12px; color: var(--muted-foreground); }
 .design-history-detail-panel .row-head { flex-wrap: wrap; margin-bottom: 6px; }
 
-/* flow visualization */
-.flow-viz-canvas {
-  width: 100%; height: 440px; position: relative; overflow: hidden;
-  border-radius: var(--radius-sm);
-  background:
-    radial-gradient(circle, color-mix(in srgb, var(--muted-foreground) 22%, transparent) 1px, transparent 1px) 0 0 / 18px 18px,
-    var(--card);
-}
-.flow-viz-canvas svg { width: 100%; height: 100%; display: block; }
-.flow-mermaid { max-height: 240px; }
-
-.split-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
-.structured-panel { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; background: var(--muted); max-height: 520px; overflow: auto; }
-.list-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 6px; }
 .settings-section { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
 .settings-section h4 { margin: 0 0 8px; }
 

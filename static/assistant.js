@@ -74,11 +74,6 @@ function botHasProject() {
   return !!botProjectKey();
 }
 
-function botProjectName() {
-  const p = typeof currentProject === "function" ? currentProject() : null;
-  return p && botHasProject() ? projectLabel(p) : "";
-}
-
 function fmtClock(d = new Date()) {
   return d.toTimeString().slice(0, 8);
 }

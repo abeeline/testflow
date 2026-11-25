@@ -70,7 +70,7 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
 
 ### 3) Bugzilla 需求接入
 
-- 需求准备页填写 Bugzilla 地址和 API Key（兼容 Bugzilla 5.x，带 key 时走 JSON-RPC，不把 key 放进 URL）
+- “系统设置 → Bugzilla”填写地址和 API Key（兼容 Bugzilla 5.x，带 key 时走 JSON-RPC，不把 key 放进 URL），需求准备页填 Bug 编号读取
 - 按 Bug 编号读取标题、状态、描述和评论，可排除机器人等评论作者，内容追加到需求描述，Bug 编号进入追溯矩阵
 - 接口：`GET/POST /api/bugzilla/settings`、`POST /api/bugzilla/fetch`
 
@@ -97,7 +97,7 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
 草稿作为 `{draft_json}` 交给路线 LLM 补平台细节；LLM 输出缺的字段、小区/核心网配置里漏掉的键会用草稿补回。LLM 不可用或失败时直接导出草稿，内容同样完整。
 Amarisoft case 升到 v3、协议测试需求升到 v4（新增 `test_purpose`、`technique`、`references`、`procedure[].verdict`、协议路线的 `core_config`，都是新增字段，旧字段不变）。
 
-各路线提示词在 `prompts/exec_case_*.txt`，可在 Prompt Settings 中调整。自定义过旧模板的，如果模板里没有 `{draft_json}` 会给出告警，建议恢复默认模板。
+各路线提示词在 `prompts/exec_case_*.txt`，可在“系统设置 → Prompt 模板”中调整（下拉框按流水线顺序列出，并标明每个模板用在哪个环节）。自定义过旧模板的，如果模板里没有 `{draft_json}` 会给出告警，建议恢复默认模板。
 
 ### 5) 数据导出
 

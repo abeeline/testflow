@@ -20,11 +20,9 @@ from pydantic import BaseModel, Field, PrivateAttr
 from flow import (
     create_requirement_analysis_flow,
     create_exec_case_flow,
-    create_system_test_flow,
     create_test_case_flow,
     create_test_design_flow,
 )
-from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from core.events import EventLog
 from core.design_map import THEME_SYNC_SCRIPT, render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
@@ -147,9 +145,6 @@ class StageGenerateRequest(BaseModel):
     test_case_spec: Optional[Dict[str, Any]] = None
     product_profile: Optional[Dict[str, Any]] = None
     test_environments: Optional[Dict[str, Any]] = None
-    capabilities: Optional[Dict[str, Any]] = None
-    action_vocabulary: Optional[List[str]] = None
-    assertion_vocabulary: Optional[List[str]] = None
     history_record_id: str = ""
     project_id: str = ""
     bug_ids: Optional[List[str]] = None
@@ -188,21 +183,23 @@ project_store = ProjectStore(PROJECTS_DIR)
 bugzilla_settings = BugzillaSettings(CONFIG_DIR / "bugzilla-settings.json")
 requirement_hitl_jobs: Dict[str, Dict[str, Any]] = {}
 stage_jobs: Dict[str, Dict[str, Any]] = {}
-ALLOWED_PROMPT_FILES = {
-    "req_parse.txt",
-    "review_spec_lawyer.txt",
-    "review_carrier.txt",
-    "review_ux_advocate.txt",
-    "synthesis_arbiter.txt",
-    "test_designer.txt",
-    "integrated_matrix_designer.txt",
-    "test_case_tcd.txt",
-    "test_case_reviewer.txt",
-    "exec_case_artemis.txt",
-    "exec_case_at_agent.txt",
-    "exec_case_amarisoft.txt",
-    "exec_case_protocol.txt",
+# 网页上可修改的提示词模板，按流水线顺序排列；值是“哪个环节用它”，在系统设置的模板下拉框里显示
+PROMPT_LABELS = {
+    "req_parse.txt": "需求评审 · 需求解析",
+    "review_spec_lawyer.txt": "需求评审 · 规范评审",
+    "review_carrier.txt": "需求评审 · 运营商评审",
+    "review_ux_advocate.txt": "需求评审 · 体验评审",
+    "synthesis_arbiter.txt": "需求评审 · 综合定稿",
+    "test_designer.txt": "测试设计 · 目标与测试点",
+    "integrated_matrix_designer.txt": "测试设计 · 补齐未覆盖需求",
+    "test_case_tcd.txt": "测试用例 · 编写 3GPP 用例",
+    "test_case_reviewer.txt": "测试用例 · 专家评审",
+    "exec_case_artemis.txt": "可执行用例 · Artemis（实网手机）",
+    "exec_case_at_agent.txt": "可执行用例 · AT Agent（实网模组）",
+    "exec_case_amarisoft.txt": "可执行用例 · Amarisoft 模拟基站",
+    "exec_case_protocol.txt": "可执行用例 · 协议仪表",
 }
+ALLOWED_PROMPT_FILES = set(PROMPT_LABELS)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
@@ -726,6 +723,7 @@ def _upsert_design_history_record(
     *,
     record_id: str = "",
     requirement_input: Optional[List[str]] = None,
+    requirement_meta: Optional[List[Dict[str, Any]]] = None,
     requirement_spec: Optional[Dict[str, Any]] = None,
     persona_reviews: Optional[Dict[str, Any]] = None,
     requirement_review_history: Optional[Dict[str, Any]] = None,
@@ -747,6 +745,13 @@ def _upsert_design_history_record(
             record = {"record_id": record_id}
     # 已归档的记录保持原项目；新记录归到请求里的项目（未指定时为默认项目）
     record["project_id"] = project_store.resolve_id(record.get("project_id") or project_id)
+    # 导入的需求清单：编号和分组与 requirement_input 一一对应，载入历史记录时要原样恢复
+    if requirement_input:
+        meta = list(requirement_meta or [])
+        if len(meta) == len(requirement_input):
+            record["requirement_meta"] = meta
+        elif requirement_input != record.get("requirement_input"):
+            record["requirement_meta"] = []
     record["requirement_input"] = requirement_input or record.get("requirement_input", []) or []
     record["requirement_spec"] = requirement_spec or record.get("requirement_spec", {}) or {}
     record["persona_reviews"] = persona_reviews or record.get("persona_reviews", {}) or {}
@@ -967,20 +972,6 @@ def _gather_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[
             h, e = f.result()
             hits.extend(h)
             errors.extend(e)
-    return hits, errors
-
-
-def _gather_project_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[Dict[str, Any]], List[str]]:
-    """只查某个项目自己的资料：项目资料（本地）+ 项目知识库（MCP）。没选项目时返回空。"""
-    pid = str(project_id or "").strip()
-    if not text.strip() or not pid or pid == DEFAULT_PROJECT_ID or not project_store.get(pid):
-        return [], []
-    hits: List[Dict[str, Any]] = [{**h, "scope": "project"} for h in project_store.rag_store(pid).retrieve(text, top_k=top_k)]
-    url = project_store.kb_mcp_url(pid)
-    errors: List[str] = []
-    if url:
-        h, errors = _query_kb("kb_project", url, text, KBSettings().read())
-        hits.extend(h)
     return hits, errors
 
 
@@ -1466,10 +1457,6 @@ def _triage_open_questions(persona_reviews: Dict[str, Any], answered: Any = None
     return user_qs, auto_qs
 
 
-def _collect_open_questions(persona_reviews: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return _triage_open_questions(persona_reviews)[0]
-
-
 MAX_FINISHED_JOBS = 30
 
 
@@ -1527,9 +1514,6 @@ async def _run_requirement_hitl_job(job_id: str):
                 "rag_context": effective_rag_context,
                 "product_profile": product_profile,
                 "test_environments": test_environments,
-                "capabilities": DEFAULT_CAPABILITIES,
-                "action_vocabulary": DEFAULT_ACTION_VOCABULARY,
-                "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
                 "llm_client": LLMClient(),
                 "warnings": [],
                 "trace": [],
@@ -1596,6 +1580,7 @@ async def _run_requirement_hitl_job(job_id: str):
                                             "open_questions": round_payload["open_questions"]})
             await job["answer_event"].wait()
             job["answer_event"].clear()
+            job["status"] = "running"  # 下一轮跑完前不再接受提交，避免重复提交把旧答案带进再下一轮
             answers = {k: v for k, v in (job.get("pending_answers", {}) or {}).items() if str(v).strip()}
             # 用户没填的问题采用 AI 建议答案
             accepted = []
@@ -1673,6 +1658,7 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
 
     requirement_hitl_jobs[job_id] = {
         "job_id": job_id,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "status": "starting",
         "round": 0,
         "requirements": reqs,
@@ -1788,6 +1774,7 @@ async def _stage_design(payload: "StageGenerateRequest", events: EventLog) -> Di
     history_record = _upsert_design_history_record(
         record_id=payload.history_record_id or "",
         requirement_input=payload.requirement_input or [],
+        requirement_meta=payload.requirement_meta or [],
         requirement_spec=payload.requirement_spec or {},
         persona_reviews=payload.persona_reviews or {},
         requirement_review_history=payload.requirement_review_history or {},
@@ -1812,8 +1799,7 @@ async def _stage_design(payload: "StageGenerateRequest", events: EventLog) -> Di
 async def _stage_testcases(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     if not payload.test_design_spec:
         raise HTTPException(status_code=400, detail="缺少test_design_spec")
-    shared = {**_base_shared(payload, events), "test_design_spec": payload.test_design_spec,
-              "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY}
+    shared = {**_base_shared(payload, events), "test_design_spec": payload.test_design_spec}
     try:
         await create_test_case_flow().run_async(shared)
     finally:
@@ -1821,6 +1807,7 @@ async def _stage_testcases(payload: "StageGenerateRequest", events: EventLog) ->
     history_record = _upsert_design_history_record(
         record_id=payload.history_record_id or "",
         requirement_input=payload.requirement_input or [],
+        requirement_meta=payload.requirement_meta or [],
         requirement_spec=payload.requirement_spec or {},
         persona_reviews=payload.persona_reviews or {},
         requirement_review_history=payload.requirement_review_history or {},
@@ -1885,9 +1872,6 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
         "input_requirements": reqs,
         "requirement_meta": req_meta,
         "rag_context": rag_context,
-        "capabilities": DEFAULT_CAPABILITIES,
-        "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
-        "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
         "review_feedback": "",
     }
     try:
@@ -2001,6 +1985,7 @@ async def stage_start(stage: str, payload: StageGenerateRequest):
     job_id = uuid.uuid4().hex[:12]
     stage_jobs[job_id] = {
         "job_id": job_id,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "stage": stage_name,
         "status": "running",
         "payload": payload,
@@ -2038,105 +2023,11 @@ async def stage_stream(job_id: str, request: Request):
 @app.get("/api/settings/prompts")
 def get_prompts():
     data: Dict[str, str] = {}
-    for name in sorted(ALLOWED_PROMPT_FILES):
+    for name in PROMPT_LABELS:
         p = prompt_path(name)
         if p.exists():
             data[name] = p.read_text(encoding="utf-8")
-    return {"prompts": data}
-
-
-def _flow_to_graph(flow_obj: Any) -> Dict[str, Any]:
-    start = getattr(flow_obj, "start_node", None)
-    if not start:
-        return {"nodes": [], "links": [], "mermaid": "flowchart LR\n", "start_node_id": ""}
-
-    node_id_map: Dict[int, str] = {}
-    nodes: List[Dict[str, Any]] = []
-    links: List[Dict[str, Any]] = []
-    queue: List[Any] = [start]
-    visited: set[int] = set()
-    edge_seen: set[tuple[str, str, str]] = set()
-    counter = 1
-
-    while queue:
-        node = queue.pop(0)
-        obj_id = id(node)
-        if obj_id in visited:
-            continue
-        visited.add(obj_id)
-        if obj_id not in node_id_map:
-            node_id_map[obj_id] = f"N{counter}"
-            counter += 1
-        nid = node_id_map[obj_id]
-        nodes.append({"id": nid, "label": type(node).__name__})
-        for action, nxt in (getattr(node, "successors", {}) or {}).items():
-            nxt_id = id(nxt)
-            if nxt_id not in node_id_map:
-                node_id_map[nxt_id] = f"N{counter}"
-                counter += 1
-            tid = node_id_map[nxt_id]
-            action_str = str(action or "default")
-            ekey = (nid, tid, action_str)
-            if ekey not in edge_seen:
-                edge_seen.add(ekey)
-                links.append({"source": nid, "target": tid, "action": action_str})
-            queue.append(nxt)
-
-    mermaid_lines = ["flowchart LR"]
-    for n in nodes:
-        mermaid_lines.append(f'    {n["id"]}["{n["label"]}"]')
-    for e in links:
-        mermaid_lines.append(f'    {e["source"]} -- "{e["action"]}" --> {e["target"]}')
-    start_node_id = node_id_map.get(id(start), "")
-    return {"nodes": nodes, "links": links, "mermaid": "\n".join(mermaid_lines), "start_node_id": start_node_id}
-
-
-def _prompt_role_mapping() -> List[Dict[str, Any]]:
-    role_map = [
-        {"role": "Requirement Parser", "node": "ReqParseNode", "prompt": "req_parse.txt"},
-        {"role": "Spec Lawyer", "node": "TriPersonaReviewNode", "prompt": "review_spec_lawyer.txt"},
-        {"role": "Carrier Reviewer", "node": "TriPersonaReviewNode", "prompt": "review_carrier.txt"},
-        {"role": "UX Advocate", "node": "TriPersonaReviewNode", "prompt": "review_ux_advocate.txt"},
-        {"role": "Synthesis Arbiter", "node": "SynthesisNode", "prompt": "synthesis_arbiter.txt"},
-        {"role": "Test Designer", "node": "TestDesignNode", "prompt": "test_designer.txt"},
-        {"role": "Matrix Gap Filler", "node": "TestDesignNode", "prompt": "integrated_matrix_designer.txt"},
-        {"role": "3GPP Test Case Writer", "node": "TestCaseBatchGenNode", "prompt": "test_case_tcd.txt"},
-        {"role": "Test Case Expert Reviewer", "node": "TestCaseSupervisorNode", "prompt": "test_case_reviewer.txt"},
-        {"role": "Artemis Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_artemis.txt"},
-        {"role": "AT Agent Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_at_agent.txt"},
-        {"role": "Amarisoft Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_amarisoft.txt"},
-        {"role": "Protocol Flow Requirement Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_protocol.txt"},
-    ]
-    out: List[Dict[str, Any]] = []
-    for item in role_map:
-        p = prompt_path(item["prompt"])
-        first_line = ""
-        if p.exists():
-            for ln in p.read_text(encoding="utf-8").splitlines():
-                raw = ln.strip()
-                if raw:
-                    first_line = raw[:120]
-                    break
-        out.append(
-            {
-                **item,
-                "exists": p.exists(),
-                "first_line": first_line,
-            }
-        )
-    return out
-
-
-@app.get("/api/settings/flow-visualization")
-def get_flow_visualization():
-    flow = create_system_test_flow()
-    graph = _flow_to_graph(flow)
-    return {
-        "flow_name": "SystemTestFlow",
-        "mermaid": graph["mermaid"],
-        "graph": {"nodes": graph["nodes"], "links": graph["links"], "start_node_id": graph.get("start_node_id", "")},
-        "prompt_roles": _prompt_role_mapping(),
-    }
+    return {"prompts": data, "labels": {k: v for k, v in PROMPT_LABELS.items() if k in data}}
 
 
 @app.post("/api/settings/prompts")

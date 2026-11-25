@@ -39,7 +39,6 @@
           <div class="nav-group-label">资料</div>
           <button class="sheet-tab" data-sheet="sheet9"><span class="step-no step-icon">▣</span>项目 / Product</button>
           <button class="sheet-tab" data-sheet="sheet8"><span class="step-no step-icon">◷</span>测试设计历史</button>
-          <button class="sheet-tab" data-sheet="sheet6"><span class="step-no step-icon">⇢</span>流程可视化</button>
         </nav>
 
         <div id="sidebarStatus" class="status-panel sidebar-status" data-state="idle">
@@ -372,23 +371,6 @@
           </div>
         </section>
 
-        <section class="sheet" id="sheet6">
-          <header class="page-head">
-            <div>
-              <h2>流程可视化</h2>
-              <p>流水线节点关系与各节点使用的 Prompt 模板。</p>
-            </div>
-            <button id="refreshFlowVizBtn" class="ui-btn ui-btn-secondary">刷新</button>
-          </header>
-          <div class="card ui-card">
-            <div id="flowVizCanvas" class="flow-viz-canvas"></div>
-          </div>
-          <div class="card ui-card">
-            <div class="card-head"><h3>Prompt 角色映射</h3></div>
-            <div id="flowPromptRoles" class="visual"></div>
-            <details class="raw-json"><summary>Mermaid 源码</summary><pre id="flowMermaid" class="ui-pre flow-mermaid"></pre></details>
-          </div>
-        </section>
       </section>
     </main>
 

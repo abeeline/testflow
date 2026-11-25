@@ -118,35 +118,6 @@ TESTCASE_REQUIRED_KEYS = [
     "expected",
 ]
 
-DEFAULT_ACTION_VOCABULARY = [
-    "SET_DEVICE_STATE",
-    "SET_NETWORK_PROFILE",
-    "TRIGGER_ATTACH",
-    "TRIGGER_REGISTRATION",
-    "TRIGGER_CALL",
-    "MOVE_RF_CONDITION",
-    "WAIT",
-    "CHECK",
-    "COLLECT_LOG",
-]
-
-DEFAULT_ASSERTION_VOCABULARY = [
-    "ASSERT_SIP_REGISTER_200",
-    "ASSERT_IMS_REGISTERED",
-    "ASSERT_ATTACH_SUCCESS",
-    "ASSERT_NO_RESTART_STORM",
-]
-
-DEFAULT_CAPABILITIES = {
-    "harnesses": ["ARTEMIS", "AT_AGENT", "AMARISOFT_AGENT", "PROTOCOL_ANALYZER"],
-    "actions_supported": {
-        "SET_DEVICE_STATE": ["adb", "uia"],
-        "TRIGGER_REGISTRATION": ["at", "adb"],
-        "CHECK": ["logcat_parser", "ims_api"],
-        "COLLECT_LOG": ["diag", "qxdm"],
-    },
-}
-
 TEST_ENVIRONMENT_CATALOG = {
     "REAL_NETWORK": {
         "id": "REAL_NETWORK",
@@ -224,12 +195,6 @@ TEST_DESIGN_SCHEMA = {
         "design_notes": {"type": "array", "items": {"type": "string"}},
         "de_scoped": {"type": "array", "items": {"type": "string"}},
     },
-}
-
-TESTCASE_SCHEMA = {
-    "type": "object",
-    "required": ["testcases"],
-    "properties": {"testcases": {"type": "array", "items": {"type": "object"}}},
 }
 
 INTEGRATED_MATRIX_SCHEMA = {
