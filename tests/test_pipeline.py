@@ -239,6 +239,17 @@ def test_no_llm_still_produces_everything():
     _run(create_exec_case_flow(), shared)
     item = shared["executable_cases"]["bundles"]["protocol"]["items"][0]
     assert item["cell_config"]["band"] == "n78"
+    assert shared["executable_cases"]["draft_only"]["protocol"] == 1, "没经过大模型适配的用例要记下来，界面据此提示可以重新生成"
+
+
+def test_artemis_case_id_stable_when_title_reworded():
+    from exec_cases import build_bundle
+    tc_index = {"TC-1": {"tc_id": "TC-1", "title": "注册"}}
+    first = build_bundle("artemis", [{"source_tc_id": "TC-1", "title": "注册被拒后不重发"}], tc_index, {}, [])
+    again = build_bundle("artemis", [{"source_tc_id": "TC-1", "title": "被拒后 T3346 期间不再注册"}], tc_index, {}, [])
+    assert first["cases"][0]["id"] == again["cases"][0]["id"], "重新生成只改了措辞时 id 不变，重新导入不会出现重复用例"
+    two = build_bundle("artemis", [{"source_tc_id": "TC-1", "title": "a"}, {"source_tc_id": "TC-1", "title": "b"}], tc_index, {}, [])
+    assert len({c["id"] for c in two["cases"]}) == 2
 
 
 def test_legacy_testcase_projects():
@@ -454,9 +465,11 @@ def test_api_smoke():
     import main
 
     client = TestClient(main.app)
-    assert client.get("/api/settings/flow-visualization").status_code == 200
     prompts = client.get("/api/settings/prompts").json()
-    assert "test_case_tcd.txt" in json.dumps(prompts, ensure_ascii=False)
+    assert "test_case_tcd.txt" in prompts["prompts"]
+    # 模板按流水线顺序给出，并标明是哪个环节用的
+    assert list(prompts["prompts"])[0] == "req_parse.txt" and list(prompts["prompts"])[-1] == "exec_case_protocol.txt"
+    assert set(prompts["labels"]) == set(prompts["prompts"]) and "专家评审" in prompts["labels"]["test_case_reviewer.txt"]
     r = client.post("/api/export/testcases.xlsx", json={"test_case_spec": {"testcases": [normalize_tcd({
         "title": "x", "procedure": [{"action": "SEND", "message": "RRCSetupRequest", "direction": "UL", "expected": "ok", "verdict": True}],
         "message_contents": [{"msg_id": "M1", "message": "RRCSetup", "ies": [{"path": "a.b", "value": 1}]}]})]}})
@@ -478,12 +491,14 @@ def test_chat_queries_selected_project_knowledge(monkeypatch):
 
     monkeypatch.setattr(main, "_query_kb", fake_query)
     try:
-        assert main._gather_project_knowledge("T3346 到期后行为", "") == ([], [])
-        assert main._gather_project_knowledge("T3346 到期后行为", main.DEFAULT_PROJECT_ID) == ([], [])
+        # 没选项目 / 默认项目：问题里没有协议关键词时一个来源都不查
+        assert main._gather_chat_knowledge("这个功能默认开吗", "") == ([], [])
+        assert main._gather_chat_knowledge("这个功能默认开吗", main.DEFAULT_PROJECT_ID) == ([], [])
         assert not calls
-        hits, errors = main._gather_project_knowledge("T3346 到期后行为", pid)
-        assert not errors and calls == [("kb_project", project["kb_mcp_url"], "T3346 到期后行为")]
+        hits, sources = main._gather_chat_knowledge("这个功能默认开吗", pid)
+        assert calls == [("kb_project", project["kb_mcp_url"], "这个功能默认开吗")]
         assert any(h["scope"] == "kb_project" for h in hits)
+        calls.clear()
 
         captured = {}
 
@@ -503,9 +518,58 @@ def test_chat_queries_selected_project_knowledge(monkeypatch):
         assert "KB 测试项目" in captured["system"] and "T3346 到期后自动重试注册" in captured["system"]
         assert data["references"] and data["references"][0]["ref"] == "K-1"
 
+        kinds = {s["scope"]: s["status"] for s in data["knowledge"]["sources"]}
+        assert kinds["kb_project"] == "ok" and data["llm_ready"] is True
+
+        # 关掉“查资料”：不查任何来源
         calls.clear()
-        data = client.post("/api/chat", json={"message": "T3346 到期后行为"}).json()
-        assert not calls and data["references"] == [] and "资料检索结果" not in captured["system"]
+        data = client.post("/api/chat", json={"message": "T3346 到期后行为", "project_id": pid, "use_kb": False}).json()
+        assert not calls and data["references"] == [] and data["knowledge"]["queried"] is False
+        assert "关闭了资料检索" in captured["system"]
+
+        # 没选项目：不查项目知识库；没有协议关键词时也不查公共资料
+        calls.clear()
+        data = client.post("/api/chat", json={"message": "这个页面怎么用"}).json()
+        assert not calls and data["references"] == [] and "的检索结果】" not in captured["system"]
+        assert "未选择项目" in captured["system"]
+    finally:
+        main.project_store.delete(pid)
+
+
+def test_chat_knowledge_reports_each_source(monkeypatch):
+    """助手检索：带协议关键词时同时查公共知识库；某个来源失败只标记它自己。"""
+    import main
+
+    project = main.project_store.create({"name": "来源状态项目"})
+    pid = project["project_id"]
+    monkeypatch.setattr(main, "_kb_sources", lambda _pid: {"kb_project": "", "kb_public": "http://kb.example.com/mcp"})
+    monkeypatch.setattr(main, "_query_kb", lambda scope, url, text, cfg: ([], ["公共知识库: timeout"]))
+    try:
+        hits, sources = main._gather_chat_knowledge("T3346 到期后 Registration 行为", pid)
+        status = {s["scope"]: s for s in sources}
+        assert status["kb_project"]["status"] == "not_configured"
+        assert status["kb_public"]["status"] == "error" and "timeout" in status["kb_public"]["error"]
+        assert {"project", "public"} <= set(status)
+        # 纯产品问题、没有协议关键词：不碰公共来源
+        _, sources = main._gather_chat_knowledge("这个产品默认开启吗", pid)
+        assert {s["scope"] for s in sources} == {"project", "kb_project"}
+    finally:
+        main.project_store.delete(pid)
+
+
+def test_assistant_status_endpoint():
+    import main
+    from fastapi.testclient import TestClient
+
+    project = main.project_store.create({"name": "状态项目", "kb_mcp_url": "http://kb.example.com/mcp/server/y/mcp"})
+    pid = project["project_id"]
+    try:
+        client = TestClient(main.app)
+        data = client.get("/api/assistant/status", params={"project_id": pid}).json()
+        assert data["project"]["selected"] and data["project"]["name"] == "状态项目" and data["project"]["kb_configured"]
+        assert set(data["llm"]) == {"enabled", "model"} and isinstance(data["running_jobs"], list)
+        data = client.get("/api/assistant/status", params={"project_id": main.DEFAULT_PROJECT_ID}).json()
+        assert data["project"]["selected"] is False
     finally:
         main.project_store.delete(pid)
 
@@ -527,3 +591,23 @@ def test_design_knowledge_includes_uploaded_project_docs(monkeypatch):
         assert "自动重新发起注册" not in main._build_design_knowledge(spec, main.DEFAULT_PROJECT_ID)[0]
     finally:
         main.project_store.delete(pid)
+
+
+def test_history_keeps_imported_requirement_meta():
+    """导入的需求清单归档时保存编号和分组，后续阶段没带 meta 时不覆盖；换了需求才清空。"""
+    import main
+
+    reqs = ["需求甲", "需求乙"]
+    meta = [{"req_id": "AR-1", "group": ["SR-1"]}, {"req_id": "AR-2", "group": ["SR-1"]}]
+    rec = main._upsert_design_history_record(requirement_input=reqs, requirement_meta=meta,
+                                             test_design_spec={"objectives": []})
+    rid = rec["record_id"]
+    try:
+        assert main._load_design_history_record(rid)["requirement_meta"] == meta
+        main._upsert_design_history_record(record_id=rid, requirement_input=reqs, test_case_spec={"testcases": []})
+        assert main._load_design_history_record(rid)["requirement_meta"] == meta
+        main._upsert_design_history_record(record_id=rid, requirement_input=["另一条需求"])
+        assert main._load_design_history_record(rid)["requirement_meta"] == []
+    finally:
+        import shutil
+        shutil.rmtree(main._history_record_dir(rid), ignore_errors=True)

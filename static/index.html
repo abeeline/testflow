@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TestFlow · 测试设计工作台</title>
     <link rel="icon" href="/static/bot.png" />
+    <link rel="stylesheet" href="/static/theme.css" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
@@ -38,11 +39,15 @@
           <div class="nav-group-label">资料</div>
           <button class="sheet-tab" data-sheet="sheet9"><span class="step-no step-icon">▣</span>项目 / Product</button>
           <button class="sheet-tab" data-sheet="sheet8"><span class="step-no step-icon">◷</span>测试设计历史</button>
-          <button class="sheet-tab" data-sheet="sheet6"><span class="step-no step-icon">⇢</span>流程可视化</button>
         </nav>
 
-        <div class="status-panel sidebar-status">
-          <div class="status-head"><span class="status-dot"></span>运行状态</div>
+        <div id="sidebarStatus" class="status-panel sidebar-status" data-state="idle">
+          <div class="status-head">
+            <span class="status-dot"></span>
+            <span id="statusStateText">空闲</span>
+            <span id="statusClock" class="status-clock"></span>
+            <button id="statusActivityBtn" class="status-link" type="button" title="在助手里查看运行动态">动态</button>
+          </div>
           <pre id="status" class="ui-pre">等待执行</pre>
         </div>
 
@@ -348,6 +353,11 @@
             </div>
             <button id="genExecCasesBtn" class="ui-btn">生成可执行用例</button>
           </header>
+          <div id="execCasesFreshness" class="exec-freshness" hidden></div>
+          <div class="card ui-card" id="execCasesDiffCard" hidden>
+            <div class="card-head"><h3>本次重新生成的变化</h3></div>
+            <div id="execCasesDiff" class="visual"></div>
+          </div>
           <div class="card ui-card">
             <div class="card-head"><h3>分流结果</h3></div>
             <div id="execCasesSummary" class="visual"></div>
@@ -362,23 +372,6 @@
           </div>
         </section>
 
-        <section class="sheet" id="sheet6">
-          <header class="page-head">
-            <div>
-              <h2>流程可视化</h2>
-              <p>流水线节点关系与各节点使用的 Prompt 模板。</p>
-            </div>
-            <button id="refreshFlowVizBtn" class="ui-btn ui-btn-secondary">刷新</button>
-          </header>
-          <div class="card ui-card">
-            <div id="flowVizCanvas" class="flow-viz-canvas"></div>
-          </div>
-          <div class="card ui-card">
-            <div class="card-head"><h3>Prompt 角色映射</h3></div>
-            <div id="flowPromptRoles" class="visual"></div>
-            <details class="raw-json"><summary>Mermaid 源码</summary><pre id="flowMermaid" class="ui-pre flow-mermaid"></pre></details>
-          </div>
-        </section>
       </section>
     </main>
 
@@ -483,29 +476,64 @@
       </div>
     </div>
 
-    <button id="botFab" class="bot-fab" type="button" aria-label="打开助手">
+    <button id="botFab" class="bot-fab" type="button" aria-label="打开 TestFlow 助手" title="TestFlow 助手">
       <span class="bot-halo"></span>
+      <span class="bot-busy-ring" aria-hidden="true"></span>
       <span id="botUnreadBadge" class="bot-unread hidden">0</span>
-      <img src="/static/bot.png" alt="助手" />
+      <img src="/static/bot.png" alt="" />
     </button>
 
     <section id="botPanel" class="bot-panel hidden" aria-label="TestFlow 助手">
       <header class="bot-head">
-        <div class="bot-title"><span class="bot-dot"></span>TestFlow 助手</div>
+        <div class="bot-title-wrap">
+          <div class="bot-title"><span id="botStateDot" class="bot-dot"></span>TestFlow 助手</div>
+          <div id="botSubtitle" class="bot-subtitle">只读助手：解释结果、查资料，不会改动你的数据</div>
+        </div>
         <div class="bot-head-actions">
-          <button id="botRefreshBtn" class="ui-btn ui-btn-ghost bot-head-btn" type="button" title="新对话">↻</button>
-          <button id="botCloseBtn" class="ui-btn ui-btn-ghost bot-head-btn" type="button" title="关闭">×</button>
+          <button id="botRefreshBtn" class="ui-btn ui-btn-ghost bot-head-btn" type="button" title="清空本项目的对话，回到能力介绍" aria-label="新对话">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+          </button>
+          <button id="botCloseBtn" class="ui-btn ui-btn-ghost bot-head-btn" type="button" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>
+          </button>
         </div>
       </header>
-      <div class="bot-body">
+
+      <div id="botContext" class="bot-context"></div>
+
+      <div class="bot-tabs" role="tablist">
+        <button class="bot-tab active" data-bot-tab="chat" type="button" role="tab" aria-selected="true">对话</button>
+        <button class="bot-tab" data-bot-tab="activity" type="button" role="tab" aria-selected="false">运行动态<span id="botActivityCount" class="bot-tab-count hidden">0</span></button>
+      </div>
+
+      <div id="botRunning" class="bot-running hidden" role="status" aria-live="polite"></div>
+
+      <div id="botChatPane" class="bot-body" data-bot-pane="chat">
+        <div id="botWelcome" class="bot-welcome"></div>
         <div id="botMessages" class="bot-messages"></div>
       </div>
-      <footer class="bot-input-row">
-        <input id="botInput" class="ui-input bot-input" type="text" placeholder="问问测试流程或产出物…" />
-        <button id="botSendBtn" class="ui-btn bot-send" type="button" aria-label="发送">➤</button>
+      <div id="botActivityPane" class="bot-body hidden" data-bot-pane="activity">
+        <div class="bot-activity-head">
+          <span class="feature-hint">生成任务的进度、完成和需要你处理的事项都记在这里（只保留本次打开页面以来的记录）。</span>
+          <button id="botActivityClear" class="ui-btn ui-btn-ghost ui-btn-sm" type="button">清空</button>
+        </div>
+        <ol id="botActivity" class="bot-activity"></ol>
+      </div>
+
+      <footer id="botComposer" class="bot-composer">
+        <textarea id="botInput" class="ui-input bot-input" rows="1" placeholder="问问当前的需求、用例，或项目资料里的约定…"></textarea>
+        <div class="bot-composer-row">
+          <label class="bot-kb-toggle" id="botKbLabel" title="">
+            <input id="botKbToggle" type="checkbox" checked />
+            <span>查资料</span><span id="botKbScope" class="bot-kb-scope"></span>
+          </label>
+          <span class="bot-hint">Enter 发送 · Shift+Enter 换行</span>
+          <button id="botSendBtn" class="ui-btn ui-btn-sm bot-send" type="button">发送</button>
+        </div>
       </footer>
     </section>
 
     <script src="/static/app.js"></script>
+    <script src="/static/assistant.js"></script>
   </body>
 </html>

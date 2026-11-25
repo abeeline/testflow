@@ -1,0 +1,30 @@
+/* 报告页（测试架构图、测试设计文档）的基础样式。颜色全部来自 theme.css 的 --tf-* 变量。 */
+:root {
+  --bg: var(--tf-bg); --panel: var(--tf-panel); --subtle: var(--tf-subtle); --ink: var(--tf-ink); --muted: var(--tf-muted);
+  --line: var(--tf-line); --border: var(--tf-border); --accent: var(--tf-accent); --accent-ink: var(--tf-accent-ink);
+  --accent-soft: var(--tf-accent-soft); --warn: var(--tf-warn); --warn-soft: var(--tf-warn-soft);
+  --root: var(--tf-root); --root-ink: var(--tf-root-ink); --hit: var(--tf-hit); --shadow: var(--tf-shadow);
+  --t-normal: var(--tf-t-normal); --t-abnormal: var(--tf-t-abnormal); --t-boundary: var(--tf-t-boundary); --t-timer: var(--tf-t-timer);
+  --t-collision: var(--tf-t-collision); --t-mobility: var(--tf-t-mobility); --t-interworking: var(--tf-t-interworking);
+  --t-capability: var(--tf-t-capability); --t-performance: var(--tf-t-performance); --t-stability: var(--tf-t-stability);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--tf-font); }
+button { font: inherit; color: inherit; cursor: pointer; }
+header.top { padding: 14px 20px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+header.top h1 { margin: 0; font-size: 18px; font-weight: 650; }
+header.top .sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; }
+.stat b { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12.5px; margin-left: 4px; }
+.stat.warn b { color: var(--warn); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 5px 12px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+.btn { border: 1px solid var(--border); background: var(--panel); border-radius: 8px; padding: 5px 10px; }
+.btn:hover, .seg button:not(.on):hover { background: var(--accent-soft); }
+.lbl { color: var(--muted); font-size: 12.5px; }
+mark { background: var(--hit); color: inherit; border-radius: 2px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.card h3 { margin: 0 0 10px; font-size: 14px; }

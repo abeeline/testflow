@@ -329,6 +329,21 @@ def test_design_map_shows_structure_and_gaps():
     assert "http://" not in page and "https://" not in page, "页面要能离线打开，不引用外部资源"
 
 
+def test_design_document_uses_the_same_theme_as_the_design_map():
+    import main
+    from core.design_map import render_design_map_html, report_theme_css
+
+    record = _design_record()
+    theme = report_theme_css()
+    page = render_design_map_html(record)
+    doc = main._render_design_document_html(record)
+    assert theme in page and "__THEME_CSS__" not in page
+    assert theme in doc, "测试设计文档和测试架构图要用同一套颜色和基础样式"
+    assert '<header class="top">' in doc and "选网测试设计 · 标准测试设计文档" in doc
+    assert "十、用例分组" in doc and 'href="#doc-groups"' in doc
+    assert "http://" not in doc and "https://" not in doc, "导出的文档要能离线打开"
+
+
 def test_design_map_endpoint_serves_the_archived_design(tmp_path, monkeypatch):
     import main
     from fastapi.testclient import TestClient
@@ -338,6 +353,16 @@ def test_design_map_endpoint_serves_the_archived_design(tmp_path, monkeypatch):
     assert main._history_summary(record)["map_url"] == "/api/design-history/abcdef123456/map"
     resp = TestClient(main.app).get("/api/design-history/abcdef123456/map")
     assert resp.status_code == 200 and "text/html" in resp.headers["content-type"] and "SR 10 选网" in resp.text
+
+    # 旧记录归档的是旧样式 HTML：查看时按当前模板重新生成，并能直接在浏览器里打开
+    main._history_document_path("abcdef123456").write_text("<html>old</html>", encoding="utf-8")
+    client = TestClient(main.app)
+    doc = client.get("/api/design-history/abcdef123456/document")
+    assert doc.status_code == 200 and "attachment" not in doc.headers.get("content-disposition", "")
+    assert '<header class="top">' in doc.text and "old" not in main._history_document_path("abcdef123456").read_text(encoding="utf-8")
+    assert "attachment" in client.get("/api/design-history/abcdef123456/document?download=1").headers["content-disposition"]
+    preview = client.post("/api/export/design-document.html", json={"requirement_spec": _design_record()["requirement_spec"]})
+    assert preview.status_code == 200 and "标准测试设计文档" in preview.text
 
 
 def test_selected_test_types_drive_design_advice_and_map():

@@ -1,0 +1,73 @@
+/* TestFlow 统一主题：主程序、测试架构图、测试设计文档共用这一套颜色、字体和阴影。
+   只放 --tf-* 变量，不写任何选择器样式；各页面在自己的样式里引用这些变量。
+   深色：<html data-theme="dark">；没有显式设置 data-theme 时跟随系统。 */
+:root {
+  color-scheme: light;
+  --tf-font: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --tf-mono: "JetBrains Mono", "Cascadia Code", Consolas, "SFMono-Regular", Menlo, monospace;
+
+  --tf-bg: #f5f6f8;            /* 页面底色 */
+  --tf-panel: #ffffff;         /* 卡片、面板、侧栏 */
+  --tf-subtle: #f0f2f5;        /* 表头、代码块、次级底色 */
+  --tf-ink: #1c2330;           /* 正文 */
+  --tf-muted: #667085;         /* 次要文字 */
+  --tf-line: #c5ccd8;          /* 连线、弱分隔 */
+  --tf-border: #e1e5ec;        /* 边框 */
+  --tf-input: #d0d5dd;         /* 输入框边框 */
+  --tf-accent: #2456c9;        /* 主色 */
+  --tf-accent-hover: #1d47a8;
+  --tf-accent-ink: #ffffff;    /* 主色上的文字 */
+  --tf-accent-soft: #e8eefb;
+  --tf-success: #0f9467;
+  --tf-success-soft: #e7f6ef;
+  --tf-warn: #b54708;
+  --tf-warn-soft: #fff4e5;
+  --tf-danger: #d6453d;
+  --tf-danger-soft: #fdeceb;
+  --tf-root: #1c2330;          /* 强调块（脑图根节点） */
+  --tf-root-ink: #ffffff;
+  --tf-hit: #fff3b0;           /* 搜索命中 */
+  --tf-shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  --tf-shadow-lg: 0 16px 40px rgba(16, 24, 40, .14);
+  --tf-overlay: rgba(28, 35, 48, .45);
+
+  --tf-sidebar: #ffffff;
+  --tf-sidebar-ink: #344054;
+  --tf-sidebar-muted: #8a94a6;
+  --tf-sidebar-border: #e1e5ec;
+  --tf-sidebar-hover: #f0f2f5;
+  --tf-sidebar-active: #e8eefb;
+  --tf-sidebar-active-ink: #2456c9;
+
+  /* 测试技术配色（脑图、矩阵、标签共用） */
+  --tf-t-normal: #2f6fde; --tf-t-abnormal: #d6453d; --tf-t-boundary: #c9820a; --tf-t-timer: #7a52d1; --tf-t-collision: #cf3f8c;
+  --tf-t-mobility: #0f9467; --tf-t-interworking: #0b8fa8; --tf-t-capability: #5b6b82; --tf-t-performance: #dd6b1f; --tf-t-stability: #6a8f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --tf-bg: #12151b; --tf-panel: #1b1f27; --tf-subtle: #232833; --tf-ink: #e6e9ef; --tf-muted: #9aa4b5;
+    --tf-line: #4a5364; --tf-border: #2c323d; --tf-input: #3a4250;
+    --tf-accent: #7ea6ff; --tf-accent-hover: #a3c0ff; --tf-accent-ink: #12151b; --tf-accent-soft: #1f2b47;
+    --tf-success: #3fcf9b; --tf-success-soft: #15342a; --tf-warn: #ffb866; --tf-warn-soft: #3a2a12;
+    --tf-danger: #ff7a70; --tf-danger-soft: #3d1f1f; --tf-root: #e6e9ef; --tf-root-ink: #12151b; --tf-hit: #5c4a00;
+    --tf-shadow: none; --tf-shadow-lg: 0 16px 40px rgba(0, 0, 0, .55); --tf-overlay: rgba(0, 0, 0, .6);
+    --tf-sidebar: #161a21; --tf-sidebar-ink: #c9d0dc; --tf-sidebar-muted: #7d8799; --tf-sidebar-border: #2c323d;
+    --tf-sidebar-hover: #222833; --tf-sidebar-active: #1f2b47; --tf-sidebar-active-ink: #a9c3ff;
+    --tf-t-normal: #6b9bff; --tf-t-abnormal: #ff7a70; --tf-t-boundary: #f0b040; --tf-t-timer: #a98bff; --tf-t-collision: #f277b6;
+    --tf-t-mobility: #3fcf9b; --tf-t-interworking: #39c3dc; --tf-t-capability: #9aa8bd; --tf-t-performance: #ff9a57; --tf-t-stability: #a6cf3d;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --tf-bg: #12151b; --tf-panel: #1b1f27; --tf-subtle: #232833; --tf-ink: #e6e9ef; --tf-muted: #9aa4b5;
+  --tf-line: #4a5364; --tf-border: #2c323d; --tf-input: #3a4250;
+  --tf-accent: #7ea6ff; --tf-accent-hover: #a3c0ff; --tf-accent-ink: #12151b; --tf-accent-soft: #1f2b47;
+  --tf-success: #3fcf9b; --tf-success-soft: #15342a; --tf-warn: #ffb866; --tf-warn-soft: #3a2a12;
+  --tf-danger: #ff7a70; --tf-danger-soft: #3d1f1f; --tf-root: #e6e9ef; --tf-root-ink: #12151b; --tf-hit: #5c4a00;
+  --tf-shadow: none; --tf-shadow-lg: 0 16px 40px rgba(0, 0, 0, .55); --tf-overlay: rgba(0, 0, 0, .6);
+  --tf-sidebar: #161a21; --tf-sidebar-ink: #c9d0dc; --tf-sidebar-muted: #7d8799; --tf-sidebar-border: #2c323d;
+  --tf-sidebar-hover: #222833; --tf-sidebar-active: #1f2b47; --tf-sidebar-active-ink: #a9c3ff;
+  --tf-t-normal: #6b9bff; --tf-t-abnormal: #ff7a70; --tf-t-boundary: #f0b040; --tf-t-timer: #a98bff; --tf-t-collision: #f277b6;
+  --tf-t-mobility: #3fcf9b; --tf-t-interworking: #39c3dc; --tf-t-capability: #9aa8bd; --tf-t-performance: #ff9a57; --tf-t-stability: #a6cf3d;
+}

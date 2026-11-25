@@ -12,10 +12,6 @@ const promptSelect = document.getElementById("promptSelect");
 const promptEditor = document.getElementById("promptEditor");
 const savePromptBtn = document.getElementById("savePromptBtn");
 const reloadPromptsBtn = document.getElementById("reloadPromptsBtn");
-const refreshFlowVizBtn = document.getElementById("refreshFlowVizBtn");
-const flowVizCanvas = document.getElementById("flowVizCanvas");
-const flowMermaid = document.getElementById("flowMermaid");
-const flowPromptRoles = document.getElementById("flowPromptRoles");
 const themeToggle = document.getElementById("themeToggle");
 
 const requirementsEl = document.getElementById("requirements");
@@ -26,14 +22,6 @@ const ragFileEl = document.getElementById("ragFile");
 const uploadRagBtn = document.getElementById("uploadRagBtn");
 const ragDocsEl = document.getElementById("ragDocs");
 const statusEl = document.getElementById("status");
-const botFab = document.getElementById("botFab");
-const botPanel = document.getElementById("botPanel");
-const botCloseBtn = document.getElementById("botCloseBtn");
-const botRefreshBtn = document.getElementById("botRefreshBtn");
-const botInput = document.getElementById("botInput");
-const botSendBtn = document.getElementById("botSendBtn");
-const botMessages = document.getElementById("botMessages");
-const botUnreadBadge = document.getElementById("botUnreadBadge");
 
 const outReq = document.getElementById("outReq");
 const outReview = document.getElementById("outReview");
@@ -41,6 +29,9 @@ const outDesign = document.getElementById("outDesign");
 const outCases = document.getElementById("outCases");
 const execCasesSummary = document.getElementById("execCasesSummary");
 const execCasesTrace = document.getElementById("execCasesTrace");
+const execCasesFreshnessEl = document.getElementById("execCasesFreshness");
+const execCasesDiffCard = document.getElementById("execCasesDiffCard");
+const execCasesDiffEl = document.getElementById("execCasesDiff");
 const execCasesBundles = document.getElementById("execCasesBundles");
 const bzUrlEl = document.getElementById("bzUrl");
 const bzKeyEl = document.getElementById("bzKey");
@@ -136,9 +127,6 @@ let currentProjectId = DEFAULT_PROJECT_ID;
 let editingProjectId = "";
 let promptCache = {};
 let latestStructured = null;
-let botHistory = [];
-let botUnread = 0;
-let flowVizLoaded = false;
 let designHistoryLoaded = false;
 let hitlStream = null;
 let hitlStreamJobId = "";
@@ -225,14 +213,15 @@ const stageButtons = [runBtn, autoRunBtn, regenReqBtn, genDesignBtn, genCasesBtn
 
 function setStatus(text) {
   statusEl.textContent = text;
-}
-
-function setButtonsBusy(busy) {
-  stageButtons.forEach((btn) => btn && (btn.disabled = !!busy));
+  if (typeof assistantOnStatus === "function") assistantOnStatus(text);
 }
 
 function setSingleButtonBusy(button, busy, pendingText) {
   if (!button) return;
+  // 流程按钮忙碌 = 有生成任务在跑：同步给侧栏运行状态和助手面板
+  if (stageButtons.includes(button) && typeof assistantOnTaskBusy === "function") {
+    assistantOnTaskBusy((button.dataset.defaultText || button.textContent || "").trim(), !!busy);
+  }
   if (!button.dataset.defaultText) button.dataset.defaultText = button.textContent || "";
   button.disabled = !!busy;
   button.textContent = busy ? (pendingText || "处理中...") : button.dataset.defaultText;
@@ -245,6 +234,20 @@ function parseRequirements(text) {
   if (importedRequirements?.requirements?.length) return importedRequirements.requirements.slice();
   const one = (text || "").trim();
   return one ? [one] : [];
+}
+
+// 恢复会话或载入历史记录时还原需求输入：多条需求（导入的清单）恢复成导入状态，单条放回输入框
+function restoreRequirementInput(list, meta, filename) {
+  const reqs = (Array.isArray(list) ? list : []).map((x) => String(x || "")).filter((x) => x.trim());
+  const metaOk = Array.isArray(meta) && meta.length === reqs.length && meta.some((m) => m?.req_id);
+  if (reqs.length > 1 || (reqs.length && metaOk)) {
+    const m = metaOk ? meta : reqs.map(() => ({}));
+    importedRequirements = { filename: filename || "", requirements: reqs, meta: m, groups: [], warnings: [] };
+  } else {
+    importedRequirements = null;
+    if (requirementsEl) requirementsEl.value = reqs[0] || "";
+  }
+  renderRequirementImport();
 }
 
 function requirementMeta() {
@@ -273,6 +276,7 @@ function renderRequirementImport() {
     importedRequirements = null;
     if (requirementsEl) requirementsEl.value = "";
     renderRequirementImport();
+    persistCurrentState();
   });
 }
 
@@ -283,11 +287,7 @@ async function importRequirementFile(file) {
   const data = await postJson("/api/requirements/import", { filename: file.name, content_base64: btoa(bin) });
   importedRequirements = { filename: file.name, ...data };
   renderRequirementImport();
-}
-
-function parseCSVLine(text) {
-  if (!text.trim()) return null;
-  return text.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+  persistCurrentState();
 }
 
 function toProfileOptionId(groupKey, option) {
@@ -434,44 +434,6 @@ function formatTestEnvironmentRisk(env) {
   return `${env.availability_risk || ""}`.trim();
 }
 
-function isBotPanelOpen() {
-  return !!botPanel && !botPanel.classList.contains("hidden");
-}
-
-function updateBotUnreadUI() {
-  if (botUnreadBadge) {
-    botUnreadBadge.textContent = String(botUnread);
-    botUnreadBadge.classList.toggle("hidden", botUnread <= 0);
-  }
-  botFab?.classList.toggle("has-unread", botUnread > 0);
-}
-
-function markBotRead() {
-  botUnread = 0;
-  updateBotUnreadUI();
-}
-
-function appendBotMessage(role, text, options = {}) {
-  if (!botMessages) return;
-  let cls = "bot-msg bot-msg-assistant";
-  if (role === "user") cls = "bot-msg bot-msg-user";
-  if (role === "system") cls = "bot-msg bot-msg-system";
-  if (role === "system" && options?.actionNeeded) cls += " action-needed";
-  const div = document.createElement("div");
-  div.className = cls;
-  div.innerHTML = esc(text || "");
-  botMessages.appendChild(div);
-  botMessages.scrollTop = botMessages.scrollHeight;
-  if (!isBotPanelOpen()) {
-    botUnread += 1;
-    updateBotUnreadUI();
-  }
-}
-
-function pushSystemBotMessage(text, options = {}) {
-  appendBotMessage("system", text, options);
-}
-
 function closeHitlStream() {
   if (hitlStream) {
     hitlStream.close();
@@ -508,7 +470,7 @@ function handleHitlStreamEvent(ev) {
     return;
   }
   if (et === "error") {
-    pushSystemBotMessage(`测试需求评审出错：${payload.error || "未知错误"}`, { actionNeeded: true });
+    pushSystemBotMessage(`需求评审异常：${payload.error || "未知错误"}`, { actionNeeded: true });
     closeHitlStream();
   }
 }
@@ -541,7 +503,7 @@ function ensureHitlStream(jobId) {
         if (st?.status === "completed") return;
       }
     } catch (_) {}
-    pushSystemBotMessage("测试需求评审的进度通道中断，请稍后重试或继续操作。", { actionNeeded: true });
+    pushSystemBotMessage("需求评审的实时进度通道中断，请稍后重试或继续操作。", { actionNeeded: true });
   };
 }
 
@@ -565,9 +527,9 @@ function usageLine(result) {
   return result?.llm_usage_text ? `\n${result.llm_usage_text}` : "";
 }
 
-// ---------- 运行进度：阶段流程条 + 助手里的单张进度卡 ----------
-// 一键生成 / 分步生成都走这里：主区顶部显示阶段流程条，侧栏步骤打状态标记，助手对话框里只保留一张原地刷新的进度卡，
-// 不再每个节点刷一条消息。
+// ---------- 运行进度：阶段流程条 + 侧栏步骤状态 ----------
+// 一键生成 / 分步生成都走这里：主区顶部显示阶段流程条，侧栏步骤打状态标记；
+// 助手“运行动态”只记阶段级结果（每阶段完成一条、失败一条），不再每个节点刷一条。
 const RUN_STAGE_PLANS = {
   requirements: { label: "测试需求评审", sheet: "sheet2", steps: [
     ["KnowledgeRetrieve", "检索参考资料"], ["IntakeNode", "需求录入"], ["ReqParseNode", "需求解析"],
@@ -582,7 +544,6 @@ const RUN_STATUS_TEXT = { pending: "等待", running: "进行中", done: "完成
 
 let runState = null;
 let runTimer = null;
-let runCardEl = null;
 const runPanelEl = document.getElementById("runProgress");
 
 function fmtDuration(ms) {
@@ -601,13 +562,6 @@ function runStart(title, stageKeys) {
     }),
   };
   runPanelCollapsed = false;
-  runCardEl = null;
-  if (botMessages) {
-    runCardEl = document.createElement("div");
-    runCardEl.className = "bot-msg bot-run-card";
-    botMessages.appendChild(runCardEl);
-    if (!isBotPanelOpen()) { botUnread += 1; updateBotUnreadUI(); }
-  }
   clearInterval(runTimer);
   runTimer = setInterval(renderRun, 1000);
   if (stageKeys.length === 1) runEnterStage(stageKeys[0]);
@@ -680,6 +634,7 @@ function runStageDone(key, res) {
   st.start = st.start || Date.now();
   st.end = Date.now();
   st.summary = summarizeStageResult(key, res);
+  pushSystemBotMessage(`${st.label}完成：${st.summary || "已生成"}（${fmtDuration(st.end - st.start)}）`);
   renderRun();
 }
 
@@ -700,15 +655,22 @@ function runFinish(ok, error = "", failedNode = "") {
   }
   clearInterval(runTimer);
   runTimer = null;
-  if (!isBotPanelOpen()) { botUnread += 1; updateBotUnreadUI(); }
+  // 运行动态只记阶段级的结果：一次一键生成最多 4 条阶段完成 + 1 条收尾，不再逐节点刷
+  if (ok) {
+    if (runState.stages.length > 1) pushSystemBotMessage(`${runState.title}完成，用时 ${fmtDuration(runState.end - runState.start)}。`);
+  } else {
+    const st = runState.stages.find((s) => s.status === "failed");
+    pushSystemBotMessage(`${st ? st.label : runState.title}失败：${runState.error}`, { actionNeeded: true });
+  }
   renderRun();
 }
 
-// 阶段跑完后由调用方补一句结果说明（显示在进度卡和流程条底部）
+// 阶段跑完后由调用方补一句结果说明（显示在流程条底部；需要处理时也记进运行动态）
 function runNote(text, options = {}) {
   if (!runState) return;
   runState.note = text || "";
   runState.noteAction = !!options.actionNeeded;
+  if (runState.noteAction) pushSystemBotMessage(runState.note, { actionNeeded: true });
   renderRun();
 }
 
@@ -787,21 +749,6 @@ function renderRunPanel() {
   runPanelEl.innerHTML = runHeaderHtml(true) + body;
 }
 
-function renderRunCard() {
-  if (!runCardEl || !runState) return;
-  const r = runState;
-  const rows = r.stages.map((st, i) => {
-    const steps = st.status === "running" || st.status === "failed"
-      ? `<ol class="run-substeps run-substeps-compact">${runStepsHtml(st.steps, true)}</ol>` : "";
-    return `<li class="run-card-stage is-${st.status}"><span class="run-step-icon">${runStepIcon(st.status, i + 1)}</span>` +
-      `<div class="run-card-text"><div class="run-card-row"><b>${esc(st.label)}</b><span class="run-step-sub">${runStageSub(st)}</span></div>${steps}</div></li>`;
-  }).join("");
-  const err = r.status === "failed" ? `<div class="run-error">${esc(r.error)}</div>` : "";
-  const note = r.note ? `<div class="run-note${r.noteAction ? " is-action" : ""}">${esc(r.note)}</div>` : "";
-  runCardEl.className = `bot-msg bot-run-card is-${r.status}${r.noteAction || r.status === "failed" ? " action-needed" : ""}`;
-  runCardEl.innerHTML = runHeaderHtml(false) + `<ol class="run-card-stages">${rows}</ol>` + err + note;
-}
-
 function renderRunNav() {
   const stages = runState ? runState.stages : [];
   document.querySelectorAll("#sheetTabs .sheet-tab").forEach((btn) => {
@@ -813,7 +760,6 @@ function renderRunNav() {
 
 function renderRun() {
   renderRunPanel();
-  renderRunCard();
   renderRunNav();
 }
 
@@ -925,17 +871,6 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
   });
 }
 
-function resetBotConversation() {
-  botHistory = [];
-  if (!botMessages) return;
-  botMessages.innerHTML = `
-    <div class="bot-msg bot-msg-assistant">你好，我是 TestFlow 助手。我能看到当前会话的需求、测试点和用例，可以问我“TC-003 为什么用协议仪表”“REQ-002 还缺哪些异常场景”或某条 3GPP 条款的含义。</div>
-    <div class="bot-note">新对话已开始</div>
-  `;
-  if (botInput) botInput.value = "";
-  markBotRead();
-}
-
 function saveLastResult(snapshot) {
   try { localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(snapshot)); } catch (_) {}
 }
@@ -1027,12 +962,6 @@ function renderDocList(items = []) {
   return `<ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
 }
 
-function renderDocKeyValueTable(rows = []) {
-  const arr = Array.isArray(rows) ? rows.filter((x) => Array.isArray(x) && x.length >= 2) : [];
-  if (!arr.length) return "<p>无</p>";
-  return `<table><tbody>${arr.map((x) => `<tr><th>${esc(x[0])}</th><td>${esc(x[1])}</td></tr>`).join("")}</tbody></table>`;
-}
-
 function renderAnsweredQuestionsTable(items = []) {
   const rows = Array.isArray(items) ? items.filter((x) => x && typeof x === "object") : [];
   if (!rows.length) return "<p>无</p>";
@@ -1046,206 +975,27 @@ function renderAnsweredQuestionsTable(items = []) {
     .join("")}</tbody></table>`;
 }
 
-function buildDesignDocumentHtml() {
-  const design = stageState.test_design_spec || {};
-  const requirementSpec = stageState.requirement_spec || {};
-  const personaReviews = stageState.persona_reviews || {};
-  const requirementReviewHistory = stageState.requirement_review_history || {};
-  const requirementInputs = parseRequirements(requirementsEl?.value || "");
-  const productProfile = getSelectedProductProfile();
-  const testEnvironments = getSelectedTestEnvironments();
-  const nowText = new Date().toLocaleString("zh-CN", { hour12: false });
-  const reqs = Array.isArray(requirementSpec.final_requirements) ? requirementSpec.final_requirements : [];
-  const objectives = Array.isArray(design.objectives) ? design.objectives : [];
-  const matrices = Array.isArray(design.coverage_matrices) ? design.coverage_matrices : [];
-  const integrated = Array.isArray(design.integrated_matrix) ? design.integrated_matrix : [];
-  const title = reqs[0]?.title || requirementInputs[0] || "测试设计文档";
 
-  const reqTable = reqs.length
-    ? `<table><thead><tr><th>需求ID</th><th>标题</th><th>优先级</th><th>RAT范围</th><th>通过标准</th></tr></thead><tbody>${reqs
-        .map(
-          (r) =>
-            `<tr><td>${esc(r.req_id || "")}</td><td>${esc(r.title || "")}</td><td>${esc(r.priority || "")}</td><td>${esc(
-              (r.rat_scope || []).join("、")
-            )}</td><td>${esc(((r.acceptance || {}).pass_fail || []).join(" / "))}</td></tr>`
-        )
-        .join("")}</tbody></table>`
-    : "<p>无</p>";
-
-  const reviewSections = [
-    ["规范评审", (personaReviews.spec || {}).reviews || []],
-    ["运营商评审", (personaReviews.carrier || {}).reviews || []],
-    ["现网体验评审", (personaReviews.ux || {}).reviews || []],
-  ]
-    .map(([label, items]) => {
-      const list = Array.isArray(items) ? items : [];
-      const body = list.length
-        ? `<table><thead><tr><th>需求ID</th><th>问题项</th><th>待确认问题</th><th>改写建议</th></tr></thead><tbody>${list
-            .map(
-              (it) =>
-                `<tr><td>${esc(it.req_id || "")}</td><td>${esc((it.issues || []).join("；"))}</td><td>${esc(
-                  (it.open_questions || []).join("；")
-                )}</td><td>${esc(it.rewrite_suggestion || "")}</td></tr>`
-            )
-            .join("")}</tbody></table>`
-        : "<p>无</p>";
-      return `<section><h3>${esc(label)}</h3>${body}</section>`;
-    })
-    .join("");
-
-  const objectiveTable = objectives.length
-    ? `<table><thead><tr><th>目标ID</th><th>关联需求</th><th>目标</th><th>成功标准</th><th>证据</th><th>优先级</th></tr></thead><tbody>${objectives
-        .map(
-          (o) =>
-            `<tr><td>${esc(o.objective_id || "")}</td><td>${esc((o.linked_reqs || []).join("、"))}</td><td>${esc(
-              o.goal || ""
-            )}</td><td>${esc((o.success_criteria || []).join(" / "))}</td><td>${esc((o.evidence || []).join(" / "))}</td><td>${esc(
-              o.priority || ""
-            )}</td></tr>`
-        )
-        .join("")}</tbody></table>`
-    : "<p>无</p>";
-
-  const matrixText = matrices.length
-    ? matrices
-        .map((m) => {
-          const dims = Array.isArray(m.dimensions)
-            ? m.dimensions.map((d) => `${d.name || ""}: ${Array.isArray(d.values) ? d.values.join("、") : `${d.values || ""}`}`).join("<br/>")
-            : "";
-          const sampling = m.sampling_strategy || {};
-          return `<article class="matrix-card"><h4>${esc(m.matrix_id || "覆盖矩阵")}</h4><div>${dims}</div><p><strong>采样策略：</strong>${esc(
-            sampling.type || ""
-          )}</p><p><strong>必选组合：</strong>${esc(JSON.stringify(sampling.must_include || [], null, 0))}</p><p><strong>排除组合：</strong>${esc(
-            JSON.stringify(sampling.exclude || [], null, 0)
-          )}</p></article>`;
-        })
-        .join("")
-    : "<p>无</p>";
-
-  const integratedTable = integrated.length
-    ? `<table><thead><tr><th>行ID</th><th>需求ID</th><th>关联目标</th><th>测试场景</th><th>配置选取</th><th>通过标准</th><th>推荐测试环境</th><th>资源风险</th></tr></thead><tbody>${integrated
-        .map((r, idx) => {
-          const cfg = r.key_configuration || {};
-          const cfgText = Object.keys(cfg)
-            .map((k) => `${k}: ${cfg[k]}`)
-            .join(" / ");
-          const envText = formatTestEnvironmentSummary(r.test_environment);
-          const riskText = formatTestEnvironmentRisk(r.test_environment);
-          return `<tr><td>${esc(r.row_id || `ROW-${idx + 1}`)}</td><td>${esc(r.req_id || "")}</td><td>${esc(
-            r.objective_id || ""
-          )}</td><td>${esc(r.scenario || "")}</td><td>${esc(cfgText)}</td><td>${esc(
-            (r.pass_criteria || []).join(" / ")
-          )}</td><td>${esc(envText)}</td><td>${esc(riskText)}</td></tr>`;
-        })
-        .join("")}</tbody></table>`
-    : "<p>无</p>";
-  const answeredQuestionTable = renderAnsweredQuestionsTable(requirementReviewHistory.answered_questions || []);
-
-  return `<!DOCTYPE html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${esc(title)} - 测试设计文档</title>
-    <style>
-      :root { color-scheme: light; }
-      body { margin: 0; padding: 32px; font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f4efe5; color: #1f2937; }
-      .page { max-width: 1180px; margin: 0 auto; background: #fffdf8; border: 1px solid #e5dccd; border-radius: 18px; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08); overflow: hidden; }
-      .hero { padding: 28px 32px 24px; background: linear-gradient(135deg, #f6efe3 0%, #fffaf1 58%, #eef6f7 100%); border-bottom: 1px solid #e9ddcb; }
-      .hero h1 { margin: 0; font-size: 30px; }
-      .hero p { margin: 8px 0 0; color: #5b6472; }
-      .section { padding: 24px 32px; border-top: 1px solid #efe6d8; }
-      .section:first-of-type { border-top: none; }
-      h2 { margin: 0 0 14px; font-size: 20px; }
-      h3 { margin: 0 0 10px; font-size: 16px; }
-      h4 { margin: 0 0 8px; font-size: 14px; }
-      table { width: 100%; border-collapse: collapse; font-size: 13px; }
-      th, td { border: 1px solid #e5dccd; padding: 9px 10px; text-align: left; vertical-align: top; }
-      th { background: #f8f1e7; width: auto; }
-      ul { margin: 8px 0 0 18px; }
-      p { line-height: 1.7; margin: 8px 0; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-      .matrix-card { border: 1px solid #e7ddcf; border-radius: 12px; padding: 14px; background: #fff; margin-bottom: 12px; }
-      .meta td:first-child, .meta th:first-child { width: 180px; }
-      @media (max-width: 900px) { body { padding: 12px; } .section, .hero { padding: 18px; } .grid { grid-template-columns: 1fr; } }
-    </style>
-  </head>
-  <body>
-    <div class="page">
-      <section class="hero">
-        <h1>标准测试设计文档</h1>
-        <p>${esc(title)}</p>
-      </section>
-      <section class="section">
-        <h2>一、文档信息</h2>
-        ${renderDocKeyValueTable([
-          ["生成时间", nowText],
-          ["需求条目数", `${reqs.length}`],
-          ["测试目标数", `${objectives.length}`],
-          ["整合矩阵条目数", `${integrated.length}`],
-        ])}
-      </section>
-      <section class="section">
-        <h2>二、需求输入与产品背景</h2>
-        <div class="grid">
-          <div>
-            <h3>原始需求输入</h3>
-            ${renderDocList(requirementInputs)}
-          </div>
-          <div>
-            <h3>产品通信背景与支持特性</h3>
-            ${renderDocList((productProfile.profile_display || []).map((x) => `${x.group}: ${x.values.join("、")}`))}
-          </div>
-          <div>
-            <h3>测试团队可用测试环境</h3>
-            ${renderDocList(testEnvironments.display || [])}
-          </div>
-        </div>
-      </section>
-      <section class="section">
-        <h2>三、测试需求解读稿</h2>
-        ${reqTable}
-      </section>
-      <section class="section">
-        <h2>四、三人评审记录</h2>
-        ${reviewSections}
-        <section>
-          <h3>用户已确认问题</h3>
-          ${answeredQuestionTable}
-        </section>
-      </section>
-      <section class="section">
-        <h2>五、测试目标</h2>
-        ${objectiveTable}
-      </section>
-      <section class="section">
-        <h2>六、覆盖矩阵</h2>
-        ${matrixText}
-      </section>
-      <section class="section">
-        <h2>七、整合覆盖矩阵</h2>
-        ${integratedTable}
-      </section>
-      <section class="section">
-        <h2>八、设计说明</h2>
-        ${renderDocList(design.design_notes || [])}
-      </section>
-      <section class="section">
-        <h2>九、范围裁剪与待跟进项</h2>
-        <div class="grid">
-          <div>
-            <h3>去范围项</h3>
-            ${renderDocList(design.de_scoped || [])}
-          </div>
-          <div>
-            <h3>待确认问题</h3>
-            ${renderDocList(requirementSpec.questions_to_ask || [])}
-          </div>
-        </div>
-      </section>
-    </div>
-  </body>
-</html>`;
+// 还没归档时的预览：交给后端用归档文档同一个模板生成，页面样式和测试架构图保持一致
+let designDocPreviewSeq = 0;
+async function buildDesignDocumentPreview() {
+  const res = await fetch("/api/export/design-document.html", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requirement_input: parseRequirements(requirementsEl?.value || ""),
+      requirement_spec: stageState.requirement_spec || {},
+      persona_reviews: stageState.persona_reviews || {},
+      requirement_review_history: stageState.requirement_review_history || {},
+      test_design_spec: stageState.test_design_spec || {},
+      test_case_spec: stageState.test_case_spec || {},
+      product_profile: getSelectedProductProfile(),
+      test_environments: getSelectedTestEnvironments(),
+      project_id: currentProjectId,
+    }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
 }
 
 function refreshDesignDocumentLink() {
@@ -1271,13 +1021,19 @@ function refreshDesignDocumentLink() {
     return;
   }
   const title = (stageState.requirement_spec?.final_requirements || [])[0]?.title || "测试设计文档";
-  const html = buildDesignDocumentHtml();
-  latestDesignDocUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-  if (designDocLink) {
-    designDocLink.href = latestDesignDocUrl;
-    designDocLink.title = `${title} - 测试设计文档`;
-  }
-  designDocActions?.classList.remove("hidden");
+  const seq = ++designDocPreviewSeq;
+  buildDesignDocumentPreview()
+    .then((html) => {
+      if (seq !== designDocPreviewSeq) return;
+      revokeDesignDocUrl();
+      latestDesignDocUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+      if (designDocLink) {
+        designDocLink.href = latestDesignDocUrl;
+        designDocLink.title = `${title} - 测试设计文档`;
+      }
+      designDocActions?.classList.remove("hidden");
+    })
+    .catch((err) => console.warn("测试设计文档预览生成失败", err));
 }
 
 function renderDesign(design) {
@@ -1592,8 +1348,7 @@ function applyHistoryRecordToCurrentSession(record) {
   if (!record) return;
   const recordProjectId = record.summary?.project_id || record.project_id || DEFAULT_PROJECT_ID;
   setCurrentProject(recordProjectId, { applyDefaults: false, askReset: false });
-  const reqInput = Array.isArray(record.requirement_input) ? record.requirement_input : [];
-  if (requirementsEl) requirementsEl.value = reqInput[0] || "";
+  restoreRequirementInput(record.requirement_input, record.requirement_meta, "历史记录");
   setSelectedTestEnvironments(record.test_environments?.selected_ids || record.test_environments?.selected || []);
   setSelectedProductProfile(record.product_profile?.selected || {});
   setSelectedTestTypes(record.product_profile?.test_types || record.test_design_spec?.test_types);
@@ -1646,7 +1401,13 @@ function applyStageOutputs() {
 
 function restoreLastResultUI(snapshot) {
   if (!snapshot) return;
-  requirementsEl.value = snapshot.form?.requirements || "";
+  const imp = snapshot.form?.imported_requirements;
+  if (imp?.requirements?.length) {
+    importedRequirements = imp;
+    renderRequirementImport();
+  } else {
+    restoreRequirementInput([snapshot.form?.requirements || ""]);
+  }
   ragEl.value = snapshot.form?.rag || "";
   if (bzIdsEl) bzIdsEl.value = snapshot.form?.bz_ids || "";
   if (bzExcludedEl) bzExcludedEl.value = snapshot.form?.bz_excluded || "";
@@ -1672,6 +1433,7 @@ function restoreLastResultUI(snapshot) {
 }
 
 function persistCurrentState(customStatus) {
+  if (typeof assistantOnSessionChanged === "function") assistantOnSessionChanged();
   saveLastResult({
     status: customStatus || statusEl.textContent,
     artifacts_structured: latestStructured || {},
@@ -1684,6 +1446,7 @@ function persistCurrentState(customStatus) {
     stage_state: stageState,
     form: {
       requirements: requirementsEl.value,
+      imported_requirements: importedRequirements,
       rag: ragEl.value,
       bz_ids: bzIdsEl?.value || "",
       bz_excluded: bzExcludedEl?.value || "",
@@ -1834,6 +1597,7 @@ function renderProjectSelect() {
   }
   if (currentProjectTag) currentProjectTag.textContent = projectLabel(currentProject());
   renderReqProjectSelect();
+  if (typeof assistantOnProjectChanged === "function") assistantOnProjectChanged();
 }
 
 // 需求准备页的项目选择：“不选择项目”即默认项目，保持原来的行为；选了项目后各阶段和问答助手都查该项目的知识库。
@@ -2202,6 +1966,8 @@ function downloadJson(filename, data) {
 
 function renderExecutableCases(data) {
   if (!execCasesSummary) return;
+  refreshExecCasesControls();
+  if (execCasesDiffCard && !data?.bundles) execCasesDiffCard.hidden = true;
   if (!data || !data.bundles) {
     execCasesSummary.innerHTML = "<em>尚未生成。完成测试用例后点击“生成可执行用例”。</em>";
     execCasesTrace.innerHTML = "";
@@ -2286,8 +2052,197 @@ function renderProtocolPreview(bundle) {
   }).join("");
 }
 
+// ---------- 可执行用例：判断结果是否过期、重新生成后对比变化 ----------
+
+function stableStringify(v) {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${stableStringify(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+function hashText(text) {
+  // FNV-1a 32 位，只用来判断输入有没有变化
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+const EXEC_INPUT_LABELS = { testcases: "测试用例", requirements: "需求", product: "产品形态", bugs: "关联的 Bug" };
+
+// 可执行用例只依赖这几样输入：同样的输入再生成一次，只是让大模型把措辞重写一遍
+function execInputFingerprint() {
+  return {
+    testcases: hashText(stableStringify(stageState.test_case_spec || null)),
+    requirements: hashText(stableStringify({ input: parseRequirements(requirementsEl?.value || ""), spec: stageState.requirement_spec || null })),
+    product: hashText(stableStringify(getSelectedProductProfile().selected || {})),
+    bugs: hashText(stableStringify([...(stageState.bug_ids || [])].map(String).sort())),
+  };
+}
+
+function execCasesFreshness() {
+  const data = stageState.executable_cases;
+  if (!stageState.test_case_spec) return { state: data?.bundles ? "unknown" : "no_input", changed: [] };
+  if (!data?.bundles) return { state: "none", changed: [] };
+  const saved = data.input_fingerprint;
+  if (!saved || typeof saved !== "object") return { state: "unknown", changed: [] };
+  const now = execInputFingerprint();
+  const changed = Object.keys(EXEC_INPUT_LABELS).filter((k) => saved[k] !== now[k]);
+  return { state: changed.length ? "stale" : "fresh", changed };
+}
+
+let execGenBusy = false;
+
+function formatGeneratedAt(iso) {
+  return iso ? String(iso).replace("T", " ").slice(0, 16) : "";
+}
+
+function refreshExecCasesControls() {
+  if (!genExecCasesBtn) return;
+  const { state, changed } = execCasesFreshness();
+  const data = stageState.executable_cases;
+  const tcCount = (stageState.test_case_spec?.testcases || []).length;
+  const draftOnly = Object.values(data?.draft_only || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+  const label = { none: "生成可执行用例", stale: "按最新输入重新生成", fresh: "重新生成", unknown: "重新生成", no_input: "生成可执行用例" }[state];
+  const secondary = state === "fresh" || state === "unknown";
+  genExecCasesBtn.classList.toggle("ui-btn-secondary", secondary);
+  genExecCasesBtn.dataset.defaultText = label;
+  if (!execGenBusy) {
+    genExecCasesBtn.textContent = label;
+    genExecCasesBtn.disabled = state === "no_input";
+  }
+  genExecCasesBtn.title = state === "no_input" ? "请先在“测试用例”页生成测试用例" : "";
+
+  if (!execCasesFreshnessEl) return;
+  const when = formatGeneratedAt(data?.generated_at);
+  let html = "";
+  let cls = "";
+  if (state === "fresh") {
+    cls = "is-fresh";
+    html = `<strong>已是最新。</strong>这份结果基于当前的 ${tcCount} 条测试用例${when ? `，生成于 ${esc(when)}` : ""}。`
+      + "输入没有变化，重新生成只会让大模型把各平台 case 的措辞重写一遍，用例数量和分流不会变，一般不需要再点。";
+    if (draftOnly) html += `<br/>上次有 ${draftOnly} 条用例因大模型不可用，直接用了由测试用例映射的草稿；如果大模型现在可用，重新生成可以得到平台适配后的版本。`;
+  } else if (state === "stale") {
+    cls = "is-stale";
+    html = `<strong>${esc(changed.map((k) => EXEC_INPUT_LABELS[k]).join("、"))}在上次生成后有变化</strong>，下面的可执行用例已过期，请点击右上角“按最新输入重新生成”。`;
+  } else if (state === "unknown") {
+    html = stageState.test_case_spec
+      ? "这份可执行用例来自旧版本的记录，无法判断是否基于当前的测试用例。如果刚改过测试用例、需求或产品形态，请重新生成。"
+      : "当前会话没有测试用例，这份可执行用例无法重新生成。";
+  } else if (state === "no_input") {
+    html = "请先在“测试用例”页生成测试用例，再生成可执行用例。";
+  }
+  // 输入变了以后，上一次的对比已不代表当前结果
+  if (state !== "fresh" && execCasesDiffCard) execCasesDiffCard.hidden = true;
+  execCasesFreshnessEl.className = `exec-freshness ${cls}`.trim();
+  execCasesFreshnessEl.innerHTML = html;
+  execCasesFreshnessEl.hidden = !html;
+}
+
+function execCaseTcId(route, c) {
+  return String((route === "artemis" || route === "at_agent" ? c?.task?.case_code : (c?.trace?.tc_id || c?.source_tc_id)) || "");
+}
+
+function execCaseComparable(c) {
+  const { id, case_id, ...rest } = c || {};  // 编号按顺序生成，不算内容变化
+  return rest;
+}
+
+function execCaseChangedFields(a, b) {
+  const fields = new Set();
+  const walk = (x, y, prefix) => {
+    Object.keys({ ...(x || {}), ...(y || {}) }).forEach((k) => {
+      if (stableStringify(x?.[k]) === stableStringify(y?.[k])) return;
+      if (k === "task" && !prefix) walk(x?.task, y?.task, "task.");
+      else fields.add(prefix + k);
+    });
+  };
+  walk(execCaseComparable(a), execCaseComparable(b), "");
+  return [...fields];
+}
+
+function diffExecutableCases(prev, next) {
+  const routes = Object.keys(EXEC_ROUTE_FILES);
+  const casesOf = (data, r) => (data?.bundles?.[r]?.cases || data?.bundles?.[r]?.items || []);
+  const counts = routes.map((r) => ({ route: r, before: casesOf(prev, r).length, after: casesOf(next, r).length }));
+  const prevRoutes = prev?.routes || {};
+  const nextRoutes = next?.routes || {};
+  const added = Object.keys(nextRoutes).filter((t) => !(t in prevRoutes));
+  const removed = Object.keys(prevRoutes).filter((t) => !(t in nextRoutes));
+  const moved = Object.keys(nextRoutes).filter((t) => t in prevRoutes && prevRoutes[t] !== nextRoutes[t])
+    .map((t) => ({ tc: t, from: prevRoutes[t], to: nextRoutes[t] }));
+  const changed = [];
+  routes.forEach((r) => {
+    const group = (data) => {
+      const m = {};
+      casesOf(data, r).forEach((c) => (m[execCaseTcId(r, c)] = m[execCaseTcId(r, c)] || []).push(c));
+      return m;
+    };
+    const a = group(prev);
+    const b = group(next);
+    Object.keys(b).forEach((tc) => {
+      if (!a[tc]) return;
+      const fields = new Set();
+      const n = Math.max(a[tc].length, b[tc].length);
+      for (let i = 0; i < n; i++) execCaseChangedFields(a[tc][i], b[tc][i]).forEach((f) => fields.add(f));
+      if (a[tc].length !== b[tc].length) fields.add("case 条数");
+      if (fields.size) changed.push({ tc, route: r, fields: [...fields] });
+    });
+  });
+  const countsChanged = counts.some((c) => c.before !== c.after);
+  return { counts, countsChanged, added, removed, moved, changed,
+    identical: !countsChanged && !added.length && !removed.length && !moved.length && !changed.length };
+}
+
+function renderExecCasesDiff(prev, next) {
+  if (!execCasesDiffCard || !execCasesDiffEl) return;
+  if (!prev?.bundles || !next?.bundles) {
+    execCasesDiffCard.hidden = true;
+    return null;
+  }
+  const d = diffExecutableCases(prev, next);
+  const labels = next.route_labels || {};
+  const rl = (r) => esc(labels[r] || r);
+  const total = d.counts.reduce((a, c) => a + c.after, 0);
+  const parts = [];
+  if (d.identical) {
+    parts.push(`<p class="exec-diff-headline"><strong>与上次结果完全一致</strong>（共 ${total} 条可执行 case）。输入没有变化时，重新生成不会带来新内容。</p>`);
+  } else {
+    const head = [];
+    if (!d.countsChanged && !d.added.length && !d.removed.length && !d.moved.length) head.push("用例数量和分流都没变");
+    if (d.changed.length) head.push(`${d.changed.length} 条用例对应的 case 内容有改写`);
+    parts.push(`<p class="exec-diff-headline"><strong>${esc(head.join("，") || "结果有变化")}</strong>${
+      formatGeneratedAt(prev.generated_at) ? `（对比 ${esc(formatGeneratedAt(prev.generated_at))} 那次的结果）` : ""}。</p>`);
+    if (d.countsChanged) {
+      parts.push(`<table class="ui-table"><thead><tr><th>验收方案</th><th>上次</th><th>本次</th></tr></thead><tbody>${
+        d.counts.filter((c) => c.before || c.after).map((c) => `<tr><td>${rl(c.route)}</td><td>${c.before}</td><td>${c.after}${
+          c.after !== c.before ? `（${c.after > c.before ? "+" : ""}${c.after - c.before}）` : ""}</td></tr>`).join("")
+      }</tbody></table>`);
+    }
+    const items = [];
+    if (d.added.length) items.push(`新增用例：${esc(d.added.join("、"))}`);
+    if (d.removed.length) items.push(`移除用例：${esc(d.removed.join("、"))}`);
+    d.moved.forEach((m) => items.push(`${esc(m.tc)} 从 ${rl(m.from)} 改分流到 ${rl(m.to)}`));
+    if (items.length) parts.push(`<ul class="exec-diff-list">${items.map((x) => `<li>${x}</li>`).join("")}</ul>`);
+    if (d.changed.length) {
+      parts.push(`<details><summary>查看内容改写明细（${d.changed.length} 条）</summary><table class="ui-table"><thead><tr><th>用例</th><th>验收方案</th><th>变化的字段</th></tr></thead><tbody>${
+        d.changed.map((c) => `<tr><td>${esc(c.tc)}</td><td>${rl(c.route)}</td><td>${esc(c.fields.join("、"))}</td></tr>`).join("")
+      }</tbody></table></details>`);
+    }
+  }
+  execCasesDiffEl.innerHTML = parts.join("");
+  execCasesDiffCard.hidden = false;
+  return d;
+}
+
 async function generateExecCases() {
   if (!stageState.test_case_spec) throw new Error("请先生成测试用例稿");
+  const previous = stageState.executable_cases?.bundles ? stageState.executable_cases : null;
+  const fingerprint = execInputFingerprint();
   const data = await startStageJobAndWait("exec_cases", {
     requirement_input: parseRequirements(requirementsEl?.value || ""),
     requirement_spec: stageState.requirement_spec || {},
@@ -2296,15 +2251,20 @@ async function generateExecCases() {
     test_environments: getSelectedTestEnvironments(),
     bug_ids: stageState.bug_ids || [],
     history_record_id: stageState.design_history_record_id || "",
+    input_fingerprint: fingerprint,
   });
   stageState.executable_cases = data.executable_cases || null;
+  if (stageState.executable_cases && !stageState.executable_cases.input_fingerprint) stageState.executable_cases.input_fingerprint = fingerprint;
   latestStructured = latestStructured || {};
   latestStructured.executable_cases = stageState.executable_cases;
   renderExecutableCases(stageState.executable_cases);
+  const diff = renderExecCasesDiff(previous, stageState.executable_cases);
   const s = stageState.executable_cases?.summary || {};
-  setStatus(`可执行用例已生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` + usageLine(data) +
+  const diffLine = !diff ? "" : diff.identical ? "\n与上次结果完全一致。"
+    : `\n与上次相比：${diff.changed.length} 条用例的 case 内容有改写${diff.countsChanged || diff.moved.length || diff.added.length || diff.removed.length ? "，数量或分流有变化" : "，数量和分流没变"}（详见“本次重新生成的变化”）。`;
+  setStatus(`可执行用例已${previous ? "重新" : ""}生成：Artemis ${s.artemis || 0}，AT Agent ${s.at_agent || 0}，Amarisoft ${s.amarisoft || 0}，协议流程 ${s.protocol || 0}` + diffLine + usageLine(data) +
     (data.warnings?.length ? `\n告警:\n- ${data.warnings.join("\n- ")}` : ""));
-  runNote("可在“可执行用例”页按验收方案下载。");
+  runNote(previous ? "可执行用例已重新生成，变化见“可执行用例”页顶部。" : "可在“可执行用例”页按验收方案下载。");
   persistCurrentState();
 }
 
@@ -2338,6 +2298,9 @@ async function generateAll() {
       latestStructured.test_case_spec = res.test_case_spec;
     } else if (stage === "exec_cases") {
       stageState.executable_cases = res.executable_cases;
+      if (stageState.executable_cases && !stageState.executable_cases.input_fingerprint) {
+        stageState.executable_cases.input_fingerprint = execInputFingerprint();
+      }
       latestStructured.executable_cases = res.executable_cases;
     }
     applyStageOutputs();
@@ -2394,6 +2357,8 @@ function buildChatContext() {
   if (stageState.executable_cases?.summary) ctx.executable_summary = stageState.executable_cases.summary;
   const status = (statusEl?.textContent || "").slice(0, 1500);
   if (status) ctx.latest_status = status;
+  const page = document.querySelector(".sheet-tab.active");
+  if (page) ctx.current_page = page.textContent.replace(/^\s*\S\s*/, "").trim();
   return ctx;
 }
 
@@ -2435,13 +2400,15 @@ async function loadPrompts() {
   if (!resp.ok) throw new Error("加载模板失败");
   const data = await resp.json();
   promptCache = data.prompts || {};
+  const labels = data.labels || {};
 
-  const names = Object.keys(promptCache).sort();
+  // 按流水线顺序列出（服务端已排好），选项上标明是哪个环节用的模板
+  const names = Object.keys(promptCache);
   promptSelect.innerHTML = "";
   names.forEach((name) => {
     const opt = document.createElement("option");
     opt.value = name;
-    opt.textContent = name;
+    opt.textContent = labels[name] ? `${labels[name]}（${name}）` : name;
     promptSelect.appendChild(opt);
   });
   if (names.length) {
@@ -2450,164 +2417,6 @@ async function loadPrompts() {
   } else {
     promptEditor.value = "";
   }
-}
-
-function renderPromptRoles(roles) {
-  if (!roles || !roles.length) {
-    flowPromptRoles.innerHTML = "<em>暂无Prompt角色映射</em>";
-    return;
-  }
-  const rows = roles
-    .map((r) => `<tr><td>${esc(r.role)}</td><td>${esc(r.node)}</td><td>${esc(r.prompt)}</td><td>${esc(r.exists ? "yes" : "no")}</td><td>${esc(r.first_line || "")}</td></tr>`)
-    .join("");
-  flowPromptRoles.innerHTML = `<table><thead><tr><th>Role</th><th>Node</th><th>Prompt</th><th>Exists</th><th>Preview</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderFlowGraph(graph, promptRoles = [], startNodeId = "") {
-  // 流水线视图：按执行顺序把节点排成蛇形网格，Prompt 角色挂在节点下方，回流边用虚线弧标出。
-  const nodes = graph?.nodes || [];
-  const links = graph?.links || [];
-  if (!nodes.length) {
-    flowVizCanvas.innerHTML = "<em style='padding:16px;display:block'>暂无流程节点</em>";
-    return;
-  }
-
-  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
-  const order = [];
-  const seen = new Set();
-  const queue = [startNodeId && byId[startNodeId] ? startNodeId : nodes[0].id];
-  while (queue.length) {
-    const id = queue.shift();
-    if (seen.has(id)) continue;
-    seen.add(id);
-    order.push(id);
-    links.filter((l) => l.source === id && (l.action || "default") !== "retry").forEach((l) => queue.push(l.target));
-  }
-  nodes.forEach((n) => { if (!seen.has(n.id)) order.push(n.id); });
-
-  const rolesByNode = {};
-  (promptRoles || []).forEach((r) => {
-    const nid = nodes.find((n) => n.label === r.node)?.id;
-    if (nid) (rolesByNode[nid] = rolesByNode[nid] || []).push(r);
-  });
-
-  const width = Math.max(flowVizCanvas.clientWidth || 960, 640);
-  const NODE_W = 184, NODE_H = 40, GAP_X = 36, ROLE_H = 34, PAD = 28, TOP = 56;
-  const cols = Math.max(2, Math.floor((width - PAD * 2 + GAP_X) / (NODE_W + GAP_X)));
-  const maxRoles = Math.max(0, ...Object.values(rolesByNode).map((r) => r.length));
-  const rowH = NODE_H + 22 + maxRoles * (ROLE_H + 6) + 40;
-  const rows = Math.ceil(order.length / cols);
-  const height = TOP + PAD + rows * rowH - 30;
-  const usedW = cols * NODE_W + (cols - 1) * GAP_X;
-  const offsetX = Math.max(PAD, (width - usedW) / 2);
-
-  const pos = {};
-  order.forEach((id, i) => {
-    const row = Math.floor(i / cols);
-    let col = i % cols;
-    if (row % 2 === 1) col = cols - 1 - col; // 蛇形排列，保证相邻节点挨着
-    pos[id] = { x: offsetX + col * (NODE_W + GAP_X), y: TOP + row * rowH, idx: i };
-  });
-
-  const svgNS = "http://www.w3.org/2000/svg";
-  const el = (tag, attrs = {}, text) => {
-    const e = document.createElementNS(svgNS, tag);
-    Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
-    if (text !== undefined) e.textContent = text;
-    return e;
-  };
-  const clip = (t, n) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
-  const css = getComputedStyle(document.documentElement);
-  const c = (name) => css.getPropertyValue(name).trim();
-  const svg = el("svg", { width, height, viewBox: `0 0 ${width} ${height}` });
-  const defs = el("defs");
-  const marker = el("marker", { id: "flowArrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: c("--muted-foreground") }));
-  const markerBack = el("marker", { id: "flowArrowBack", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  markerBack.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: c("--warning") }));
-  defs.append(marker, markerBack);
-  svg.appendChild(defs);
-
-  const edgeLayer = el("g");
-  const nodeLayer = el("g");
-  svg.append(edgeLayer, nodeLayer);
-
-  links.forEach((l) => {
-    const a = pos[l.source], b = pos[l.target];
-    if (!a || !b) return;
-    const back = b.idx <= a.idx;
-    const action = l.action || "default";
-    let d, lx, ly;
-    if (!back && a.y === b.y) {
-      const ltr = b.x > a.x;
-      const x1 = ltr ? a.x + NODE_W : a.x, x2 = ltr ? b.x : b.x + NODE_W, y = a.y + NODE_H / 2;
-      d = `M${x1},${y} L${x2 + (ltr ? -2 : 2)},${y}`;
-      lx = (x1 + x2) / 2; ly = y - 6;
-    } else if (!back) {
-      // 换行：从行尾节点的外侧绕到下一行
-      const right = a.x + NODE_W / 2 > width / 2;
-      const xs = right ? a.x + NODE_W : a.x, xe = right ? b.x + NODE_W : b.x;
-      const bulge = right ? Math.max(xs, xe) + 22 : Math.min(xs, xe) - 22;
-      const ys = a.y + NODE_H / 2, ye = b.y + NODE_H / 2;
-      d = `M${xs},${ys} C${bulge},${ys} ${bulge},${ye} ${xe + (right ? 2 : -2)},${ye}`;
-      lx = bulge; ly = (ys + ye) / 2;
-    } else {
-      const x1 = a.x + NODE_W / 2, x2 = b.x + NODE_W / 2, y = Math.min(a.y, b.y);
-      d = `M${x1},${a.y} C${x1},${y - 34} ${x2},${y - 34} ${x2},${b.y - 2}`;
-      lx = (x1 + x2) / 2; ly = y - 26;
-    }
-    edgeLayer.appendChild(el("path", {
-      d, fill: "none",
-      stroke: back ? c("--warning") : c("--muted-foreground"),
-      "stroke-width": back ? 1.4 : 1.4,
-      "stroke-dasharray": back ? "5 4" : "",
-      "stroke-opacity": back ? 0.9 : 0.6,
-      "marker-end": back ? "url(#flowArrowBack)" : "url(#flowArrow)",
-    }));
-    if (action !== "default") {
-      edgeLayer.appendChild(el("text", { x: lx, y: ly, "text-anchor": "middle", "font-size": 11, fill: back ? c("--warning") : c("--muted-foreground") }, action));
-    }
-  });
-
-  order.forEach((id) => {
-    const n = byId[id], p = pos[id];
-    const isStart = id === startNodeId;
-    const g = el("g", { transform: `translate(${p.x},${p.y})` });
-    g.appendChild(el("rect", {
-      width: NODE_W, height: NODE_H, rx: 9,
-      fill: isStart ? c("--primary") : c("--card"),
-      stroke: isStart ? c("--primary") : c("--input"), "stroke-width": 1.2,
-    }));
-    g.appendChild(el("text", {
-      x: 12, y: NODE_H / 2 + 4, "font-size": 11, "font-weight": 700,
-      fill: isStart ? "#fff" : c("--muted-foreground"),
-    }, String(p.idx + 1).padStart(2, "0")));
-    g.appendChild(el("text", {
-      x: 34, y: NODE_H / 2 + 4, "font-size": 12, "font-weight": 600,
-      fill: isStart ? "#fff" : c("--foreground"),
-    }, String(n.label || "").replace(/Node$|Flow$/, "")));
-    (rolesByNode[id] || []).forEach((r, i) => {
-      const ry = NODE_H + 14 + i * (ROLE_H + 6);
-      g.appendChild(el("line", { x1: 20, y1: NODE_H, x2: 20, y2: ry + ROLE_H / 2, stroke: c("--warning"), "stroke-opacity": 0.5, "stroke-dasharray": "3 3" }));
-      g.appendChild(el("rect", { x: 30, y: ry, width: NODE_W - 30, height: ROLE_H, rx: 7, fill: c("--warning-soft"), stroke: c("--warning"), "stroke-opacity": 0.45 }));
-      g.appendChild(el("text", { x: 40, y: ry + 14, "font-size": 11, "font-weight": 600, fill: c("--warning") }, clip(r.role || "Prompt", 24)));
-      g.appendChild(el("text", { x: 40, y: ry + 27, "font-size": 10, fill: c("--muted-foreground") }, clip(r.prompt || "", 28)));
-    });
-    nodeLayer.appendChild(g);
-  });
-
-  flowVizCanvas.innerHTML = "";
-  flowVizCanvas.style.height = `${height}px`;
-  flowVizCanvas.appendChild(svg);
-}
-
-async function loadFlowVisualization() {
-  const resp = await fetch("/api/settings/flow-visualization");
-  if (!resp.ok) throw new Error(await resp.text());
-  const data = await resp.json();
-  flowMermaid.textContent = data.mermaid || "";
-  renderPromptRoles(data.prompt_roles || []);
-  renderFlowGraph(data.graph || {}, data.prompt_roles || [], data.graph?.start_node_id || "");
 }
 
 async function saveCurrentPrompt() {
@@ -2681,11 +2490,7 @@ function switchSheetById(id) {
   document.querySelectorAll(".sheet").forEach((s) => {
     s.classList.toggle("active", s.id === id);
   });
-  if (id === "sheet6" && !flowVizLoaded) {
-    loadFlowVisualization()
-      .then(() => { flowVizLoaded = true; })
-      .catch((e) => setStatus(`流程可视化加载失败: ${e.message}`));
-  }
+  if (id === "sheet5") refreshExecCasesControls();
   if (id === "sheet9") {
     loadProjects()
       .then(() => renderProjectForm(editingProjectId || currentProjectId))
@@ -2784,6 +2589,11 @@ genCasesBtn.addEventListener("click", async () => {
 });
 
 genExecCasesBtn.addEventListener("click", async () => {
+  const { state } = execCasesFreshness();
+  if (state === "fresh" && !confirm("当前可执行用例已基于最新的测试用例、需求和产品形态生成。\n\n"
+    + "输入没有变化，重新生成只会让大模型把各平台 case 的措辞重写一遍，用例数量和分流不会变，生成完会列出与上次的差异。\n\n确定要重新生成吗？")) return;
+  if (state === "unknown" && !confirm("无法判断这份可执行用例是否基于当前的测试用例。重新生成会用当前的测试用例覆盖现有结果，生成完会列出与上次的差异。\n\n确定要重新生成吗？")) return;
+  execGenBusy = true;
   setSingleButtonBusy(genExecCasesBtn, true, "生成中...");
   stageButtons.filter((b) => b !== genExecCasesBtn).forEach((b) => b && (b.disabled = true));
   try {
@@ -2793,8 +2603,10 @@ genExecCasesBtn.addEventListener("click", async () => {
   } catch (e) {
     setStatus(`生成可执行用例失败: ${e.message}`);
   } finally {
+    execGenBusy = false;
     setSingleButtonBusy(genExecCasesBtn, false);
     stageButtons.filter((b) => b !== genExecCasesBtn).forEach((b) => b && (b.disabled = false));
+    refreshExecCasesControls();
   }
 });
 
@@ -3183,17 +2995,6 @@ reloadPromptsBtn.addEventListener("click", async () => {
 savePromptBtn.addEventListener("click", async () => {
   try { await saveCurrentPrompt(); setStatus(`模板已保存: ${promptSelect.value}`); } catch (e) { setStatus(`保存模板失败: ${e.message}`); }
 });
-refreshFlowVizBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(refreshFlowVizBtn, true, "刷新中...");
-    await loadFlowVisualization();
-    flowVizLoaded = true;
-  } catch (e) {
-    setStatus(`流程可视化刷新失败: ${e.message}`);
-  } finally {
-    setSingleButtonBusy(refreshFlowVizBtn, false);
-  }
-});
 promptSelect.addEventListener("change", () => {
   const name = promptSelect.value;
   promptEditor.value = promptCache[name] || "";
@@ -3212,88 +3013,23 @@ uploadRagBtn?.addEventListener("click", async () => {
   }
 });
 
-botFab?.addEventListener("click", () => {
-  botPanel?.classList.toggle("hidden");
-  if (isBotPanelOpen()) markBotRead();
-});
-
-botCloseBtn?.addEventListener("click", () => {
-  botPanel?.classList.add("hidden");
-});
-
-botRefreshBtn?.addEventListener("click", () => {
-  resetBotConversation();
-  setStatus("聊天机器人已开启新对话。");
-  pushSystemBotMessage("已开启新对话。");
-});
-
-botSendBtn?.addEventListener("click", () => {
-  sendBotMessage().catch((e) => setStatus(`机器人发送失败: ${e.message}`));
-});
-
-botInput?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    botSendBtn?.click();
-  }
-});
-
-async function sendBotMessage() {
-  const q = (botInput?.value || "").trim();
-  if (!q) return;
-  appendBotMessage("user", q);
-  botHistory.push({ role: "user", content: q });
-  botInput.value = "";
-  setSingleButtonBusy(botSendBtn, true, "...");
-  try {
-    const resp = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: q,
-        history: botHistory.slice(0, -1),
-        context: buildChatContext(),
-        project_id: currentProjectId === DEFAULT_PROJECT_ID ? "" : currentProjectId,
-      }),
-    });
-    const text = await resp.text();
-    if (!resp.ok) {
-      let msg = text;
-      try {
-        const j = JSON.parse(text);
-        msg = j?.detail || text;
-      } catch (_) {}
-      appendBotMessage("assistant", `请求失败: ${msg}`);
-      return;
-    }
-    const data = JSON.parse(text);
-    const reply = (data.reply || "").trim() || "收到，我再想想。";
-    const refs = Array.isArray(data.references) ? data.references : [];
-    const refLine = refs.length
-      ? "\n\n参考资料：" + refs.map((r) => `[${r.ref}] ${r.scope_label} · ${r.filename}`).join("；")
-      : "";
-    appendBotMessage("assistant", reply + refLine);
-    botHistory.push({ role: "assistant", content: reply });
-  } finally {
-    setSingleButtonBusy(botSendBtn, false);
-  }
-}
-
 goExecCasesBtn?.addEventListener("click", () => {
+  const { state } = execCasesFreshness();
   switchSheetById("sheet5");
-  genExecCasesBtn?.click();
+  // 已有结果且没过期（或无法判断）时只跳转查看，要不要重新生成由用户在页面上决定
+  if (state === "none" || state === "stale") genExecCasesBtn?.click();
 });
 
 // init
 initTheme();
 initTabs();
-resetBotConversation();
 renderTestTypeOptions();
 renderTestEnvironmentOptions();
 renderProductProfileOptions();
 renderDesignHistoryDetail(null);
 try { currentProjectId = localStorage.getItem(CURRENT_PROJECT_KEY) || DEFAULT_PROJECT_ID; } catch (_) {}
 restoreLastResultUI(loadLastResult());
+refreshExecCasesControls();
 loadBugzillaSettings().catch(() => {});
 loadLlmSettings().catch(() => {});
 loadKbSettings().catch(() => {});

@@ -1,4 +1,4 @@
-# TestFlow 架构（v0.6）
+# TestFlow 架构（v0.8）
 
 ## 1. Review 结论（重构前的主要问题）
 
@@ -80,3 +80,7 @@ TCD ──project()──► 平台草稿 ──LLM 平台适配──► 合并
 - 可执行用例格式只新增字段：Amarisoft v2→v3、协议 v3→v4；Artemis / AT Agent 格式不变。
 - `requirement_configs[].status` 新增 `patched`（可执行用例）和 `conflict` / `varied`（测试用例）；可执行用例不再出现 `missing`，漏掉的配置会直接补入。
 - 提示词：新增 `test_case_reviewer.txt`；`test_case_generator.txt` 由 `test_case_tcd.txt` 取代；`integrated_matrix_designer.txt` 改为只补缺口；四个 `exec_case_*.txt` 新增 `{draft_json}`。网页上改过这些模板的，建议恢复默认后再按需调整。
+- v0.8 清理：去掉“流程可视化”页（它画的是一条实际不会运行的整链流程，节点名是内部类名）和对应接口 `/api/settings/flow-visualization`；
+  各模板用在哪个环节改为在“系统设置 → Prompt 模板”的下拉框里标出。去掉早期 9 个通用动作词表（`action_vocabulary` / `assertion_vocabulary` / `capabilities`），
+  用例改用 TCD 后它们只会作为 `preferred_actions` 混进用例提示词，和模板里的动作写法冲突；旧客户端还传这些字段时服务端直接忽略。
+- 设计历史记录新增 `requirement_meta`（导入需求清单的编号和分组），载入历史记录时整份清单原样恢复。

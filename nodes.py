@@ -19,9 +19,6 @@ from typing import Any, Dict, List
 
 from pocketflow import AsyncNode, Node
 from schemas import (
-    DEFAULT_ACTION_VOCABULARY,
-    DEFAULT_ASSERTION_VOCABULARY,
-    DEFAULT_CAPABILITIES,
     INTEGRATED_MATRIX_SCHEMA,
     PERSONA_REVIEW_SCHEMA,
     REQUIREMENT_LIST_SCHEMA,
@@ -63,7 +60,6 @@ NODE_LABELS = {
     "FinalizeTestCaseNode": "汇总测试用例",
     "TestCaseSupervisorNode": "用例质量门与专家评审",
     "ExecutableCaseNode": "生成可执行用例",
-    "AssembleResultNode": "汇总结果",
 }
 KNOWLEDGE_CHARS_FOR_CASES = 6000
 
@@ -168,9 +164,6 @@ class IntakeNode(Node):
             "rag_context": shared.get("rag_context", ""),
             "review_feedback": shared.get("review_feedback", ""),
             "product_profile": shared.get("product_profile", {}),
-            "action_vocabulary": shared.get("action_vocabulary") or DEFAULT_ACTION_VOCABULARY,
-            "assertion_vocabulary": shared.get("assertion_vocabulary") or DEFAULT_ASSERTION_VOCABULARY,
-            "capabilities": shared.get("capabilities") or DEFAULT_CAPABILITIES,
         }
 
     def exec(self, prep_res):
@@ -231,9 +224,6 @@ class IntakeNode(Node):
             "rag_context": prep_res["rag_context"].strip(),
             "review_feedback": prep_res["review_feedback"].strip(),
             "product_profile": prep_res.get("product_profile") or {},
-            "action_vocabulary": prep_res["action_vocabulary"],
-            "assertion_vocabulary": prep_res["assertion_vocabulary"],
-            "capabilities": prep_res["capabilities"],
         }
 
     def post(self, shared, prep_res, exec_res):
@@ -241,10 +231,6 @@ class IntakeNode(Node):
         if renamed:
             _warn(shared, "IntakeNode: 需求清单里有重复的需求编号，已加后缀区分：" + "；".join(renamed))
         shared.update(exec_res)
-        missing_inputs = []
-        if not exec_res["rag_context"]:
-            missing_inputs.append("缺少RAG文档上下文（3GPP/运营商/历史缺陷等）")
-        shared["missing_inputs"] = missing_inputs
         _trace(shared, "IntakeNode")
         return "default"
 
@@ -947,7 +933,6 @@ class TestCaseBatchGenNode(AsyncNode):
                 "confirmed_answers": _confirmed_answers(shared),
                 "assumptions": shared["requirement_spec"].get("assumptions", []),
                 "knowledge_references": design.get("knowledge_references", ""),
-                "preferred_actions": shared.get("action_vocabulary") or DEFAULT_ACTION_VOCABULARY,
                 "feedback": shared.get("testcase_supervisor_feedback", ""),
             },
             "available": shared.get("test_environments", {}),
@@ -1167,70 +1152,3 @@ class TestCaseSupervisorNode(AsyncNode):
     async def _run_async(self, shared):
         self._shared = shared
         return await super()._run_async(shared)
-
-
-class AssembleResultNode(Node):
-    def prep(self, shared):
-        _set_current_node(shared, "AssembleResultNode")
-        return shared
-
-    def exec(self, prep_res):
-        req_spec = prep_res.get("requirement_spec", {})
-        design = prep_res.get("test_design_spec", {})
-        case_spec = prep_res.get("test_case_spec", {})
-        executable_cases = prep_res.get("executable_cases", {})
-        persona_reviews = prep_res.get("persona_reviews", {})
-        questions = req_spec.get("questions_to_ask", [])
-        assumptions = req_spec.get("assumptions", [])
-        req_lines = ["# 测试需求稿", "## 需求清单与来源"]
-        for r in req_spec.get("final_requirements", []):
-            req_lines.append(
-                f"- {r.get('req_id','')} | {r.get('title','')} | persona_sources={','.join(r.get('persona_sources', []))}"
-            )
-        if questions:
-            req_lines.append("## 待澄清问题")
-            req_lines.extend([f"- {q}" for q in questions])
-        if assumptions:
-            req_lines.append("## 当前默认假设")
-            req_lines.extend([f"- {a}" for a in assumptions])
-        return {
-            "pipeline": [
-                "Requirement Intake",
-                "Req Parse & Normalize",
-                "Tri-Persona Review",
-                "Synthesis & Decision",
-                "Test Design (TP + technique matrix)",
-                "Design Quality Gate",
-                "Test Case Description (3GPP TCD)",
-                "Test Case Quality Gate + Expert Review",
-                "Executable Case Export",
-            ],
-            "input": {
-                "requirements": [r.get("title", "") for r in req_spec.get("final_requirements", [])],
-                "rag_context_provided": bool(prep_res.get("rag_context")),
-            },
-            "missing_inputs": prep_res.get("missing_inputs", []),
-            "warnings": prep_res.get("warnings", []),
-            "artifacts_structured": {
-                "requirement_spec": req_spec,
-                "persona_reviews": persona_reviews,
-                "test_design_spec": design,
-                "test_case_spec": case_spec,
-                "executable_cases": executable_cases,
-            },
-            "artifacts": {
-                "test_requirements": "\n".join(req_lines),
-                "review_process": json.dumps(persona_reviews, ensure_ascii=False, indent=2),
-                "test_design": json.dumps(design, ensure_ascii=False, indent=2),
-                "test_cases": json.dumps(case_spec, ensure_ascii=False, indent=2),
-                "executable_cases": json.dumps(executable_cases, ensure_ascii=False, indent=2),
-            },
-            "trace": prep_res.get("trace", []),
-            "llm_usage": prep_res.get("llm_usage", {}),
-        }
-
-    def post(self, shared, prep_res, exec_res):
-        shared["final_result"] = exec_res
-        _trace(shared, "AssembleResultNode")
-        _emit(shared, "final_result", exec_res)
-        return None

@@ -126,7 +126,6 @@ _COMPAT: Dict[str, set] = {}
 _PARAM_ERROR_STATUS = (400, 404, 415, 422)
 # 这些状态重试也没用（key 错、模型名错、无权限），直接报给用户
 FATAL_STATUS = (401, 403, 404)
-RETRYABLE_STATUS = (408, 409, 425, 429, 500, 502, 503, 504, 529)
 
 
 class LLMHTTPError(RuntimeError):

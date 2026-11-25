@@ -20,13 +20,11 @@ from pydantic import BaseModel, Field, PrivateAttr
 from flow import (
     create_requirement_analysis_flow,
     create_exec_case_flow,
-    create_system_test_flow,
     create_test_case_flow,
     create_test_design_flow,
 )
-from schemas import DEFAULT_ACTION_VOCABULARY, DEFAULT_ASSERTION_VOCABULARY, DEFAULT_CAPABILITIES
 from core.events import EventLog
-from core.design_map import render_design_map_html
+from core.design_map import THEME_SYNC_SCRIPT, render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
 from core.llm import call_llm, summarize_usage
 from core.tcd import TECHNIQUE_LABELS, purpose_text
@@ -34,6 +32,7 @@ from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bug
 from utils.mcp_kb import KBSettings, normalize_mcp_url, query_kb, retrieve as kb_retrieve
 from utils.knowledge import (
     SCOPE_LABELS,
+    extract_protocol_terms,
     format_context,
     is_product_question,
     protocol_query,
@@ -59,6 +58,19 @@ class ExportTestCasesRequest(BaseModel):
     test_design_spec: Optional[Dict[str, Any]] = None
     test_case_spec: Dict[str, Any]
     executable_cases: Optional[Dict[str, Any]] = None
+
+
+class DesignDocumentPreviewRequest(BaseModel):
+    """还没归档的设计结果，按归档文档同一个模板生成预览。"""
+    requirement_input: Optional[List[str]] = None
+    requirement_spec: Optional[Dict[str, Any]] = None
+    persona_reviews: Optional[Dict[str, Any]] = None
+    requirement_review_history: Optional[Dict[str, Any]] = None
+    test_design_spec: Optional[Dict[str, Any]] = None
+    test_case_spec: Optional[Dict[str, Any]] = None
+    product_profile: Optional[Dict[str, Any]] = None
+    test_environments: Optional[Dict[str, Any]] = None
+    project_id: str = ""
 
 
 class RAGUploadBase64Request(BaseModel):
@@ -101,6 +113,7 @@ class ChatRequest(BaseModel):
     history: List[ChatTurn] = Field(default_factory=list)
     context: Optional[Dict[str, Any]] = None  # 当前会话摘要（需求、设计、用例、告警），让助手能回答“为什么这样设计”
     project_id: str = ""  # 需求准备页选了项目时传入：回答前先查该项目的知识库和项目资料
+    use_kb: bool = True  # 助手输入框的“查资料”开关；关掉时只用会话上下文和模型自身知识回答
 
 
 class RequirementImportRequest(BaseModel):
@@ -132,13 +145,12 @@ class StageGenerateRequest(BaseModel):
     test_case_spec: Optional[Dict[str, Any]] = None
     product_profile: Optional[Dict[str, Any]] = None
     test_environments: Optional[Dict[str, Any]] = None
-    capabilities: Optional[Dict[str, Any]] = None
-    action_vocabulary: Optional[List[str]] = None
-    assertion_vocabulary: Optional[List[str]] = None
     history_record_id: str = ""
     project_id: str = ""
     bug_ids: Optional[List[str]] = None
     route_overrides: Optional[Dict[str, str]] = None
+    # 前端算出的输入指纹（测试用例 / 需求 / 产品形态 / Bug 各一段），随可执行用例保存，用来判断结果是否已过期
+    input_fingerprint: Optional[Dict[str, str]] = None
     expert_review: bool = True  # 用例质量门里是否再让 LLM 以评审者身份检查一遍
     _last_shared: Any = PrivateAttr(default=None)  # 失败时用于报告出错节点
 
@@ -171,21 +183,23 @@ project_store = ProjectStore(PROJECTS_DIR)
 bugzilla_settings = BugzillaSettings(CONFIG_DIR / "bugzilla-settings.json")
 requirement_hitl_jobs: Dict[str, Dict[str, Any]] = {}
 stage_jobs: Dict[str, Dict[str, Any]] = {}
-ALLOWED_PROMPT_FILES = {
-    "req_parse.txt",
-    "review_spec_lawyer.txt",
-    "review_carrier.txt",
-    "review_ux_advocate.txt",
-    "synthesis_arbiter.txt",
-    "test_designer.txt",
-    "integrated_matrix_designer.txt",
-    "test_case_tcd.txt",
-    "test_case_reviewer.txt",
-    "exec_case_artemis.txt",
-    "exec_case_at_agent.txt",
-    "exec_case_amarisoft.txt",
-    "exec_case_protocol.txt",
+# 网页上可修改的提示词模板，按流水线顺序排列；值是“哪个环节用它”，在系统设置的模板下拉框里显示
+PROMPT_LABELS = {
+    "req_parse.txt": "需求评审 · 需求解析",
+    "review_spec_lawyer.txt": "需求评审 · 规范评审",
+    "review_carrier.txt": "需求评审 · 运营商评审",
+    "review_ux_advocate.txt": "需求评审 · 体验评审",
+    "synthesis_arbiter.txt": "需求评审 · 综合定稿",
+    "test_designer.txt": "测试设计 · 目标与测试点",
+    "integrated_matrix_designer.txt": "测试设计 · 补齐未覆盖需求",
+    "test_case_tcd.txt": "测试用例 · 编写 3GPP 用例",
+    "test_case_reviewer.txt": "测试用例 · 专家评审",
+    "exec_case_artemis.txt": "可执行用例 · Artemis（实网手机）",
+    "exec_case_at_agent.txt": "可执行用例 · AT Agent（实网模组）",
+    "exec_case_amarisoft.txt": "可执行用例 · Amarisoft 模拟基站",
+    "exec_case_protocol.txt": "可执行用例 · 协议仪表",
 }
+ALLOWED_PROMPT_FILES = set(PROMPT_LABELS)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
@@ -592,66 +606,90 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
     answered_question_table = _render_answered_question_table(requirement_review_history.get("answered_questions", []))
     knowledge_table = _render_knowledge_refs_table(record)
 
+    questions_to_ask = requirement_spec.get("questions_to_ask", []) or []
+    stats = [(len(reqs), "条需求", False), (len(objectives), "个测试目标", False), (len(integrated), "个测试点", False)]
+    if tcs:
+        stats.append((len(tcs), "条用例", False))
+    stats.append((len(questions_to_ask), "个待确认问题", bool(questions_to_ask)))
+    stats_html = "".join(
+        f"<div class=\"stat{' warn' if warn else ''}\"><b>{n}</b><span>{html.escape(label)}</span></div>" for n, label, warn in stats
+    )
+    sections = [
+        ("doc-info", "一、文档信息", _render_html_kv_table([["项目/Product", project_name], ["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])),
+        ("doc-input", "二、需求输入与产品背景",
+         "<div class=\"grid\">"
+         f"<div><h3>原始需求输入</h3>{_render_html_list(requirement_input)}</div>"
+         f"<div><h3>产品通信背景与支持特性</h3>{_render_html_list(profile_lines)}</div>"
+         f"<div><h3>测试团队可用测试环境</h3>{_render_html_list(test_environment_lines)}</div>"
+         "</div>"),
+        ("doc-reqs", "三、测试需求解读稿", req_table),
+        ("doc-review", "四、三人评审记录",
+         "".join(review_sections)
+         + f"<section><h3>用户已确认问题</h3>{answered_question_table}</section><section><h3>参考资料</h3>{knowledge_table}</section>"),
+        ("doc-objectives", "五、测试目标", objective_table),
+        ("doc-matrices", "六、覆盖矩阵", matrix_html),
+        ("doc-integrated", "七、整合覆盖矩阵", integrated_table),
+        ("doc-notes", "八、设计说明", _render_html_list(test_design_spec.get("design_notes", []))),
+        ("doc-scope", "九、范围裁剪与待跟进项",
+         "<div class=\"grid\">"
+         f"<div><h3>去范围项</h3>{_render_html_list(test_design_spec.get('de_scoped', []))}</div>"
+         f"<div><h3>待确认问题</h3>{_render_html_list(questions_to_ask)}</div>"
+         "</div>"),
+        ("doc-groups", "十、用例分组", f"<p>用例按“一级模块 / 二级模块”分组，导出的 Excel 和可执行用例里带同样的分组。</p>{group_table}"),
+    ]
+    toc_html = "".join(f"<a href=\"#{sid}\">{html.escape(heading)}</a>" for sid, heading, _ in sections)
+    body_html = "\n      ".join(f"<section class=\"card\" id=\"{sid}\"><h2>{html.escape(heading)}</h2>{content}</section>"
+                                for sid, heading, content in sections)
+    sub = " · ".join(x for x in [f"项目：{project_name}" if project_name else "", f"更新于 {updated_at}" if updated_at else ""] if x)
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{html.escape(str(title))} - 测试设计文档</title>
+    {THEME_SYNC_SCRIPT}
     <style>
-      body {{ margin: 0; padding: 32px; font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; background: #f4efe5; color: #1f2937; }}
-      .page {{ max-width: 1180px; margin: 0 auto; background: #fffdf8; border: 1px solid #e5dccd; border-radius: 18px; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08); overflow: hidden; }}
-      .hero {{ padding: 28px 32px 24px; background: linear-gradient(135deg, #f6efe3 0%, #fffaf1 58%, #eef6f7 100%); border-bottom: 1px solid #e9ddcb; }}
-      .hero h1 {{ margin: 0; font-size: 30px; }}
-      .hero p {{ margin: 8px 0 0; color: #5b6472; }}
-      .section {{ padding: 24px 32px; border-top: 1px solid #efe6d8; }}
-      .section:first-of-type {{ border-top: none; }}
-      h2 {{ margin: 0 0 14px; font-size: 20px; }}
-      h3 {{ margin: 0 0 10px; font-size: 16px; }}
-      h4 {{ margin: 0 0 8px; font-size: 14px; }}
-      table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-      th, td {{ border: 1px solid #e5dccd; padding: 9px 10px; text-align: left; vertical-align: top; }}
-      th {{ background: #f8f1e7; }}
-      ul {{ margin: 8px 0 0 18px; }}
-      p {{ line-height: 1.7; margin: 8px 0; }}
-      .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-      .matrix-card {{ border: 1px solid #e7ddcf; border-radius: 12px; padding: 14px; background: #fff; margin-bottom: 12px; }}
-      @media (max-width: 900px) {{ body {{ padding: 12px; }} .section, .hero {{ padding: 18px; }} .grid {{ grid-template-columns: 1fr; }} }}
+{report_theme_css()}
+html {{ scroll-behavior: smooth; }}
+.toc {{ position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }}
+.toc a {{ border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12.5px; color: var(--ink); text-decoration: none; white-space: nowrap; }}
+.toc a:hover {{ background: var(--accent-soft); border-color: var(--accent); }}
+.toc .grow {{ flex: 1 1 auto; }}
+.toc .btn {{ font-size: 12.5px; padding: 2px 10px; white-space: nowrap; }}
+main.doc {{ max-width: 1280px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }}
+main.doc > .card {{ overflow-x: auto; scroll-margin-top: 56px; box-shadow: var(--shadow); }}
+.card h2 {{ margin: 0 0 12px; padding-left: 10px; border-left: 4px solid var(--accent); font-size: 15px; font-weight: 650; line-height: 1.3; }}
+.card section {{ margin-top: 14px; }}
+.card h2 + section {{ margin-top: 0; }}
+h4 {{ margin: 0 0 6px; font-size: 13px; font-weight: 600; }}
+p {{ margin: 6px 0; }}
+ul {{ margin: 4px 0 0; padding-left: 18px; }}
+small {{ color: var(--muted); }}
+table {{ width: 100%; border-collapse: collapse; background: var(--panel); font-size: 13px; }}
+th, td {{ border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: top; }}
+thead th {{ background: var(--subtle); font-weight: 600; white-space: nowrap; }}
+tbody th {{ background: var(--subtle); color: var(--muted); font-weight: 600; width: 180px; }}
+td[rowspan] {{ background: var(--accent-soft); font-weight: 600; }}
+tbody tr:hover td:not([rowspan]) {{ background: var(--accent-soft); }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }}
+.grid h3 {{ color: var(--muted); font-size: 12.5px; font-weight: 600; margin: 0 0 4px; }}
+.matrix-card {{ border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--panel); margin-bottom: 10px; }}
+.matrix-card div, .matrix-card p {{ font-size: 13px; }}
+@media (max-width: 700px) {{ main.doc {{ padding: 12px; }} .toc {{ padding: 8px 12px; flex-wrap: nowrap; overflow-x: auto; }} }}
+@media print {{ .toc {{ display: none; }} body {{ background: var(--panel); }} main.doc > .card {{ box-shadow: none; }} }}
     </style>
   </head>
   <body>
-    <div class="page">
-      <section class="hero">
-        <h1>标准测试设计文档</h1>
-        <p>{html.escape(str(title))}</p>
-      </section>
-      <section class="section">
-        <h2>一、文档信息</h2>
-        {_render_html_kv_table([["项目/Product", project_name], ["记录ID", record.get("record_id", "")], ["最近更新时间", updated_at], ["当前状态", record.get("status", "")]])}
-      </section>
-      <section class="section">
-        <h2>二、需求输入与产品背景</h2>
-        <div class="grid">
-          <div><h3>原始需求输入</h3>{_render_html_list(requirement_input)}</div>
-          <div><h3>产品通信背景与支持特性</h3>{_render_html_list(profile_lines)}</div>
-          <div><h3>测试团队可用测试环境</h3>{_render_html_list(test_environment_lines)}</div>
-        </div>
-      </section>
-      <section class="section"><h2>三、测试需求解读稿</h2>{req_table}</section>
-      <section class="section"><h2>四、三人评审记录</h2>{''.join(review_sections)}<section><h3>用户已确认问题</h3>{answered_question_table}</section><section><h3>参考资料</h3>{knowledge_table}</section></section>
-      <section class="section"><h2>五、测试目标</h2>{objective_table}</section>
-      <section class="section"><h2>六、覆盖矩阵</h2>{matrix_html}</section>
-      <section class="section"><h2>七、整合覆盖矩阵</h2>{integrated_table}</section>
-      <section class="section"><h2>八、设计说明</h2>{_render_html_list(test_design_spec.get("design_notes", []))}</section>
-      <section class="section">
-        <h2>九、范围裁剪与待跟进项</h2>
-        <div class="grid">
-          <div><h3>去范围项</h3>{_render_html_list(test_design_spec.get("de_scoped", []))}</div>
-          <div><h3>待确认问题</h3>{_render_html_list(requirement_spec.get("questions_to_ask", []))}</div>
-        </div>
-      </section>
-      <section class="section"><h2>十、用例分组</h2><p>用例按“一级模块 / 二级模块”分组，导出的 Excel 和可执行用例里带同样的分组。</p>{group_table}</section>
-    </div>
+    <header class="top">
+      <h1>{html.escape(str(title))} · 标准测试设计文档</h1>
+      <div class="sub">{html.escape(sub)}</div>
+      <div class="stats">{stats_html}</div>
+    </header>
+    <nav class="toc">{toc_html}<span class="grow"></span><button class="btn" type="button" onclick="window.print()">打印 / 存为 PDF</button></nav>
+    <main class="doc">
+      {body_html}
+    </main>
   </body>
 </html>"""
 
@@ -685,6 +723,7 @@ def _upsert_design_history_record(
     *,
     record_id: str = "",
     requirement_input: Optional[List[str]] = None,
+    requirement_meta: Optional[List[Dict[str, Any]]] = None,
     requirement_spec: Optional[Dict[str, Any]] = None,
     persona_reviews: Optional[Dict[str, Any]] = None,
     requirement_review_history: Optional[Dict[str, Any]] = None,
@@ -706,6 +745,13 @@ def _upsert_design_history_record(
             record = {"record_id": record_id}
     # 已归档的记录保持原项目；新记录归到请求里的项目（未指定时为默认项目）
     record["project_id"] = project_store.resolve_id(record.get("project_id") or project_id)
+    # 导入的需求清单：编号和分组与 requirement_input 一一对应，载入历史记录时要原样恢复
+    if requirement_input:
+        meta = list(requirement_meta or [])
+        if len(meta) == len(requirement_input):
+            record["requirement_meta"] = meta
+        elif requirement_input != record.get("requirement_input"):
+            record["requirement_meta"] = []
     record["requirement_input"] = requirement_input or record.get("requirement_input", []) or []
     record["requirement_spec"] = requirement_spec or record.get("requirement_spec", {}) or {}
     record["persona_reviews"] = persona_reviews or record.get("persona_reviews", {}) or {}
@@ -886,12 +932,19 @@ def get_design_history_map(record_id: str, download: int = 0):
 
 
 @app.get("/api/design-history/{record_id}/document")
-def get_design_history_document(record_id: str):
+def get_design_history_document(record_id: str, download: int = 0):
+    """测试设计文档：和测试架构图一样按当前模板现算（旧记录也用新样式），同时刷新归档目录里的 HTML。"""
     record = _load_design_history_record(record_id)
-    html_path = _history_document_path(record_id)
-    if not html_path.exists():
-        html_path.write_text(_render_design_document_html(record), encoding="utf-8")
-    return FileResponse(html_path, media_type="text/html", filename=f"{record.get('title', record_id)}-测试设计文档.html")
+    content = _render_design_document_html(record)
+    try:
+        _history_document_path(record_id).write_text(content, encoding="utf-8")
+    except OSError:
+        pass
+    headers = {}
+    if download:
+        name = quote(f"{record.get('title', record_id)}-测试设计文档.html")
+        headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{name}"
+    return HTMLResponse(content, headers=headers)
 
 
 def _kb_sources(project_id: str) -> Dict[str, str]:
@@ -919,20 +972,6 @@ def _gather_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[
             h, e = f.result()
             hits.extend(h)
             errors.extend(e)
-    return hits, errors
-
-
-def _gather_project_knowledge(text: str, project_id: str, top_k: int = 4) -> tuple[List[Dict[str, Any]], List[str]]:
-    """只查某个项目自己的资料：项目资料（本地）+ 项目知识库（MCP）。没选项目时返回空。"""
-    pid = str(project_id or "").strip()
-    if not text.strip() or not pid or pid == DEFAULT_PROJECT_ID or not project_store.get(pid):
-        return [], []
-    hits: List[Dict[str, Any]] = [{**h, "scope": "project"} for h in project_store.rag_store(pid).retrieve(text, top_k=top_k)]
-    url = project_store.kb_mcp_url(pid)
-    errors: List[str] = []
-    if url:
-        h, errors = _query_kb("kb_project", url, text, KBSettings().read())
-        hits.extend(h)
     return hits, errors
 
 
@@ -1175,13 +1214,116 @@ def rag_delete(doc_id: str):
 
 
 CHAT_SYSTEM_PROMPT = (
-    "你是 TestFlow 的测试设计助手，精通 3GPP LTE/NR/IMS/IoT 协议（TS 24.301/24.501/36.331/38.331/36.523/38.523/38.508 等）"
-    "和蜂窝终端/模组系统测试。用户正在用 TestFlow 做需求驱动的测试设计，流程是：需求评审 → 测试设计（测试目标 + 按测试技术导出的整合矩阵）"
+    "你是 TestFlow 的测试设计助手，精通 3GPP LTE/NR/IMS/IoT/NTN 协议（TS 24.301/24.501/36.331/38.331/36.523/38.523/38.508 等）"
+    "和蜂窝终端/模组系统测试。用户正在用 TestFlow 做需求驱动的测试设计，流程是：需求准备 → 测试需求评审 → 测试设计（测试目标 + 按测试技术导出的整合矩阵）"
     "→ 3GPP 风格测试用例描述（TCD）→ Artemis / AT Agent / Amarisoft / 协议仪表可执行用例。\n"
-    "回答规则：结合下面的会话上下文回答，引用具体的需求、矩阵行、用例编号；涉及规范时给出条款号，没把握就说明不确定；"
-    "用户想调整结果时，告诉他在哪个页面、改什么（例如在评审问题里补充答案后再生成，或在系统设置的提示词里调整）。用简体中文，简洁、可执行。"
+    "你的能力边界：你只能阅读下面给出的会话上下文和资料检索结果，不能修改需求、矩阵或用例，不能替用户点击生成，"
+    "不能执行测试、连接仪表或读取其他项目的资料。用户要你“改”或“生成”时，说明在哪个页面、点哪个按钮、改什么"
+    "（例如在评审问题里补充答案后再生成，或在系统设置的提示词里调整）。\n"
+    "回答规则：结合会话上下文回答，引用具体的需求、矩阵行、用例编号；涉及规范时给出条款号，没把握就说明不确定；"
+    "资料检索结果里没有、上下文里也没有的产品行为，不要编造，直接说明需要在项目知识库或项目资料里补充。用简体中文，简洁、可执行。"
 )
 _CHAT_CONTEXT_CHARS = 14000
+
+
+def _is_real_project(project_id: str) -> bool:
+    pid = str(project_id or "").strip()
+    return bool(pid) and pid != DEFAULT_PROJECT_ID and bool(project_store.get(pid))
+
+
+def _knowledge_status(project_id: str) -> Dict[str, Any]:
+    """助手面板要展示的资料来源配置情况（不发起查询）。"""
+    kb_cfg = KBSettings().read()
+    has_project = _is_real_project(project_id)
+    project = project_store.get(project_id) if has_project else None
+    return {
+        "project": {
+            "selected": has_project,
+            "project_id": project_id if has_project else "",
+            "name": project_store.name_of(project_id) if has_project else "",
+            "kb_configured": bool(has_project and project_store.kb_mcp_url(project_id)),
+            "doc_count": len(project_store.rag_store(project_id).list_docs()) if has_project else 0,
+            "code": (project or {}).get("code", ""),
+        },
+        "public": {
+            "kb_configured": bool(kb_cfg["mcp_url"]),
+            "doc_count": len(rag_store.list_docs()),
+        },
+    }
+
+
+def _gather_chat_knowledge(message: str, project_id: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """问答助手的资料检索。返回 (片段, 各来源的查询情况)。
+
+    - 选了项目：查项目资料（本地）+ 项目知识库（MCP），用原问题检索；
+    - 问题里有协议关键词（流程、消息、定时器、条款号）：再查公共资料 + 公共知识库，用协议关键词检索；
+    - 没选项目、问题里也没有协议关键词：不查资料，只用会话上下文回答。
+    某个来源失败只记在它自己的状态里，不影响其他来源。
+    """
+    text = (message or "").strip()
+    sources: List[Dict[str, Any]] = []
+    hits: List[Dict[str, Any]] = []
+    if not text:
+        return hits, sources
+    cfg = KBSettings().read()
+    has_project = _is_real_project(project_id)
+    terms = extract_protocol_terms(text)
+    keys = _kb_sources(project_id) if has_project else {"kb_project": "", "kb_public": cfg["mcp_url"]}
+
+    def local(scope: str, store: SimpleRAGStore, query: str) -> None:
+        found = [{**h, "scope": scope} for h in store.retrieve(query, top_k=4)]
+        hits.extend(found)
+        sources.append({"scope": scope, "label": SCOPE_LABELS[scope], "status": "ok" if found else "empty", "hits": len(found)})
+
+    remote: List[tuple[str, str]] = []
+    if has_project:
+        local("project", project_store.rag_store(project_id), text)
+        if keys["kb_project"]:
+            remote.append(("kb_project", text))
+        else:
+            sources.append({"scope": "kb_project", "label": SCOPE_LABELS["kb_project"], "status": "not_configured", "hits": 0})
+    if terms:
+        query = " ".join(terms)
+        local("public", rag_store, query)
+        if keys["kb_public"]:
+            remote.append(("kb_public", query))
+        else:
+            sources.append({"scope": "kb_public", "label": SCOPE_LABELS["kb_public"], "status": "not_configured", "hits": 0})
+    if remote:
+        with ThreadPoolExecutor(max_workers=len(remote)) as pool:
+            futures = [(scope, pool.submit(_query_kb, scope, keys[scope], q, cfg)) for scope, q in remote]
+            for scope, f in futures:
+                try:
+                    found, errs = f.result()
+                except Exception as exc:  # 防御：_query_kb 本身不应抛出
+                    found, errs = [], [str(exc)]
+                hits.extend(found)
+                item: Dict[str, Any] = {"scope": scope, "label": SCOPE_LABELS[scope], "hits": len(found),
+                                        "status": "error" if errs else ("ok" if found else "empty")}
+                if errs:
+                    item["error"] = "；".join(errs)[:300]
+                    print(f"[kb] {item['error']}")
+                sources.append(item)
+    order = {s: i for i, s in enumerate(("kb_project", "project", "kb_public", "public"))}
+    sources.sort(key=lambda x: order.get(x["scope"], 9))
+    return hits, sources
+
+
+@app.get("/api/assistant/status")
+def assistant_status(project_id: str = ""):
+    """助手面板顶部和欢迎页用：大模型、当前项目和公共资料的配置情况，以及服务端正在跑的任务。"""
+    llm = LLMSettings().public()
+    running = []
+    for kind, jobs in (("requirements", requirement_hitl_jobs), ("stage", stage_jobs)):
+        for job_id, job in list(jobs.items()):
+            if job.get("status") in ("running", "starting", "queued"):
+                running.append({"job_id": job_id, "kind": kind, "stage": job.get("stage") or "requirements",
+                                "status": job.get("status"), "created_at": job.get("created_at", "")})
+    return {
+        "llm": {"enabled": bool(llm.get("enabled")), "model": llm.get("model", "")},
+        **_knowledge_status(project_id),
+        "running_jobs": running,
+    }
 
 
 @app.post("/api/chat")
@@ -1192,22 +1334,34 @@ async def chat(payload: ChatRequest):
 
     client = LLMClient()
     if not client.enabled:
-        return {"reply": "大模型未配置。请先在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。"}
+        return {"reply": "大模型未配置。请先在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。",
+                "references": [], "knowledge": {"queried": False, "sources": []}, "llm_ready": False}
 
     context_text = ""
     if payload.context:
         context_text = json.dumps(payload.context, ensure_ascii=False)
         if len(context_text) > _CHAT_CONTEXT_CHARS:
             context_text = context_text[:_CHAT_CONTEXT_CHARS] + "…（已截断）"
-    kb_text, kb_used = "", []
-    if payload.project_id:
-        hits, errors = await asyncio.to_thread(_gather_project_knowledge, message, payload.project_id)
-        for err in errors:
-            print(f"[kb] {err}")
+    has_project = _is_real_project(payload.project_id)
+    kb_text, kb_used, sources = "", [], []
+    if payload.use_kb:
+        hits, sources = await asyncio.to_thread(_gather_chat_knowledge, message, payload.project_id)
         kb_text, kb_used = format_context("", hits, max_total=6000)
     system_content = CHAT_SYSTEM_PROMPT + (f"\n\n【当前会话上下文】\n{context_text}" if context_text else "\n\n（当前还没有生成内容）")
+    if has_project:
+        status = _knowledge_status(payload.project_id)["project"]
+        system_content += (f"\n\n【当前项目】{status['name']}；项目知识库{'已配置' if status['kb_configured'] else '未配置'}，"
+                           f"项目资料 {status['doc_count']} 份。")
+    else:
+        system_content += "\n\n【当前项目】未选择项目，只能查公共资料。"
+    if not payload.use_kb:
+        system_content += "本轮用户关闭了资料检索，只依据会话上下文和你的协议知识回答。"
+    failed = [s["label"] for s in sources if s.get("status") == "error"]
+    if failed:
+        system_content += f"\n（{'、'.join(failed)}本轮查询失败，回答时提醒用户相关结论未经资料核实。）"
     if kb_text:
-        system_content += (f"\n\n【项目“{project_store.name_of(payload.project_id)}”的资料检索结果】"
+        title = f"项目“{project_store.name_of(payload.project_id)}”及公共资料" if has_project else "公共资料"
+        system_content += (f"\n\n【{title}的检索结果】"
                            "回答涉及产品行为、项目约定时优先依据这些资料，并注明引用编号（如 [K-1]）。\n" + kb_text)
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
     for turn in (payload.history or [])[-8:]:
@@ -1222,7 +1376,10 @@ async def chat(payload: ChatRequest):
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
     return {
         "reply": resp.text,
-        "references": [{"ref": h.get("ref", ""), "scope_label": h.get("scope_label", ""), "filename": h.get("filename", "")} for h in kb_used],
+        "references": [{"ref": h.get("ref", ""), "scope": h.get("scope", ""), "scope_label": h.get("scope_label", ""),
+                        "filename": h.get("filename", "")} for h in kb_used],
+        "knowledge": {"queried": bool(payload.use_kb and sources), "sources": sources},
+        "llm_ready": True,
     }
 
 
@@ -1300,10 +1457,6 @@ def _triage_open_questions(persona_reviews: Dict[str, Any], answered: Any = None
     return user_qs, auto_qs
 
 
-def _collect_open_questions(persona_reviews: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return _triage_open_questions(persona_reviews)[0]
-
-
 MAX_FINISHED_JOBS = 30
 
 
@@ -1361,9 +1514,6 @@ async def _run_requirement_hitl_job(job_id: str):
                 "rag_context": effective_rag_context,
                 "product_profile": product_profile,
                 "test_environments": test_environments,
-                "capabilities": DEFAULT_CAPABILITIES,
-                "action_vocabulary": DEFAULT_ACTION_VOCABULARY,
-                "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
                 "llm_client": LLMClient(),
                 "warnings": [],
                 "trace": [],
@@ -1430,6 +1580,7 @@ async def _run_requirement_hitl_job(job_id: str):
                                             "open_questions": round_payload["open_questions"]})
             await job["answer_event"].wait()
             job["answer_event"].clear()
+            job["status"] = "running"  # 下一轮跑完前不再接受提交，避免重复提交把旧答案带进再下一轮
             answers = {k: v for k, v in (job.get("pending_answers", {}) or {}).items() if str(v).strip()}
             # 用户没填的问题采用 AI 建议答案
             accepted = []
@@ -1507,6 +1658,7 @@ async def hitl_requirements_start(payload: RequirementHITLStartRequest):
 
     requirement_hitl_jobs[job_id] = {
         "job_id": job_id,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "status": "starting",
         "round": 0,
         "requirements": reqs,
@@ -1623,6 +1775,7 @@ async def _stage_design(payload: "StageGenerateRequest", events: EventLog) -> Di
     history_record = _upsert_design_history_record(
         record_id=payload.history_record_id or "",
         requirement_input=payload.requirement_input or [],
+        requirement_meta=payload.requirement_meta or [],
         requirement_spec=payload.requirement_spec or {},
         persona_reviews=payload.persona_reviews or {},
         requirement_review_history=payload.requirement_review_history or {},
@@ -1647,8 +1800,7 @@ async def _stage_design(payload: "StageGenerateRequest", events: EventLog) -> Di
 async def _stage_testcases(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
     if not payload.test_design_spec:
         raise HTTPException(status_code=400, detail="缺少test_design_spec")
-    shared = {**_base_shared(payload, events), "test_design_spec": payload.test_design_spec,
-              "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY}
+    shared = {**_base_shared(payload, events), "test_design_spec": payload.test_design_spec}
     try:
         await create_test_case_flow().run_async(shared)
     finally:
@@ -1656,6 +1808,7 @@ async def _stage_testcases(payload: "StageGenerateRequest", events: EventLog) ->
     history_record = _upsert_design_history_record(
         record_id=payload.history_record_id or "",
         requirement_input=payload.requirement_input or [],
+        requirement_meta=payload.requirement_meta or [],
         requirement_spec=payload.requirement_spec or {},
         persona_reviews=payload.persona_reviews or {},
         requirement_review_history=payload.requirement_review_history or {},
@@ -1687,6 +1840,8 @@ async def _stage_exec_cases(payload: "StageGenerateRequest", events: EventLog) -
     finally:
         payload._last_shared = shared  # type: ignore[attr-defined]
     executable_cases = shared.get("executable_cases", {})
+    if payload.input_fingerprint and executable_cases:
+        executable_cases["input_fingerprint"] = payload.input_fingerprint
     history = None
     if payload.history_record_id and _valid_history_record_id(payload.history_record_id):
         try:
@@ -1719,9 +1874,6 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
         "input_requirements": reqs,
         "requirement_meta": req_meta,
         "rag_context": rag_context,
-        "capabilities": DEFAULT_CAPABILITIES,
-        "action_vocabulary": payload.action_vocabulary or DEFAULT_ACTION_VOCABULARY,
-        "assertion_vocabulary": DEFAULT_ASSERTION_VOCABULARY,
         "review_feedback": "",
     }
     try:
@@ -1837,6 +1989,7 @@ async def stage_start(stage: str, payload: StageGenerateRequest):
     job_id = uuid.uuid4().hex[:12]
     stage_jobs[job_id] = {
         "job_id": job_id,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "stage": stage_name,
         "status": "running",
         "payload": payload,
@@ -1874,105 +2027,11 @@ async def stage_stream(job_id: str, request: Request):
 @app.get("/api/settings/prompts")
 def get_prompts():
     data: Dict[str, str] = {}
-    for name in sorted(ALLOWED_PROMPT_FILES):
+    for name in PROMPT_LABELS:
         p = prompt_path(name)
         if p.exists():
             data[name] = p.read_text(encoding="utf-8")
-    return {"prompts": data}
-
-
-def _flow_to_graph(flow_obj: Any) -> Dict[str, Any]:
-    start = getattr(flow_obj, "start_node", None)
-    if not start:
-        return {"nodes": [], "links": [], "mermaid": "flowchart LR\n", "start_node_id": ""}
-
-    node_id_map: Dict[int, str] = {}
-    nodes: List[Dict[str, Any]] = []
-    links: List[Dict[str, Any]] = []
-    queue: List[Any] = [start]
-    visited: set[int] = set()
-    edge_seen: set[tuple[str, str, str]] = set()
-    counter = 1
-
-    while queue:
-        node = queue.pop(0)
-        obj_id = id(node)
-        if obj_id in visited:
-            continue
-        visited.add(obj_id)
-        if obj_id not in node_id_map:
-            node_id_map[obj_id] = f"N{counter}"
-            counter += 1
-        nid = node_id_map[obj_id]
-        nodes.append({"id": nid, "label": type(node).__name__})
-        for action, nxt in (getattr(node, "successors", {}) or {}).items():
-            nxt_id = id(nxt)
-            if nxt_id not in node_id_map:
-                node_id_map[nxt_id] = f"N{counter}"
-                counter += 1
-            tid = node_id_map[nxt_id]
-            action_str = str(action or "default")
-            ekey = (nid, tid, action_str)
-            if ekey not in edge_seen:
-                edge_seen.add(ekey)
-                links.append({"source": nid, "target": tid, "action": action_str})
-            queue.append(nxt)
-
-    mermaid_lines = ["flowchart LR"]
-    for n in nodes:
-        mermaid_lines.append(f'    {n["id"]}["{n["label"]}"]')
-    for e in links:
-        mermaid_lines.append(f'    {e["source"]} -- "{e["action"]}" --> {e["target"]}')
-    start_node_id = node_id_map.get(id(start), "")
-    return {"nodes": nodes, "links": links, "mermaid": "\n".join(mermaid_lines), "start_node_id": start_node_id}
-
-
-def _prompt_role_mapping() -> List[Dict[str, Any]]:
-    role_map = [
-        {"role": "Requirement Parser", "node": "ReqParseNode", "prompt": "req_parse.txt"},
-        {"role": "Spec Lawyer", "node": "TriPersonaReviewNode", "prompt": "review_spec_lawyer.txt"},
-        {"role": "Carrier Reviewer", "node": "TriPersonaReviewNode", "prompt": "review_carrier.txt"},
-        {"role": "UX Advocate", "node": "TriPersonaReviewNode", "prompt": "review_ux_advocate.txt"},
-        {"role": "Synthesis Arbiter", "node": "SynthesisNode", "prompt": "synthesis_arbiter.txt"},
-        {"role": "Test Designer", "node": "TestDesignNode", "prompt": "test_designer.txt"},
-        {"role": "Matrix Gap Filler", "node": "TestDesignNode", "prompt": "integrated_matrix_designer.txt"},
-        {"role": "3GPP Test Case Writer", "node": "TestCaseBatchGenNode", "prompt": "test_case_tcd.txt"},
-        {"role": "Test Case Expert Reviewer", "node": "TestCaseSupervisorNode", "prompt": "test_case_reviewer.txt"},
-        {"role": "Artemis Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_artemis.txt"},
-        {"role": "AT Agent Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_at_agent.txt"},
-        {"role": "Amarisoft Case Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_amarisoft.txt"},
-        {"role": "Protocol Flow Requirement Writer", "node": "ExecutableCaseNode", "prompt": "exec_case_protocol.txt"},
-    ]
-    out: List[Dict[str, Any]] = []
-    for item in role_map:
-        p = prompt_path(item["prompt"])
-        first_line = ""
-        if p.exists():
-            for ln in p.read_text(encoding="utf-8").splitlines():
-                raw = ln.strip()
-                if raw:
-                    first_line = raw[:120]
-                    break
-        out.append(
-            {
-                **item,
-                "exists": p.exists(),
-                "first_line": first_line,
-            }
-        )
-    return out
-
-
-@app.get("/api/settings/flow-visualization")
-def get_flow_visualization():
-    flow = create_system_test_flow()
-    graph = _flow_to_graph(flow)
-    return {
-        "flow_name": "SystemTestFlow",
-        "mermaid": graph["mermaid"],
-        "graph": {"nodes": graph["nodes"], "links": graph["links"], "start_node_id": graph.get("start_node_id", "")},
-        "prompt_roles": _prompt_role_mapping(),
-    }
+    return {"prompts": data, "labels": {k: v for k, v in PROMPT_LABELS.items() if k in data}}
 
 
 @app.post("/api/settings/prompts")
@@ -1983,6 +2042,14 @@ def save_prompts(payload: PromptSettingsRequest):
         PROMPT_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
         (PROMPT_OVERRIDE_DIR / name).write_text(content, encoding="utf-8")
     return {"message": "saved", "count": len(payload.prompts)}
+
+
+@app.post("/api/export/design-document.html")
+def export_design_document_preview(payload: DesignDocumentPreviewRequest) -> HTMLResponse:
+    record = {k: v for k, v in payload.model_dump().items() if v not in (None, "")}
+    record["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    record.setdefault("status", "preview")
+    return HTMLResponse(_render_design_document_html(record))
 
 
 @app.post("/api/export/testcases.xlsx")
@@ -2047,7 +2114,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
 
     wb = Workbook()
     header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="2563EB")
+    header_fill = PatternFill("solid", fgColor="2456C9")  # 和 theme.css 的主色一致
     persona_names = {"spec": "规范评审", "carrier": "运营商评审", "ux": "体验评审"}
 
     def _cfg_text(cfg: Any) -> str:
