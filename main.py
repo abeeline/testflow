@@ -1763,6 +1763,7 @@ def _merge_usage(*usages: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 async def _stage_design(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
+    events.emit("node_running", {"node": "KnowledgeRetrieve", "label": "检索设计资料"})
     knowledge_context, knowledge_hits = await asyncio.to_thread(
         _build_design_knowledge, payload.requirement_spec or {}, payload.project_id
     )
@@ -1865,6 +1866,7 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
     if not reqs:
         raise HTTPException(status_code=400, detail="requirements不能为空")
     project_id = project_store.resolve_id(payload.project_id)
+    events.emit("node_running", {"node": "KnowledgeRetrieve", "label": "检索参考资料"})
     rag_context, rag_hits, rag_errors = await asyncio.to_thread(
         _build_effective_rag_context, reqs, payload.rag_context or "", project_id)
     shared = {
@@ -1880,6 +1882,8 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
         payload._last_shared = shared  # type: ignore[attr-defined]
     persona_reviews = shared.get("persona_reviews", {})
     user_qs, auto_qs = _triage_open_questions(persona_reviews)
+    events.emit("node_running", {"node": "KnowledgeResolve", "label": "查证评审问题",
+                                 "detail": f"{len(user_qs) + len(auto_qs)} 个问题" if (user_qs or auto_qs) else ""})
     user_qs, auto_qs = await asyncio.to_thread(_kb_resolve_questions, user_qs, auto_qs, project_id, shared["llm_client"])
     answered = _merge_answered_questions([], [
         {"source_round": 1, "req_id": q["req_id"], "question": q["question"], "answer": q["ai_answer"],
