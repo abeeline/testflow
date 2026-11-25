@@ -34,6 +34,7 @@ from utils.bugzilla import BugzillaSettings, bugs_to_requirement_text, fetch_bug
 from utils.mcp_kb import KBSettings, normalize_mcp_url, query_kb, retrieve as kb_retrieve
 from utils.knowledge import (
     SCOPE_LABELS,
+    extract_protocol_terms,
     format_context,
     is_product_question,
     protocol_query,
@@ -114,6 +115,7 @@ class ChatRequest(BaseModel):
     history: List[ChatTurn] = Field(default_factory=list)
     context: Optional[Dict[str, Any]] = None  # 当前会话摘要（需求、设计、用例、告警），让助手能回答“为什么这样设计”
     project_id: str = ""  # 需求准备页选了项目时传入：回答前先查该项目的知识库和项目资料
+    use_kb: bool = True  # 助手输入框的“查资料”开关；关掉时只用会话上下文和模型自身知识回答
 
 
 class RequirementImportRequest(BaseModel):
@@ -1221,13 +1223,116 @@ def rag_delete(doc_id: str):
 
 
 CHAT_SYSTEM_PROMPT = (
-    "你是 TestFlow 的测试设计助手，精通 3GPP LTE/NR/IMS/IoT 协议（TS 24.301/24.501/36.331/38.331/36.523/38.523/38.508 等）"
-    "和蜂窝终端/模组系统测试。用户正在用 TestFlow 做需求驱动的测试设计，流程是：需求评审 → 测试设计（测试目标 + 按测试技术导出的整合矩阵）"
+    "你是 TestFlow 的测试设计助手，精通 3GPP LTE/NR/IMS/IoT/NTN 协议（TS 24.301/24.501/36.331/38.331/36.523/38.523/38.508 等）"
+    "和蜂窝终端/模组系统测试。用户正在用 TestFlow 做需求驱动的测试设计，流程是：需求准备 → 测试需求评审 → 测试设计（测试目标 + 按测试技术导出的整合矩阵）"
     "→ 3GPP 风格测试用例描述（TCD）→ Artemis / AT Agent / Amarisoft / 协议仪表可执行用例。\n"
-    "回答规则：结合下面的会话上下文回答，引用具体的需求、矩阵行、用例编号；涉及规范时给出条款号，没把握就说明不确定；"
-    "用户想调整结果时，告诉他在哪个页面、改什么（例如在评审问题里补充答案后再生成，或在系统设置的提示词里调整）。用简体中文，简洁、可执行。"
+    "你的能力边界：你只能阅读下面给出的会话上下文和资料检索结果，不能修改需求、矩阵或用例，不能替用户点击生成，"
+    "不能执行测试、连接仪表或读取其他项目的资料。用户要你“改”或“生成”时，说明在哪个页面、点哪个按钮、改什么"
+    "（例如在评审问题里补充答案后再生成，或在系统设置的提示词里调整）。\n"
+    "回答规则：结合会话上下文回答，引用具体的需求、矩阵行、用例编号；涉及规范时给出条款号，没把握就说明不确定；"
+    "资料检索结果里没有、上下文里也没有的产品行为，不要编造，直接说明需要在项目知识库或项目资料里补充。用简体中文，简洁、可执行。"
 )
 _CHAT_CONTEXT_CHARS = 14000
+
+
+def _is_real_project(project_id: str) -> bool:
+    pid = str(project_id or "").strip()
+    return bool(pid) and pid != DEFAULT_PROJECT_ID and bool(project_store.get(pid))
+
+
+def _knowledge_status(project_id: str) -> Dict[str, Any]:
+    """助手面板要展示的资料来源配置情况（不发起查询）。"""
+    kb_cfg = KBSettings().read()
+    has_project = _is_real_project(project_id)
+    project = project_store.get(project_id) if has_project else None
+    return {
+        "project": {
+            "selected": has_project,
+            "project_id": project_id if has_project else "",
+            "name": project_store.name_of(project_id) if has_project else "",
+            "kb_configured": bool(has_project and project_store.kb_mcp_url(project_id)),
+            "doc_count": len(project_store.rag_store(project_id).list_docs()) if has_project else 0,
+            "code": (project or {}).get("code", ""),
+        },
+        "public": {
+            "kb_configured": bool(kb_cfg["mcp_url"]),
+            "doc_count": len(rag_store.list_docs()),
+        },
+    }
+
+
+def _gather_chat_knowledge(message: str, project_id: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """问答助手的资料检索。返回 (片段, 各来源的查询情况)。
+
+    - 选了项目：查项目资料（本地）+ 项目知识库（MCP），用原问题检索；
+    - 问题里有协议关键词（流程、消息、定时器、条款号）：再查公共资料 + 公共知识库，用协议关键词检索；
+    - 没选项目、问题里也没有协议关键词：不查资料，只用会话上下文回答。
+    某个来源失败只记在它自己的状态里，不影响其他来源。
+    """
+    text = (message or "").strip()
+    sources: List[Dict[str, Any]] = []
+    hits: List[Dict[str, Any]] = []
+    if not text:
+        return hits, sources
+    cfg = KBSettings().read()
+    has_project = _is_real_project(project_id)
+    terms = extract_protocol_terms(text)
+    keys = _kb_sources(project_id) if has_project else {"kb_project": "", "kb_public": cfg["mcp_url"]}
+
+    def local(scope: str, store: SimpleRAGStore, query: str) -> None:
+        found = [{**h, "scope": scope} for h in store.retrieve(query, top_k=4)]
+        hits.extend(found)
+        sources.append({"scope": scope, "label": SCOPE_LABELS[scope], "status": "ok" if found else "empty", "hits": len(found)})
+
+    remote: List[tuple[str, str]] = []
+    if has_project:
+        local("project", project_store.rag_store(project_id), text)
+        if keys["kb_project"]:
+            remote.append(("kb_project", text))
+        else:
+            sources.append({"scope": "kb_project", "label": SCOPE_LABELS["kb_project"], "status": "not_configured", "hits": 0})
+    if terms:
+        query = " ".join(terms)
+        local("public", rag_store, query)
+        if keys["kb_public"]:
+            remote.append(("kb_public", query))
+        else:
+            sources.append({"scope": "kb_public", "label": SCOPE_LABELS["kb_public"], "status": "not_configured", "hits": 0})
+    if remote:
+        with ThreadPoolExecutor(max_workers=len(remote)) as pool:
+            futures = [(scope, pool.submit(_query_kb, scope, keys[scope], q, cfg)) for scope, q in remote]
+            for scope, f in futures:
+                try:
+                    found, errs = f.result()
+                except Exception as exc:  # 防御：_query_kb 本身不应抛出
+                    found, errs = [], [str(exc)]
+                hits.extend(found)
+                item: Dict[str, Any] = {"scope": scope, "label": SCOPE_LABELS[scope], "hits": len(found),
+                                        "status": "error" if errs else ("ok" if found else "empty")}
+                if errs:
+                    item["error"] = "；".join(errs)[:300]
+                    print(f"[kb] {item['error']}")
+                sources.append(item)
+    order = {s: i for i, s in enumerate(("kb_project", "project", "kb_public", "public"))}
+    sources.sort(key=lambda x: order.get(x["scope"], 9))
+    return hits, sources
+
+
+@app.get("/api/assistant/status")
+def assistant_status(project_id: str = ""):
+    """助手面板顶部和欢迎页用：大模型、当前项目和公共资料的配置情况，以及服务端正在跑的任务。"""
+    llm = LLMSettings().public()
+    running = []
+    for kind, jobs in (("requirements", requirement_hitl_jobs), ("stage", stage_jobs)):
+        for job_id, job in list(jobs.items()):
+            if job.get("status") in ("running", "starting", "queued"):
+                running.append({"job_id": job_id, "kind": kind, "stage": job.get("stage") or "requirements",
+                                "status": job.get("status"), "created_at": job.get("created_at", "")})
+    return {
+        "llm": {"enabled": bool(llm.get("enabled")), "model": llm.get("model", "")},
+        **_knowledge_status(project_id),
+        "running_jobs": running,
+    }
 
 
 @app.post("/api/chat")
@@ -1238,22 +1343,34 @@ async def chat(payload: ChatRequest):
 
     client = LLMClient()
     if not client.enabled:
-        return {"reply": "大模型未配置。请先在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。"}
+        return {"reply": "大模型未配置。请先在“系统设置 → 大模型”中填写接口地址、API Key 和模型名称。",
+                "references": [], "knowledge": {"queried": False, "sources": []}, "llm_ready": False}
 
     context_text = ""
     if payload.context:
         context_text = json.dumps(payload.context, ensure_ascii=False)
         if len(context_text) > _CHAT_CONTEXT_CHARS:
             context_text = context_text[:_CHAT_CONTEXT_CHARS] + "…（已截断）"
-    kb_text, kb_used = "", []
-    if payload.project_id:
-        hits, errors = await asyncio.to_thread(_gather_project_knowledge, message, payload.project_id)
-        for err in errors:
-            print(f"[kb] {err}")
+    has_project = _is_real_project(payload.project_id)
+    kb_text, kb_used, sources = "", [], []
+    if payload.use_kb:
+        hits, sources = await asyncio.to_thread(_gather_chat_knowledge, message, payload.project_id)
         kb_text, kb_used = format_context("", hits, max_total=6000)
     system_content = CHAT_SYSTEM_PROMPT + (f"\n\n【当前会话上下文】\n{context_text}" if context_text else "\n\n（当前还没有生成内容）")
+    if has_project:
+        status = _knowledge_status(payload.project_id)["project"]
+        system_content += (f"\n\n【当前项目】{status['name']}；项目知识库{'已配置' if status['kb_configured'] else '未配置'}，"
+                           f"项目资料 {status['doc_count']} 份。")
+    else:
+        system_content += "\n\n【当前项目】未选择项目，只能查公共资料。"
+    if not payload.use_kb:
+        system_content += "本轮用户关闭了资料检索，只依据会话上下文和你的协议知识回答。"
+    failed = [s["label"] for s in sources if s.get("status") == "error"]
+    if failed:
+        system_content += f"\n（{'、'.join(failed)}本轮查询失败，回答时提醒用户相关结论未经资料核实。）"
     if kb_text:
-        system_content += (f"\n\n【项目“{project_store.name_of(payload.project_id)}”的资料检索结果】"
+        title = f"项目“{project_store.name_of(payload.project_id)}”及公共资料" if has_project else "公共资料"
+        system_content += (f"\n\n【{title}的检索结果】"
                            "回答涉及产品行为、项目约定时优先依据这些资料，并注明引用编号（如 [K-1]）。\n" + kb_text)
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
     for turn in (payload.history or [])[-8:]:
@@ -1268,7 +1385,10 @@ async def chat(payload: ChatRequest):
         raise HTTPException(status_code=500, detail=f"chat失败: {exc}")
     return {
         "reply": resp.text,
-        "references": [{"ref": h.get("ref", ""), "scope_label": h.get("scope_label", ""), "filename": h.get("filename", "")} for h in kb_used],
+        "references": [{"ref": h.get("ref", ""), "scope": h.get("scope", ""), "scope_label": h.get("scope_label", ""),
+                        "filename": h.get("filename", "")} for h in kb_used],
+        "knowledge": {"queried": bool(payload.use_kb and sources), "sources": sources},
+        "llm_ready": True,
     }
 
 

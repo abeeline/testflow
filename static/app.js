@@ -26,14 +26,6 @@ const ragFileEl = document.getElementById("ragFile");
 const uploadRagBtn = document.getElementById("uploadRagBtn");
 const ragDocsEl = document.getElementById("ragDocs");
 const statusEl = document.getElementById("status");
-const botFab = document.getElementById("botFab");
-const botPanel = document.getElementById("botPanel");
-const botCloseBtn = document.getElementById("botCloseBtn");
-const botRefreshBtn = document.getElementById("botRefreshBtn");
-const botInput = document.getElementById("botInput");
-const botSendBtn = document.getElementById("botSendBtn");
-const botMessages = document.getElementById("botMessages");
-const botUnreadBadge = document.getElementById("botUnreadBadge");
 
 const outReq = document.getElementById("outReq");
 const outReview = document.getElementById("outReview");
@@ -139,8 +131,6 @@ let currentProjectId = DEFAULT_PROJECT_ID;
 let editingProjectId = "";
 let promptCache = {};
 let latestStructured = null;
-let botHistory = [];
-let botUnread = 0;
 let flowVizLoaded = false;
 let designHistoryLoaded = false;
 let hitlStream = null;
@@ -228,6 +218,7 @@ const stageButtons = [runBtn, autoRunBtn, regenReqBtn, genDesignBtn, genCasesBtn
 
 function setStatus(text) {
   statusEl.textContent = text;
+  if (typeof assistantOnStatus === "function") assistantOnStatus(text);
 }
 
 function setButtonsBusy(busy) {
@@ -236,6 +227,10 @@ function setButtonsBusy(busy) {
 
 function setSingleButtonBusy(button, busy, pendingText) {
   if (!button) return;
+  // 流程按钮忙碌 = 有生成任务在跑：同步给侧栏运行状态和助手面板
+  if (stageButtons.includes(button) && typeof assistantOnTaskBusy === "function") {
+    assistantOnTaskBusy((button.dataset.defaultText || button.textContent || "").trim(), !!busy);
+  }
   if (!button.dataset.defaultText) button.dataset.defaultText = button.textContent || "";
   button.disabled = !!busy;
   button.textContent = busy ? (pendingText || "处理中...") : button.dataset.defaultText;
@@ -437,44 +432,6 @@ function formatTestEnvironmentRisk(env) {
   return `${env.availability_risk || ""}`.trim();
 }
 
-function isBotPanelOpen() {
-  return !!botPanel && !botPanel.classList.contains("hidden");
-}
-
-function updateBotUnreadUI() {
-  if (botUnreadBadge) {
-    botUnreadBadge.textContent = String(botUnread);
-    botUnreadBadge.classList.toggle("hidden", botUnread <= 0);
-  }
-  botFab?.classList.toggle("has-unread", botUnread > 0);
-}
-
-function markBotRead() {
-  botUnread = 0;
-  updateBotUnreadUI();
-}
-
-function appendBotMessage(role, text, options = {}) {
-  if (!botMessages) return;
-  let cls = "bot-msg bot-msg-assistant";
-  if (role === "user") cls = "bot-msg bot-msg-user";
-  if (role === "system") cls = "bot-msg bot-msg-system";
-  if (role === "system" && options?.actionNeeded) cls += " action-needed";
-  const div = document.createElement("div");
-  div.className = cls;
-  div.innerHTML = esc(text || "");
-  botMessages.appendChild(div);
-  botMessages.scrollTop = botMessages.scrollHeight;
-  if (!isBotPanelOpen()) {
-    botUnread += 1;
-    updateBotUnreadUI();
-  }
-}
-
-function pushSystemBotMessage(text, options = {}) {
-  appendBotMessage("system", text, options);
-}
-
 function closeHitlStream() {
   if (hitlStream) {
     hitlStream.close();
@@ -493,15 +450,20 @@ function closeStageStream() {
 
 let hitlRequestInFlight = false;
 
+const HITL_STATUS_LABELS = { starting: "启动中", running: "运行中", waiting_answers: "等待补充答案", completed: "已完成", failed: "失败" };
+function hitlStatusLabel(status) {
+  return HITL_STATUS_LABELS[status] || status || "";
+}
+
 function handleHitlStreamEvent(ev) {
   const et = ev?.type || "";
   const payload = ev?.payload || {};
   if (et === "state") {
     if (payload.status && payload.status !== "starting") {
-      pushSystemBotMessage(`HITL状态：${payload.status}（round=${payload.round || 0}）`);
+      pushSystemBotMessage(`需求评审状态：${hitlStatusLabel(payload.status)}（第 ${payload.round || 0} 轮）`);
     }
     if (payload.error) {
-      pushSystemBotMessage(`HITL后台异常：${payload.error}`, { actionNeeded: true });
+      pushSystemBotMessage(`需求评审后台异常：${payload.error}`, { actionNeeded: true });
     }
     return;
   }
@@ -514,26 +476,26 @@ function handleHitlStreamEvent(ev) {
     const r = payload.round || 0;
     const oq = (payload.open_questions || []).length;
     if (oq > 0) {
-      pushSystemBotMessage(`HITL轮次 v${r} 完成，待确认问题 ${oq} 个。`, { actionNeeded: true });
+      pushSystemBotMessage(`需求评审 v${r} 完成，待你确认的问题 ${oq} 个。`, { actionNeeded: true });
     } else {
-      pushSystemBotMessage(`HITL轮次 v${r} 完成。`);
+      pushSystemBotMessage(`需求评审 v${r} 完成。`);
     }
     return;
   }
   if (et === "waiting_answers") {
     const r = payload.round || 0;
     const n = (payload.open_questions || []).length;
-    pushSystemBotMessage(`HITL等待人工补充（v${r}，${n} 个问题）。`, { actionNeeded: true });
+    pushSystemBotMessage(`需求评审等待你补充答案（v${r}，${n} 个问题），在“测试需求评审”页填写。`, { actionNeeded: true });
     return;
   }
   if (et === "completed") {
     const r = payload.round || 0;
-    pushSystemBotMessage(`HITL流程已完成（终稿 v${r}）。`);
+    pushSystemBotMessage(`需求评审已定稿（v${r}）。`);
     closeHitlStream();
     return;
   }
   if (et === "error") {
-    pushSystemBotMessage(`HITL流程异常：${payload.error || "unknown error"}`, { actionNeeded: true });
+    pushSystemBotMessage(`需求评审异常：${payload.error || "未知错误"}`, { actionNeeded: true });
     closeHitlStream();
   }
 }
@@ -566,7 +528,7 @@ function ensureHitlStream(jobId) {
         if (st?.status === "completed") return;
       }
     } catch (_) {}
-    pushSystemBotMessage("HITL实时通道中断，请稍后重试或继续操作。", { actionNeeded: true });
+    pushSystemBotMessage("需求评审的实时进度通道中断，请稍后重试或继续操作。", { actionNeeded: true });
   };
 }
 
@@ -597,7 +559,7 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
 
   closeStageStream();
   activeStageJobId = jobId;
-  pushSystemBotMessage(`任务已提交到服务端：${stageLabel(stage)}（job=${jobId}）。`);
+  pushSystemBotMessage(`已提交任务：${stageLabel(stage)}。`);
 
   return await new Promise((resolve, reject) => {
     const es = new EventSource(`/api/stage/${encodeURIComponent(jobId)}/stream`);
@@ -614,7 +576,7 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
       const et = ev?.type || "";
       const p = ev?.payload || {};
       if (et === "state") {
-        if (p?.status && p.status !== "running") pushSystemBotMessage(`${stageLabel(stage)}任务状态：${p.status}`);
+        if (p?.status && p.status !== "running") pushSystemBotMessage(`${stageLabel(stage)}任务状态：${hitlStatusLabel(p.status)}`);
         return;
       }
       streamErrors = 0;
@@ -684,17 +646,6 @@ async function startStageJobAndWait(stage, payload, handlers = {}) {
       reject(new Error("与服务端的连接中断"));
     };
   });
-}
-
-function resetBotConversation() {
-  botHistory = [];
-  if (!botMessages) return;
-  botMessages.innerHTML = `
-    <div class="bot-msg bot-msg-assistant">你好，我是 TestFlow 助手。我能看到当前会话的需求、测试点和用例，可以问我“TC-003 为什么用协议仪表”“REQ-002 还缺哪些异常场景”或某条 3GPP 条款的含义。</div>
-    <div class="bot-note">新对话已开始</div>
-  `;
-  if (botInput) botInput.value = "";
-  markBotRead();
 }
 
 function saveLastResult(snapshot) {
@@ -1254,6 +1205,7 @@ function restoreLastResultUI(snapshot) {
 }
 
 function persistCurrentState(customStatus) {
+  if (typeof assistantOnSessionChanged === "function") assistantOnSessionChanged();
   saveLastResult({
     status: customStatus || statusEl.textContent,
     artifacts_structured: latestStructured || {},
@@ -1416,6 +1368,7 @@ function renderProjectSelect() {
   }
   if (currentProjectTag) currentProjectTag.textContent = projectLabel(currentProject());
   renderReqProjectSelect();
+  if (typeof assistantOnProjectChanged === "function") assistantOnProjectChanged();
 }
 
 // 需求准备页的项目选择：“不选择项目”即默认项目，保持原来的行为；选了项目后各阶段和问答助手都查该项目的知识库。
@@ -2173,6 +2126,8 @@ function buildChatContext() {
   if (stageState.executable_cases?.summary) ctx.executable_summary = stageState.executable_cases.summary;
   const status = (statusEl?.textContent || "").slice(0, 1500);
   if (status) ctx.latest_status = status;
+  const page = document.querySelector(".sheet-tab.active");
+  if (page) ctx.current_page = page.textContent.replace(/^\s*\S\s*/, "").trim();
   return ctx;
 }
 
@@ -2999,73 +2954,6 @@ uploadRagBtn?.addEventListener("click", async () => {
   }
 });
 
-botFab?.addEventListener("click", () => {
-  botPanel?.classList.toggle("hidden");
-  if (isBotPanelOpen()) markBotRead();
-});
-
-botCloseBtn?.addEventListener("click", () => {
-  botPanel?.classList.add("hidden");
-});
-
-botRefreshBtn?.addEventListener("click", () => {
-  resetBotConversation();
-  setStatus("聊天机器人已开启新对话。");
-  pushSystemBotMessage("已开启新对话。");
-});
-
-botSendBtn?.addEventListener("click", () => {
-  sendBotMessage().catch((e) => setStatus(`机器人发送失败: ${e.message}`));
-});
-
-botInput?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    botSendBtn?.click();
-  }
-});
-
-async function sendBotMessage() {
-  const q = (botInput?.value || "").trim();
-  if (!q) return;
-  appendBotMessage("user", q);
-  botHistory.push({ role: "user", content: q });
-  botInput.value = "";
-  setSingleButtonBusy(botSendBtn, true, "...");
-  try {
-    const resp = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: q,
-        history: botHistory.slice(0, -1),
-        context: buildChatContext(),
-        project_id: currentProjectId === DEFAULT_PROJECT_ID ? "" : currentProjectId,
-      }),
-    });
-    const text = await resp.text();
-    if (!resp.ok) {
-      let msg = text;
-      try {
-        const j = JSON.parse(text);
-        msg = j?.detail || text;
-      } catch (_) {}
-      appendBotMessage("assistant", `请求失败: ${msg}`);
-      return;
-    }
-    const data = JSON.parse(text);
-    const reply = (data.reply || "").trim() || "收到，我再想想。";
-    const refs = Array.isArray(data.references) ? data.references : [];
-    const refLine = refs.length
-      ? "\n\n参考资料：" + refs.map((r) => `[${r.ref}] ${r.scope_label} · ${r.filename}`).join("；")
-      : "";
-    appendBotMessage("assistant", reply + refLine);
-    botHistory.push({ role: "assistant", content: reply });
-  } finally {
-    setSingleButtonBusy(botSendBtn, false);
-  }
-}
-
 goExecCasesBtn?.addEventListener("click", () => {
   const { state } = execCasesFreshness();
   switchSheetById("sheet5");
@@ -3076,7 +2964,6 @@ goExecCasesBtn?.addEventListener("click", () => {
 // init
 initTheme();
 initTabs();
-resetBotConversation();
 renderTestTypeOptions();
 renderTestEnvironmentOptions();
 renderProductProfileOptions();
