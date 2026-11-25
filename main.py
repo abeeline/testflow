@@ -24,7 +24,8 @@ from flow import (
     create_test_design_flow,
 )
 from core.clarification import owner_questions
-from core import clarify_stage, spec_checkers
+from nodes import _requirement_view
+from core import clarify_stage, final_revision, spec_checkers
 from core.events import EventLog
 from core.design_map import THEME_SYNC_SCRIPT, render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
@@ -156,6 +157,9 @@ class StageGenerateRequest(BaseModel):
     expert_review: bool = True  # 用例质量门里是否再让 LLM 以评审者身份检查一遍
     # 需求没定稿时生成测试设计：前端二次确认“带待澄清继续”后才传 true
     allow_pending_clarification: bool = False
+    # 终稿评审修订（stage=revise）：评审意见（多行文本或 [{text, target}]）和评审人
+    review_comments: Optional[Any] = None
+    reviewer: str = ""
     _last_shared: Any = PrivateAttr(default=None)  # 失败时用于报告出错节点
 
 
@@ -226,6 +230,8 @@ PROMPT_LABELS = {
     "exec_case_at_agent.txt": "可执行用例 · AT Agent（实网模组）",
     "exec_case_amarisoft.txt": "可执行用例 · Amarisoft 模拟基站",
     "exec_case_protocol.txt": "可执行用例 · 协议仪表",
+    "final_review_plan.txt": "终稿评审修订 · 理解评审意见",
+    "final_review_revise.txt": "终稿评审修订 · 按意见改写用例",
 }
 ALLOWED_PROMPT_FILES = set(PROMPT_LABELS)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -313,6 +319,7 @@ def _history_summary(record: Dict[str, Any]) -> Dict[str, Any]:
         "matrix_row_count": counts["matrix_rows"],
         "testcase_count": counts["testcases"],
         "has_testcases": counts["testcases"] > 0,
+        "final_version": _final_version(record),
         "document_url": _history_document_url(record_id),
         "map_url": _history_map_url(record_id),
     }
@@ -666,6 +673,8 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
          "</div>"),
         ("doc-groups", "十、用例分组", f"<p>用例按“一级模块 / 二级模块”分组，导出的 Excel 和可执行用例里带同样的分组。</p>{group_table}"),
     ]
+    if record.get("final_revisions"):
+        sections.append(("doc-revisions", f"十一、评审修订记录（当前 v{_final_version(record)}）", _render_final_revisions_html(record)))
     toc_html = "".join(f"<a href=\"#{sid}\">{html.escape(heading)}</a>" for sid, heading, _ in sections)
     body_html = "\n      ".join(f"<section class=\"card\" id=\"{sid}\"><h2>{html.escape(heading)}</h2>{content}</section>"
                                 for sid, heading, content in sections)
@@ -721,6 +730,43 @@ tbody tr:hover td:not([rowspan]) {{ background: var(--accent-soft); }}
     </main>
   </body>
 </html>"""
+
+
+_DECISION_LABELS = final_revision.DECISIONS
+_OP_LABELS = {"update": "修改", "add": "新增", "remove": "删除"}
+
+
+def _diff_line(d: Dict[str, Any]) -> str:
+    return f"{d.get('field')}：{d.get('before') or '（无）'} → {d.get('after') or '（删除）'}"
+
+
+def _render_final_revisions_html(record: Dict[str, Any]) -> str:
+    """终稿每一版的评审意见、处理结论和采纳的修改（新版本在前）。"""
+    e = lambda v: html.escape(str(v or ""))  # noqa: E731
+    parts = []
+    for rev in reversed(record.get("final_revisions") or []):
+        rows = "".join(
+            f"<tr><td>{e(c.get('comment_id'))}</td><td>{e((('[' + c['target'] + '] ') if c.get('target') else '') + str(c.get('text') or ''))}</td>"
+            f"<td>{e(_DECISION_LABELS.get(c.get('decision'), c.get('decision')))}</td>"
+            f"<td>{e(c.get('reason') or c.get('understanding'))}</td><td>{e('、'.join(c.get('applied') or []) or '—')}</td></tr>"
+            for c in rev.get("comments") or [])
+        ch_rows = "".join(
+            f"<tr><td>{e(c.get('change_id'))}</td><td>{e(_OP_LABELS.get(c.get('op'), c.get('op')))}</td><td>{e(c.get('tc_id'))}</td>"
+            f"<td>{e(c.get('title'))}</td><td>{e('、'.join(c.get('comment_ids') or []))}</td>"
+            f"<td>{e('；'.join(_diff_line(d) for d in (c.get('diff') or [])[:6]))}"
+            f"{' …' if len(c.get('diff') or []) > 6 else ''}"
+            f"{('<br/><small>评审人确认的新增字段：' + e('、'.join(c['unbacked'])) + '</small>') if c.get('unbacked') else ''}"
+            f"{('<br/><small>IE 待澄清：' + e('；'.join(c['ie_errors'])) + '</small>') if c.get('ie_errors') else ''}</td></tr>"
+            for c in rev.get("changes") or [])
+        head = f"v{e(rev.get('version'))} · {e(rev.get('at'))}" + (f" · 评审人 {e(rev.get('reviewer'))}" if rev.get("reviewer") else "")
+        parts.append(
+            f"<section><h3>{head}</h3>{('<p>' + e(rev.get('note')) + '</p>') if rev.get('note') else ''}"
+            "<table><thead><tr><th>意见</th><th>内容</th><th>处理</th><th>理由 / 理解</th><th>采纳的修改</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+            "<table style=\"margin-top:8px\"><thead><tr><th>修改</th><th>类型</th><th>用例</th><th>标题</th><th>对应意见</th><th>改前 → 改后</th></tr></thead>"
+            f"<tbody>{ch_rows or '<tr><td colspan=6>—</td></tr>'}</tbody></table>"
+            f"{('<p><small>未采纳的修改：' + e('、'.join(rev['skipped'])) + '</small></p>') if rev.get('skipped') else ''}</section>")
+    return "".join(parts)
 
 
 def _write_design_history_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -790,6 +836,9 @@ def _upsert_design_history_record(
     record["test_environments"] = test_environments or record.get("test_environments", {}) or {}
     if test_case_spec is not None:
         record["test_case_spec"] = test_case_spec
+        # 用例稿整份重新生成：之前的终稿评审修订不再对应当前用例，归档起来，版本从 v1 重新计
+        if record.get("final_revisions"):
+            record.setdefault("superseded_revisions", []).extend(record.pop("final_revisions"))
     else:
         record.setdefault("test_case_spec", {})
     if warnings:
@@ -1995,6 +2044,134 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
     }
 
 
+# ---------- 终稿评审修订 ----------
+# 只作用于最后的生成物：用例稿生成后归档的设计历史记录。提案存在记录目录里，采纳时按编号取，
+# 前端传回来的只有采纳哪些修改，改写结果不经前端，过了闸门的内容不会被绕开。
+
+def _proposal_path(record_id: str, proposal_id: str) -> Path:
+    if not re.fullmatch(r"[0-9A-Za-z_-]{6,40}", proposal_id or ""):
+        raise HTTPException(status_code=400, detail="非法修订编号")
+    return _history_record_dir(record_id) / "revisions" / f"proposal-{proposal_id}.json"
+
+
+def _snapshot_path(record_id: str, version: int) -> Path:
+    return _history_record_dir(record_id) / "revisions" / f"v{int(version)}.json"
+
+
+def _final_version(record: Dict[str, Any]) -> int:
+    revs = record.get("final_revisions") if isinstance(record.get("final_revisions"), list) else []
+    return int(revs[-1].get("version") or 1) if revs else 1
+
+
+def _require_final_record(record_id: str) -> Dict[str, Any]:
+    if not record_id or not _valid_history_record_id(record_id):
+        raise HTTPException(status_code=400, detail="终稿评审修订需要已归档的设计记录，请先生成测试用例稿")
+    record = _load_design_history_record(record_id)
+    if not ((record.get("test_case_spec") or {}).get("testcases")):
+        raise HTTPException(status_code=409, detail="这份记录还没有测试用例稿。评审修订只针对最终生成的测试设计稿（含用例），请先生成测试用例")
+    return record
+
+
+async def _stage_revise(payload: "StageGenerateRequest", events: EventLog) -> Dict[str, Any]:
+    record = _require_final_record(payload.history_record_id)
+    comments = final_revision.parse_comments(payload.review_comments)
+    if not comments:
+        raise HTTPException(status_code=400, detail="请填写评审意见")
+    shared = {"llm_client": LLMClient(), "warnings": [], "trace": [], "events": events}
+    payload._last_shared = shared  # type: ignore[attr-defined]
+    if not shared["llm_client"].enabled:
+        raise HTTPException(status_code=400, detail="大模型未配置，请先在“系统设置 → 大模型”中配置。")
+    proposal = await final_revision.build_proposal(shared, record, comments, _requirement_view, events)
+    proposal["reviewer"] = payload.reviewer.strip()
+    proposal["version"] = _final_version(record)
+    path = _proposal_path(record["record_id"], proposal["proposal_id"] + uuid.uuid4().hex[:4])
+    proposal["proposal_id"] = path.stem.replace("proposal-", "")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_safe_json_text(proposal), encoding="utf-8")
+    return {"revision_proposal": proposal, "warnings": shared.get("warnings", []), "llm_usage": shared.get("llm_usage", {})}
+
+
+class FinalReviewAcceptRequest(BaseModel):
+    record_id: str
+    proposal_id: str
+    accepted: List[str] = Field(default_factory=list)
+    reviewer: str = ""
+    note: str = ""
+
+
+class FinalReviewRevertRequest(BaseModel):
+    record_id: str
+
+
+@app.post("/api/final-review/accept")
+def final_review_accept(payload: FinalReviewAcceptRequest):
+    """采纳选中的修改：写回终稿、生成新版本，改前的整份终稿另存快照，可撤销。"""
+    record = _require_final_record(payload.record_id)
+    path = _proposal_path(payload.record_id, payload.proposal_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="修订提案不存在或已处理，请重新生成修订")
+    proposal = json.loads(path.read_text(encoding="utf-8"))
+    if not payload.accepted:
+        raise HTTPException(status_code=400, detail="没有选中任何修改")
+    try:
+        design, cases, applied = final_revision.apply_changes(record, proposal, payload.accepted)
+    except final_revision.RevisionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if not applied:
+        raise HTTPException(status_code=400, detail="选中的修改都不能采纳（改写失败或没有变化）")
+    version = _final_version(record) + 1
+    snap = _snapshot_path(payload.record_id, version - 1)
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_text(_safe_json_text({"version": version - 1, "test_design_spec": record.get("test_design_spec") or {},
+                                     "test_case_spec": record.get("test_case_spec") or {},
+                                     "status": record.get("status")}), encoding="utf-8")
+    entry = final_revision.revision_entry(version, proposal, applied, payload.reviewer.strip() or proposal.get("reviewer", ""),
+                                          payload.note.strip(), final_revision.fingerprint(design, cases))
+    record["test_design_spec"] = design
+    record["test_case_spec"] = cases
+    record.setdefault("final_revisions", []).append(entry)
+    record["status"] = "final_revised"
+    if isinstance(record.get("executable_cases"), dict) and record["executable_cases"].get("bundles"):
+        record["executable_cases"]["stale_reason"] = f"终稿已修订到 v{version}，可执行用例需要重新生成"
+    saved = _write_design_history_record(record)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return {"test_design_spec": design, "test_case_spec": cases, "revision": entry, "version": version,
+            "design_history": _history_summary(saved)}
+
+
+@app.post("/api/final-review/revert")
+def final_review_revert(payload: FinalReviewRevertRequest):
+    """撤销最近一次采纳的修订，终稿回到上一版。"""
+    record = _require_final_record(payload.record_id)
+    revs = record.get("final_revisions") if isinstance(record.get("final_revisions"), list) else []
+    if not revs:
+        raise HTTPException(status_code=400, detail="没有可撤销的修订")
+    last = revs[-1]
+    if final_revision.fingerprint(record.get("test_design_spec"), record.get("test_case_spec")) != last.get("result_fingerprint"):
+        raise HTTPException(status_code=409, detail=f"v{last.get('version')} 之后终稿又被改过（例如重新生成了用例），不能直接撤销")
+    snap = _snapshot_path(payload.record_id, int(last.get("version") or 2) - 1)
+    if not snap.exists():
+        raise HTTPException(status_code=404, detail="上一版快照不存在，无法撤销")
+    data = json.loads(snap.read_text(encoding="utf-8"))
+    record["test_design_spec"] = data.get("test_design_spec") or {}
+    record["test_case_spec"] = data.get("test_case_spec") or {}
+    record["status"] = data.get("status") or "testcases_completed"
+    revs.pop()
+    record.setdefault("reverted_revisions", []).append({**{k: last.get(k) for k in ("version", "at", "reviewer")},
+                                                        "reverted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())})
+    saved = _write_design_history_record(record)
+    try:
+        snap.unlink()
+    except OSError:
+        pass
+    return {"test_design_spec": record["test_design_spec"], "test_case_spec": record["test_case_spec"],
+            "version": _final_version(record), "design_history": _history_summary(saved)}
+
+
+
 AUTO_STAGES = [("requirements", "测试需求评审"), ("design", "测试设计"), ("testcases", "测试用例"), ("exec_cases", "可执行用例")]
 
 
@@ -2033,7 +2210,8 @@ async def _run_stage_job(job_id: str):
     stage = job["stage"]
     payload: StageGenerateRequest = job["payload"]
     events: EventLog = job["events"]
-    runners = {"design": _stage_design, "testcases": _stage_testcases, "exec_cases": _stage_exec_cases, "auto": _stage_auto}
+    runners = {"design": _stage_design, "testcases": _stage_testcases, "exec_cases": _stage_exec_cases, "auto": _stage_auto,
+               "revise": _stage_revise}
 
     events.emit("job_started", {"job_id": job_id, "stage": stage})
     try:
@@ -2060,8 +2238,12 @@ async def _run_stage_job(job_id: str):
 @app.post("/api/stage/{stage}/start")
 async def stage_start(stage: str, payload: StageGenerateRequest):
     stage_name = (stage or "").strip().lower()
-    if stage_name not in {"design", "testcases", "exec_cases", "auto"}:
-        raise HTTPException(status_code=400, detail="stage必须是design/testcases/exec_cases/auto")
+    if stage_name not in {"design", "testcases", "exec_cases", "auto", "revise"}:
+        raise HTTPException(status_code=400, detail="stage必须是design/testcases/exec_cases/auto/revise")
+    if stage_name == "revise":
+        _require_final_record(payload.history_record_id)
+        if not final_revision.parse_comments(payload.review_comments):
+            raise HTTPException(status_code=400, detail="请填写评审意见")
     if stage_name == "auto" and not [r for r in (payload.requirement_input or []) if r and r.strip()]:
         raise HTTPException(status_code=400, detail="一键生成需要填写需求描述")
 

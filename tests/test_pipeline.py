@@ -468,7 +468,7 @@ def test_api_smoke():
     prompts = client.get("/api/settings/prompts").json()
     assert "test_case_tcd.txt" in prompts["prompts"]
     # 模板按流水线顺序给出，并标明是哪个环节用的
-    assert list(prompts["prompts"])[0] == "req_parse.txt" and list(prompts["prompts"])[-1] == "exec_case_protocol.txt"
+    assert list(prompts["prompts"])[0] == "req_parse.txt" and list(prompts["prompts"])[-1] == "final_review_revise.txt"
     assert set(prompts["labels"]) == set(prompts["prompts"]) and "专家评审" in prompts["labels"]["test_case_reviewer.txt"]
     r = client.post("/api/export/testcases.xlsx", json={"test_case_spec": {"testcases": [normalize_tcd({
         "title": "x", "procedure": [{"action": "SEND", "message": "RRCSetupRequest", "direction": "UL", "expected": "ok", "verdict": True}],

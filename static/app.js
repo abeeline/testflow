@@ -508,7 +508,7 @@ function ensureHitlStream(jobId) {
 }
 
 function stageLabel(stage) {
-  const map = { design: "测试设计", testcases: "测试用例", exec_cases: "可执行用例", auto: "一键生成", requirements: "测试需求评审" };
+  const map = { design: "测试设计", testcases: "测试用例", exec_cases: "可执行用例", auto: "一键生成", requirements: "测试需求评审", revise: "评审修订终稿" };
   return map[stage] || stage || "stage";
 }
 
@@ -539,6 +539,8 @@ const RUN_STAGE_PLANS = {
   testcases: { label: "测试用例", sheet: "sheet4", steps: [
     ["TestCaseBatchGenNode", "编写测试用例"], ["FinalizeTestCaseNode", "汇总测试用例"], ["TestCaseSupervisorNode", "用例质量门"]] },
   exec_cases: { label: "可执行用例", sheet: "sheet5", steps: [["ExecutableCaseNode", "生成可执行用例"]] },
+  revise: { label: "评审修订终稿", sheet: "sheet4", steps: [
+    ["FinalReviewPlan", "理解评审意见"], ["FinalReviewRevise", "按意见改写用例"], ["FinalReviewGate", "核对修订结果"]] },
 };
 const RUN_STATUS_TEXT = { pending: "等待", running: "进行中", done: "完成", failed: "失败" };
 
@@ -618,6 +620,10 @@ function summarizeStageResult(key, res) {
   }
   if (key === "design") return `${(res.test_design_spec?.integrated_matrix || []).length} 个测试点`;
   if (key === "testcases") return `${(res.test_case_spec?.testcases || []).length} 条用例`;
+  if (key === "revise") {
+    const p = res.revision_proposal || {};
+    return `${(p.comments || []).length} 条意见，${(p.changes || []).filter((c) => c.status !== "noop").length} 处修改待确认`;
+  }
   if (key === "exec_cases") {
     const s = res.executable_cases?.summary || {};
     return `Artemis ${s.artemis || 0} · AT ${s.at_agent || 0} · Amarisoft ${s.amarisoft || 0} · 协议 ${s.protocol || 0}`;
@@ -1172,7 +1178,8 @@ function renderCases(spec) {
       return `<details class="tc-item"><summary><span class="tc-id">${esc(tc.tc_id)}</span>${techniqueTag(tc.technique)}<span class="tc-title">${esc(tc.title)}</span>
         <span class="feature-hint">${esc(envText)} · ${nSteps} 步${nMsg ? ` / ${nMsg} 条信令` : ""} · ${esc((tc.trace?.req_ids || []).join(","))}${
           (tc.review_notes || []).length ? ` · 评审意见 ${tc.review_notes.length}` : ""}</span></summary>
-        <div class="tc-body"><p><b>通过标准：</b>${esc(passFail.join(" / "))}</p>${riskText ? `<p class="feature-hint">${esc(riskText)}</p>` : ""}${
+        <div class="tc-body"><button class="ui-btn ui-btn-ghost ui-btn-sm tc-comment-btn" type="button" data-comment-tc="${esc(tc.tc_id)}" title="把这条用例的编号带进下方“评审修订终稿”的意见框">对这条用例提意见</button>${
+          tc.status === "pending_clarification" ? `<p class="warn-text">待澄清：${esc((tc.blocked_by || []).join("；"))}</p>` : ""}<p><b>通过标准：</b>${esc(passFail.join(" / "))}</p>${riskText ? `<p class="feature-hint">${esc(riskText)}</p>` : ""}${
           tc.procedure ? renderTcdDetail(tc) : `<p class="feature-hint">旧格式用例：${esc((tc.steps || []).map((s) => s.action).join(" → "))}</p>`}</div></details>`;
   };
   // 按“一级模块 / 二级模块”分组展示；只有一个分组时不套层级，保持原来的平铺列表
@@ -1359,6 +1366,7 @@ function applyHistoryRecordToCurrentSession(record) {
   stageState.test_design_spec = record.test_design_spec || null;
   stageState.test_case_spec = record.test_case_spec || null;
   stageState.executable_cases = record.executable_cases || null;
+  if (stageState.design_history_record_id !== (record.record_id || "")) stageState.revision_proposal = null;
   stageState.design_history_record_id = record.record_id || "";
   stageState.design_history_doc_url = record.document_url || record.summary?.document_url || "";
   latestStructured = latestStructured || {};
@@ -1398,6 +1406,7 @@ function applyStageOutputs() {
   }
   renderExecutableCases(stageState.executable_cases);
   refreshDesignDocumentLink();
+  if (typeof finalReviewRender === "function") finalReviewRender();
 }
 
 function restoreLastResultUI(snapshot) {
@@ -1429,6 +1438,7 @@ function restoreLastResultUI(snapshot) {
   stageState.bug_ids = Array.isArray(snapshot.stage_state?.bug_ids) ? snapshot.stage_state.bug_ids : [];
   stageState.design_history_record_id = snapshot.stage_state?.design_history_record_id || "";
   stageState.design_history_doc_url = snapshot.stage_state?.design_history_doc_url || "";
+  stageState.revision_proposal = snapshot.stage_state?.revision_proposal || null;
   ensureHitlStream(stageState.hitl_job_id);
   applyStageOutputs();
 }
@@ -1932,6 +1942,7 @@ async function generateCases() {
     project_id: currentProjectId,
   });
   stageState.test_case_spec = data.test_case_spec;
+  stageState.revision_proposal = null;  // 用例稿整份重新生成，之前的修订稿不再对应
   stageState.design_history_record_id = data.design_history?.record_id || stageState.design_history_record_id || "";
   stageState.design_history_doc_url = data.design_history?.document_url || stageState.design_history_doc_url || "";
   latestStructured = latestStructured || {};
@@ -2596,6 +2607,13 @@ genCasesBtn.addEventListener("click", async () => {
     setSingleButtonBusy(genCasesBtn, false);
     stageButtons.filter((b) => b !== genCasesBtn).forEach((b) => b && (b.disabled = false));
   }
+});
+
+viewCases?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-comment-tc]");
+  if (!btn || typeof finalReviewAddComment !== "function") return;
+  ev.preventDefault();
+  finalReviewAddComment(btn.dataset.commentTc);
 });
 
 genExecCasesBtn.addEventListener("click", async () => {
