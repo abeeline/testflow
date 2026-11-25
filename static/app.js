@@ -1354,6 +1354,7 @@ function applyHistoryRecordToCurrentSession(record) {
   setSelectedTestTypes(record.product_profile?.test_types || record.test_design_spec?.test_types);
   stageState.requirement_spec = record.requirement_spec || null;
   stageState.persona_reviews = record.persona_reviews || null;
+  if (typeof clarifyOnSpecChanged === "function") clarifyOnSpecChanged();
   stageState.requirement_review_history = record.requirement_review_history || null;
   stageState.test_design_spec = record.test_design_spec || null;
   stageState.test_case_spec = record.test_case_spec || null;
@@ -1656,6 +1657,7 @@ function resetSession() {
   latestStructured = null;
   [outReq, outReview, outDesign, outCases].forEach((el) => el && (el.textContent = ""));
   [viewReq, viewReview, viewDesign, viewCases, openQuestionsPanel].forEach((el) => el && (el.innerHTML = ""));
+  if (typeof clarifyOnSpecChanged === "function") clarifyOnSpecChanged();
   if (requirementsEl) requirementsEl.value = "";
   if (bzIdsEl) bzIdsEl.value = "";
   renderExecutableCases(null);
@@ -1866,6 +1868,7 @@ async function generateRequirementsRound(round) {
   latestStructured.requirement_spec = data.requirement_spec;
   latestStructured.persona_reviews = data.persona_reviews;
   latestStructured.requirement_review_history = stageState.requirement_review_history;
+  if (typeof clarifyOnSpecChanged === "function") clarifyOnSpecChanged();
 
   applyStageOutputs();
   renderOpenQuestions(data.open_questions || [], data.auto_confirmed || []);
@@ -1885,9 +1888,12 @@ async function generateRequirementsRound(round) {
 
 async function generateDesign() {
   if (!stageState.requirement_spec) throw new Error("请先完成测试需求评审（至少v1）");
+  // 需求没定稿时二次确认“带待澄清继续”，否则后端拒绝生成
+  const clarifyGate = typeof clarifyBeforeDesign === "function" ? await clarifyBeforeDesign() : {};
   const productProfile = getSelectedProductProfile();
   const testEnvironments = getSelectedTestEnvironments();
   const data = await startStageJobAndWait("design", {
+    ...clarifyGate,
     requirement_input: parseRequirements(requirementsEl.value),
     requirement_spec: stageState.requirement_spec,
     persona_reviews: stageState.persona_reviews,
@@ -2288,6 +2294,7 @@ async function generateAll() {
       stageState.requirement_review_history = res.requirement_review_history;
       Object.assign(latestStructured, { requirement_spec: res.requirement_spec, persona_reviews: res.persona_reviews, requirement_review_history: res.requirement_review_history });
       renderOpenQuestions([], res.requirement_review_history?.rounds?.[0]?.auto_confirmed || []);
+    if (typeof clarifyOnSpecChanged === "function") clarifyOnSpecChanged();
     } else if (stage === "design") {
       stageState.test_design_spec = res.test_design_spec;
       stageState.design_history_record_id = res.design_history?.record_id || stageState.design_history_record_id;
@@ -2491,6 +2498,7 @@ function switchSheetById(id) {
     s.classList.toggle("active", s.id === id);
   });
   if (id === "sheet5") refreshExecCasesControls();
+  if (id === "sheetClarify" && typeof clarifyOnSheetShown === "function") clarifyOnSheetShown();
   if (id === "sheet9") {
     loadProjects()
       .then(() => renderProjectForm(editingProjectId || currentProjectId))
@@ -2557,6 +2565,8 @@ regenReqBtn.addEventListener("click", async () => {
     stageButtons.filter((b) => b !== regenReqBtn).forEach((b) => b && (b.disabled = false));
   }
 });
+
+document.getElementById("goClarifyBtn")?.addEventListener("click", () => switchSheetById("sheetClarify"));
 
 genDesignBtn.addEventListener("click", async () => {
   setSingleButtonBusy(genDesignBtn, true, "生成中...");

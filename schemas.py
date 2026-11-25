@@ -182,6 +182,8 @@ SYNTHESIS_SCHEMA = {
         "conflicts": {"type": "array", "items": {"type": "object"}},
         "questions_to_ask": {"type": "array", "items": {"type": "string"}},
         "assumptions": {"type": "array", "items": {"type": "string"}},
+        # 有多种合理读法的需求措辞：{req_id, text, readings: [...], question}，进澄清单（kind=ambiguity）
+        "ambiguities": {"type": "array", "items": {"type": "object"}},
     },
 }
 

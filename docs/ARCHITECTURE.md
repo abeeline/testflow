@@ -97,3 +97,19 @@ ExecutableCase ─ gate_exec_item ────────▶ 再核对一次 me
 ```
 
 原则：宁可停下来问，也不输出错的信令。需求稿写错的 IE，不再“保留原值、标注待确认”后放行。
+
+### 6.1 需求澄清与定稿
+
+```
+SynthesisNode ─ attach_clarifications
+   ├ build_clarifications：38.331 核对（层 1、2）+ spec_checkers 注册的核对器
+   │    （req_checks 一致性 / 歧义，用户规范表）
+   └ clarify_stage.reapply：上一轮已答的改动重新写回，复述没变的沿用理解确认
+需求澄清页（/api/clarify/*，无状态，spec 由前端保存）
+   apply  ─ verify_answer（字段存在 / 位置 / 取值可编码）→ _apply_item_to_req（一一对应才改）→ impact（下游标 stale）
+   freeze ─ 阻塞清零 + 理解全部确认 → baseline{version, confirmer, frozen_at, fingerprint}
+stage_start(design) ─ gate_status：baseline 指纹与当前一致才放行，否则 409（allow_pending_clarification 显式放行）
+```
+
+状态：`open` / `resolved_by_spec` / `resolved_by_owner` / `waived`。只有 `blocking` 且 `open` 的条目让需求进入 `pending_req_ids`。
+指纹覆盖需求内容（不含派生的 `clarification` 字段）、澄清条目的状态和结论、理解确认，任何一项变了基线就过期。

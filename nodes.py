@@ -470,7 +470,7 @@ class SynthesisNode(ThreadedNode):
             return parts[0]
         merged = dict(parts[0])
         merged["final_requirements"] = [r for p in parts for r in (p.get("final_requirements") or [])]
-        for key in ("conflicts", "questions_to_ask", "assumptions"):
+        for key in ("conflicts", "questions_to_ask", "assumptions", "ambiguities"):
             merged[key] = _merge_unique([p.get(key) for p in parts])
         return merged
 
@@ -504,7 +504,8 @@ def attach_clarifications(shared: Dict[str, Any], spec: Dict[str, Any], reviews:
     previous = ((shared.get("requirement_spec") or {}).get("clarifications") or {}).get("items")
     clar = build_clarifications(reqs, raw_requirements=shared.get("input_requirements") or [],
                                 persona_reviews=reviews, conflicts=spec.get("conflicts"),
-                                answered=shared.get("answered_questions") or [], previous=previous)
+                                answered=shared.get("answered_questions") or [], previous=previous,
+                                ambiguities=spec.get("ambiguities"))
     by_id = {it["id"]: it for it in clar["items"]}
     for req in reqs:
         info = req.get("clarification") or {}
@@ -517,6 +518,11 @@ def attach_clarifications(shared: Dict[str, Any], spec: Dict[str, Any], reviews:
         if isinstance(c, dict) and any(x in str(c.get("default_assumption") or "") for x in _KEEP_REQ_VALUE):
             c["default_assumption"] = "按需求澄清单处理：规范能确定的按 TS 38.331 ASN.1 写，定不了的待需求方回答，不沿用需求稿取值"
     spec["clarifications"] = clar
+    # 上一轮在需求澄清页回答过的：改动再写回一遍，没变的需求沿用理解确认
+    from core import clarify_stage
+
+    clarify_stage.reapply(spec, shared.get("requirement_spec"))
+    clar = spec["clarifications"]
     if clar["items"]:
         _warn(shared, clar["summary"])
     if clar["pending_req_ids"]:

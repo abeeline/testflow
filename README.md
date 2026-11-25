@@ -46,6 +46,34 @@ TestFlow 不是通用 Demo，而是一个可落地的测试生产系统，流程
   改过的 IE 记 `fixed_from`；其余错误不猜，IE 标 `asn1.status = error`，用例转待澄清。Excel“消息内容”页有“ASN.1 核对”和“核对说明”两列
 - 提示词同步收紧：路径必须从消息根写全，不准用“…”，不准编字段；规范冲突时不再默认沿用需求稿取值；专家评审把 IE 与规范不符计为严重问题
 
+### 1.6) 需求澄清与定稿（测试设计之前的一步）
+
+页面“3 需求澄清与定稿”，在测试需求评审和测试设计之间。目标是进入设计的需求每一步都清楚、可核对：
+
+| 层 | 查什么 | 代码 |
+|---|---|---|
+| 1 规范：字段 | 字段在 TS 38.331 ASN.1 里是否存在、版本后缀、枚举值当字段 | `core/clarification.py` |
+| 2 规范：位置 / 取值 | 写的消息、父结构对不对，取值能不能编码（RSRP dBm 自动换算索引） | 同上 |
+| 3 一致性 | R17 需求引用 -r18 字段；正文取值和显式配置矛盾（阻塞）；同一 SR 下同一参数取值不同；重复需求 | `core/req_checks.py` |
+| 4 歧义 | 判据里“明显、及时、左右”等不可判定措辞（阻塞）；综合评审给出的多种读法（`ambiguities`，阻塞） | 同上 |
+| 5 理解确认 | 每条需求按“前提 / 触发 / 期望 / 配置 / 判据”复述，需求方逐条确认 | `restatement_cards` |
+
+- 回填：页面逐条填写，或“导出 Excel”给需求方离线填写后“导入回填”，按 CLR 编号对回。处理方式：回答 / 采纳建议 / 豁免 / 重开
+- 回答再核对：回答里提到的字段不存在 → 退回；写的位置不对 → 接受但按 ASN.1 位置改正并写明；给的取值不能编码 → 退回；
+  行为类回答（38.321 行为、位语义）规范核对不了，标“未核对”按需求方意见执行。AI 给的答案不算澄清
+- 写回需求：只做一一对应的改动（唯一的“改为 X”、明确“删除 X”、取值改成规范编码、规范已定的版本后缀），
+  显式配置记 `fixed_from` / `value_from`，需求原文 `source_text` 不改；改前改后在页面上列出。需求被改过的，理解确认要重新做
+- 定稿：阻塞问题清零且每条需求理解已确认，填写确认人后生成基线（`requirement_spec.baseline`：版本号、确认人、时间、指纹）。
+  也可以二次确认后“带待澄清定稿”，这些需求的设计和用例照旧标待澄清。定稿后需求又改了，指纹对不上，基线过期
+- 设计闸门：`POST /api/stage/design/start` 只接受已定稿且未过期的需求，否则返回 409；前端会二次确认“带待澄清继续”
+  （传 `allow_pending_clarification: true`）。一键生成全部不受影响，照旧带着待澄清往下走
+- 影响分析：澄清改动 → 受影响的需求、设计行、用例、可执行用例，下游条目加 `stale` 标记并给出重做建议。
+  目前是整阶段重新生成，没有做只重跑受影响部分
+- 再跑一轮需求评审：已答条目沿用，改动重新写回；复述没变的需求沿用理解确认
+- 规范核对插件 `core/spec_checkers.py`：38.331 内置；TS 24.501（NAS）、TS 38.321（MAC）等不带数据、不让模型凭记忆核对，
+  由用户把取值表整理成 JSON / CSV（`spec, name, values` 或 `min/max`）放到 `config/spec_tables/` 或在页面上传，按表核对需求写明的取值；
+  没加载的规范页面上写明“未核对”
+
 ### 2) 测试设计与用例（3GPP 对齐）
 
 - 需求到设计的可追踪映射（REQ → Objective → 测试点 ROW → TC → 可执行 case）
@@ -257,6 +285,12 @@ GET  /api/design-history?project_id=         历史测试设计列表（可按�
 GET  /api/design-history/{record_id}         历史测试设计详情
 GET  /api/design-history/{record_id}/document 固定 URL 测试设计文档
 POST /api/requirements/import                导入需求清单（xlsx / csv），返回需求文本和对应的编号、分组
-POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases / auto）
+POST /api/stage/{stage}/start                启动阶段任务（design / testcases / exec_cases / auto）；design 要求需求已定稿
+POST /api/clarify/view                       需求澄清页数据：澄清单、定稿状态、理解确认卡片、规范核对范围
+POST /api/clarify/apply                      回填回答 / 采纳 / 豁免 / 重开、理解确认 → 核对回答 → 写回需求 → 影响分析
+POST /api/clarify/freeze                     定稿（confirmer，allow_pending 时带待澄清定稿）
+POST /api/clarify/export.xlsx                导出澄清单给需求方填写
+POST /api/clarify/import                     读回填的澄清单，返回按 CLR 编号的回答
+POST /api/clarify/spec-table                 上传规范取值表（JSON / CSV）
 POST /api/export/testcases.xlsx              导出 Excel
 ```
