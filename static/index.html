@@ -306,6 +306,25 @@
             <div id="viewCases" class="visual"></div>
             <details class="raw-json"><summary>原始 JSON</summary><pre id="outCases" class="ui-pre"></pre></details>
           </div>
+          <div class="card ui-card" id="finalReviewCard" hidden>
+            <div class="card-head">
+              <h3>评审修订终稿 <span class="tag" id="finalVersionTag">v1</span></h3>
+              <span class="feature-hint">只改最终测试设计稿（测试点 + 用例），不回头改需求；改完照样过 IE 闸门，逐条看改前 / 改后再采纳</span>
+            </div>
+            <div class="final-review-form">
+              <textarea id="finalReviewInput" class="ui-input" rows="5" placeholder="每行一条评审意见。行首写 [TC-003] 或 ROW-002：指定用例 / 测试点，不写由 AI 判断落到哪些用例。例如：
+[TC-003] 缺少 T3346 超时后 UE 重新发起注册的判定步骤
+REQ-002 只测了正常流程，补一条 discardTimerExt2 取最大值的边界用例
+TC-005 和 TC-006 重复，删掉 TC-006"></textarea>
+              <div class="btn-row final-review-actions">
+                <input id="finalReviewer" class="ui-input final-reviewer" type="text" placeholder="评审人（写进修订记录）" />
+                <span class="grow"></span>
+                <button id="finalReviewBtn" class="ui-btn" type="button">按意见生成修订稿</button>
+              </div>
+            </div>
+            <div id="finalReviewResult" class="visual"></div>
+            <div id="finalReviewHistory" class="final-review-history"></div>
+          </div>
           <div class="action-bar">
             <span class="action-hint">下一步：按测试环境把用例转成 Artemis / AT Agent / Amarisoft / 协议测试平台可执行的 case</span>
             <button id="goExecCasesBtn" class="ui-btn">生成可执行用例 →</button>
@@ -609,5 +628,6 @@
     <script src="/static/app.js"></script>
     <script src="/static/assistant.js"></script>
     <script src="/static/clarify.js"></script>
+    <script src="/static/final_review.js"></script>
   </body>
 </html>
