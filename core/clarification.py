@@ -199,6 +199,14 @@ def _check_value(b: _Builder, req_id: str, cfg: Dict[str, Any]) -> Optional[Dict
     issues = [i for i in A.check_value(node, cfg.get("value")) if i["severity"] == A.ERROR]
     if not issues:
         return None
+    dbm = re.findall(r"(?<![\d.])(-\d{2,3}(?:\.\d+)?)\s*dBm", str(cfg.get("value") or ""), re.I)
+    if A.type_name(node) == "RSRP-Range" and len(set(dbm)) == 1 and 0 <= round(float(dbm[0])) + 156 <= 126:
+        # 门限写成 dBm：38.331 RSRP-Range 规定门限实际值 = (IE 值 − 156) dBm，能按规范换算，不用等需求方
+        idx = round(float(dbm[0])) + 156
+        return b.add(req_id, "value_type", f"{name} = {cfg.get('value')} 是物理量，规范里是 RSRP-Range 索引；按 38.331 换算为 {idx}",
+                     blocking=False, status="resolved_by_spec", suggestion=f"{name} = {idx}（{dbm[0]} dBm）",
+                     evidence=f"{A.spec_short()}：RSRP-Range 门限实际值 = (IE 值 − 156) dBm；{paths[0]['message']}.{paths[0]['path']}",
+                     source_text=str(cfg.get("source_text") or ""), field=name)
     return b.add(req_id, "value_type",
                  f"{name} = {cfg.get('value')} 与规范类型不符：{issues[0]['message']}；请给出规范编码下的取值",
                  blocking=True, evidence=f"{A.spec_short()}：{paths[0]['message']}.{paths[0]['path']}（{paths[0]['type']}）",

@@ -166,15 +166,19 @@ def test_clarification_blocks_invented_field_and_wrong_unit():
         by.setdefault((it["req_id"], it["kind"]), []).append(it)
     unknown = by[("AR-92429", "unknown_field")][0]
     assert unknown["blocking"] and unknown["status"] == "open" and unknown["field"] == "ra-ContentionResolutionTimerExt-r18"
+    # RSRP-Range 门限写成 dBm：38.331 规定门限实际值 = (IE 值 − 156) dBm，规范能定，换算成索引 41，不阻塞
     value = by[("AR-106999", "value_type")][0]
-    assert value["blocking"] and "dBm" in value["question"]
+    assert not value["blocking"] and value["status"] == "resolved_by_spec" and "41" in value["suggestion"]
     assert by[("AR-106999", "wrong_message")][0]["status"] == "resolved_by_spec"  # 位置规范能定：在 SIB19
     assert by[("AR-99182", "wrong_location")][0]["status"] == "resolved_by_spec"
-    assert set(clar["pending_req_ids"]) == {"AR-92429", "AR-106999"}
+    assert set(clar["pending_req_ids"]) == {"AR-92429"}
     assert reqs[0]["clarification"]["status"] == "pending" and reqs[2]["clarification"]["status"] == "clear"
-    # 需求写明的 -115 dBm 被挂起：后面的“需求配置不丢”机制不能再把它原样补进用例
-    assert reqs[1]["explicit_configs"][0].get("clarification")
-    qs = owner_questions({"clarifications": clar})
+    # 换不了的类型错误（列表写成位图）仍然阻塞，且不会被“需求配置不丢”机制原样补进用例
+    bad = [{"req_id": "AR-1", "title": "x", "explicit_configs": [
+        {"name": "numberOfMsg4HARQ-ACK-Repetitions-r18", "value": "{n2, n4, n8}", "target": "message", "source_text": ""}]}]
+    clar2 = build_clarifications(bad)
+    assert clar2["pending_req_ids"] == ["AR-1"] and bad[0]["explicit_configs"][0].get("clarification")
+    qs = owner_questions({"clarifications": clar2})
     assert qs and all(q["blocking"] and q["priority"] == "P0" for q in qs)
 
 
@@ -225,3 +229,36 @@ def test_prompt_examples_are_valid_asn1():
     for p in paths:
         assert "..." not in p and "…" not in p
         assert A.validate_ie(RRC, p, None)["status"] == "ok", p
+
+
+def test_rsrp_dbm_threshold_converted_and_setup_added():
+    msgs = [{"msg_id": "M1", "message": "SIB19", "direction": "DL", "ies": [
+        {"path": "ntn-CovEnh-r18.rsrp-ThresholdMsg4HARQ-ACK-r18", "value": "对应 -115 dBm 的 RSRP-Range 取值"},
+        {"path": "t-Service-r17", "value": "T0 + 30s"}]},
+        {"msg_id": "M2", "message": "SIB1", "direction": "DL", "ies": [
+            {"path": "sdt-ConfigCommon-r17.sdt-RSRP-Threshold-r17", "value": "-100 dBm"},
+            {"path": "servingCellConfigCommon.uplinkConfigCommon.initialUplinkBWP.rach-ConfigCommon.ra-ContentionResolutionTimer",
+             "value": "sf64"}]}]
+    ie_gate.check_messages(msgs)
+    a, b = msgs[0]["ies"]
+    assert a["value"] == 41 and a["asn1"]["status"] == "fixed" and a["value_from"]
+    assert b["asn1"]["status"] == "warning"  # 表达式不是具体整数
+    c, d = msgs[1]["ies"]
+    assert c["value"] == 56 and c["path"].startswith("nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.")
+    assert ".rach-ConfigCommon.setup.ra-ContentionResolutionTimer" in d["path"] and d["asn1"]["status"] == "fixed"
+
+
+def test_bad_value_still_gets_path_fixed():
+    msgs = [{"msg_id": "M1", "message": "SIB1", "direction": "DL", "ies": [
+        {"path": "sdt-ConfigCommon-r17.sdt-RSRP-Threshold-r17", "value": 200}]}]
+    ie_gate.check_messages(msgs)
+    ie = msgs[0]["ies"][0]
+    assert ie["asn1"]["status"] == "error" and ie["path"].startswith("nonCriticalExtension.") and ie["fixed_from"]
+
+
+def test_unreferenced_message_is_reported():
+    item = {"procedure": [{"step": 1, "msg_ref": "M1"}], "signaling_flow": [],
+            "parameter_variations": [{"name": "x", "variants": [{"id": "v2", "msg_ref": "M3"}]}],
+            "message_configs": [{"msg_id": "M1", "message": "SIB1"}, {"msg_id": "M2", "message": "SIB19"},
+                                {"msg_id": "M3", "message": "SERVICE REJECT"}]}
+    assert ie_gate.unreferenced_messages(item, "message_configs") == ["M2 SIB19"]

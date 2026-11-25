@@ -207,6 +207,12 @@ def gate_exec_item(route: str, item: Dict[str, Any], tc: Dict[str, Any], pending
     if route not in ("amarisoft", "protocol"):
         return rep  # 实网用例不带消息 IE；Artemis / AT Agent 导入格式不允许多余字段
     rep = ie_gate.gate_item(item, "message_configs", autofix=True)
+    for o in ie_gate.unreferenced_messages(item, "message_configs"):
+        text = f"消息配置 {o} 没有被任何步骤引用，仪表不会下发：请在 procedure 里加发送步骤（msg_ref）或删除"
+        rep["warnings"].append(f"{item.get('case_id', '')} {text}")
+        ops = item.setdefault("open_points", [])
+        if text not in ops:
+            ops.append(text)
     reasons = []
     if tc.get("status") == ie_gate.PENDING:
         reasons.extend(x for x in tc.get("blocked_by") or [] if x not in (item.get("blocked_by") or []))

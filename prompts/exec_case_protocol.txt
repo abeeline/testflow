@@ -50,6 +50,8 @@
       nonCriticalExtension（→RRCReconfiguration-v1530-IEs）下，otherConfig-v1700 在 nonCriticalExtension×5（→RRCReconfiguration-v1700-IEs）下；
       SIB1 的 R17 扩展在 nonCriticalExtension×3（→SIB1-v1700-IEs）下；RLC 的 R17 扩展在 RLC-BearerConfig.rlc-Config-v1700 下。
     - 禁止用“…”“...”省略中间层，禁止把“A / B”、说明文字或 <占位符> 当路径。
+    - 取值必须能直接编码：枚举写枚举值，整数写整数（不写“T0 + 30s”“由模拟器给出”这类表达式），RSRP-Range 门限写索引（= dBm + 156），BIT STRING 写 '0101'B；字段不下发就不要列这条 IE，不写“不携带 / 不配置”。实在定不了的照实写并在 open_points 说明。
+    - 每条消息内容都必须被某个步骤的 msg_ref 引用（扫描项换用的消息写进 parameter_variations[].variants[].msg_ref），没人引用的消息仪表不会下发。
     - 不能编造字段：规范里没有的字段（哪怕需求原文这么写）不能出现在 path 里；requirements[].asn1_ie_paths 给出了需求涉及字段在 ASN.1 里的完整路径和类型，照抄。
     - 取值用 ASN.1 的编码：枚举写规范枚举值（sibType19 而不是 sibType19-v1700）；INTEGER 索引（如 RSRP-Range 0..127）写索引不写 dBm；
       BIT STRING 写位串（如 '0101'B）；SetupRelease 写 setup / release。

@@ -141,6 +141,10 @@ def check_testcase(tc: Dict[str, Any]) -> List[str]:
     bad = [p.get("msg_ref") for p in proc if p.get("msg_ref") and p["msg_ref"] not in ids]
     if bad:
         issues.append(f"步骤引用了不存在的消息内容 {', '.join(bad[:3])}")
+    orphan = ie_gate.unreferenced_messages(tc, "message_contents")
+    if orphan:
+        issues.append(f"消息内容 {', '.join(orphan[:4])} 没有被任何步骤的 msg_ref 引用，仪表不会下发；"
+                      "要么在 procedure 里加发送这条消息的步骤，要么删掉这条消息内容（扫描项用到的写进 parameter_variations[].variants[].msg_ref）")
     env = str((tc.get("test_environment") or {}).get("primary") or "")
     if env in PROTOCOL_ENVS:
         if not (tc.get("configuration") or {}).get("cells"):

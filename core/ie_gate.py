@@ -29,6 +29,23 @@ def _renames_safe(renamed: List[str]) -> bool:
     return True
 
 
+_VALUE_CODES = {"BAD_ENUM", "UNIT_MISMATCH", "OUT_OF_RANGE", "BAD_BITSTRING", "BAD_BOOL"}
+_DBM = re.compile(r"(?<![\d.])(-\d{2,3}(?:\.\d+)?)\s*dBm", re.I)
+
+
+def _rsrp_index(message: str, path: str, value: Any) -> Any:
+    """RSRP-Range 门限写成 dBm 时换成索引。38.331 RSRP-Range：门限的实际值 = (IE 值 − 156) dBm（127 表示无穷大）。
+    只在取值里恰好有一个 dBm 数值时换算，换不了返回 None。"""
+    nums = _DBM.findall(str(value or ""))
+    if len(set(nums)) != 1:
+        return None
+    node = A.node_at(message, path)
+    if not node or A.type_name(node) != "RSRP-Range":
+        return None
+    idx = round(float(nums[0])) + 156
+    return idx if 0 <= idx <= 126 else None
+
+
 def check_ie(message: str, ie: Dict[str, Any], autofix: bool = True) -> Dict[str, Any]:
     """核对一条 IE，必要时就地改路径。返回写进 ie["asn1"] 的结论。"""
     path = str(ie.get("path") or "")
@@ -37,7 +54,30 @@ def check_ie(message: str, ie: Dict[str, Any], autofix: bool = True) -> Dict[str
     codes = {i["code"] for i in res["issues"]}
     if "UNKNOWN_MESSAGE" in codes or "NO_TREE" in codes:
         return {"status": "unchecked"}
+    if "UNIT_MISMATCH" in codes:
+        idx = _rsrp_index(message, res.get("canonical") or path, value)
+        if idx is None and res["suggestions"]:
+            idx = _rsrp_index(message, res["suggestions"][0]["path"], value)
+        if idx is not None:
+            ie.setdefault("value_from", value)
+            ie["value"] = idx
+            value = idx
+            res = A.validate_ie(message, path, value)
+            codes = {i["code"] for i in res["issues"]}
+    if res["status"] == A.WARNING and "IMPLICIT_SETUP" in codes and res.get("canonical") and res["canonical"] != path:
+        # SetupRelease 漏写 setup：路径唯一，直接补上
+        ie.setdefault("fixed_from", path)
+        ie["path"] = res["canonical"]
+        res = A.validate_ie(message, ie["path"], value)
+        codes = {i["code"] for i in res["issues"]}
+        if res["status"] != A.ERROR:
+            out_s: Dict[str, Any] = {"status": "fixed", "note": "SetupRelease 补上 setup"}
+            if res["issues"]:
+                out_s["issues"] = _short(res["issues"])
+            return _with_value_note(out_s, ie)
     if res["status"] != A.ERROR:
+        if ie.get("value_from") is not None and ie.get("value") != ie.get("value_from"):
+            return _with_value_note({"status": "fixed", **({"issues": _short(res["issues"])} if res["issues"] else {})}, ie)
         out: Dict[str, Any] = {"status": res["status"]}
         if res["status"] == A.WARNING:
             out["issues"] = _short(res["issues"])
@@ -47,18 +87,58 @@ def check_ie(message: str, ie: Dict[str, Any], autofix: bool = True) -> Dict[str
     if autofix and sugg and sugg.get("unique") and not sugg.get("heuristic") and codes <= fixable_codes \
             and _renames_safe(sugg.get("renamed")):
         again = A.validate_ie(message, sugg["path"], value)
+        again_codes = {i["code"] for i in again["issues"] if i["severity"] == A.ERROR}
+        if again["status"] == A.ERROR and again_codes <= _VALUE_CODES:
+            idx = _rsrp_index(message, sugg["path"], value)
+            if idx is not None:
+                ie.setdefault("value_from", value)
+                ie["value"] = value = idx
+                again = A.validate_ie(message, sugg["path"], value)
+        if again["status"] == A.ERROR and {i["code"] for i in again["issues"] if i["severity"] == A.ERROR} <= _VALUE_CODES:
+            # 路径能唯一确定就先改对路径，取值的问题照样报错、待澄清
+            ie.setdefault("fixed_from", path)
+            ie["path"] = sugg["path"]
+            return {"status": A.ERROR, "issues": _short(again["issues"], 3),
+                    "note": f"路径已按 {A.spec_version() or 'TS 38.331 ASN.1'} 改正：{sugg['display']}；取值仍需确认"}
         if again["status"] != A.ERROR:
             ie.setdefault("fixed_from", path)  # 保留最初的路径（前面可能已按评审清单改过一次）
             ie["path"] = sugg["path"]
             note = f"按 {A.spec_version() or 'TS 38.331 ASN.1'} 改正路径：{sugg['display']}"
             if sugg.get("renamed"):
                 note += f"（字段改名 {'；'.join(sugg['renamed'])}）"
-            return {"status": "fixed", "note": note, **({"issues": _short(again["issues"])} if again["issues"] else {})}
+            return _with_value_note({"status": "fixed", "note": note, **({"issues": _short(again["issues"])} if again["issues"] else {})}, ie)
     out = {"status": A.ERROR, "issues": _short(res["issues"], 3)}
     if res["suggestions"]:
         out["suggestions"] = [s["display"] for s in res["suggestions"][:3]]
     if res.get("elsewhere"):
         out["elsewhere"] = [f"{e['message']}.{e['path']}" for e in res["elsewhere"][:2]]
+    return out
+
+
+def _with_value_note(out: Dict[str, Any], ie: Dict[str, Any]) -> Dict[str, Any]:
+    if ie.get("value_from") is not None and ie.get("value") != ie.get("value_from"):
+        extra = f"取值 {ie['value_from']} 按 RSRP-Range 换算为索引 {ie['value']}（门限实际值 = 索引 − 156 dBm）"
+        out["note"] = f"{out['note']}；{extra}" if out.get("note") else extra
+    return out
+
+
+def unreferenced_messages(item: Dict[str, Any], messages_key: str) -> List[str]:
+    """消息内容 / 消息配置里没有被任何步骤引用的消息（仪表不会下发）。"""
+    refs = set()
+    for p in item.get("procedure") or []:
+        if isinstance(p, dict) and p.get("msg_ref"):
+            refs.add(str(p["msg_ref"]))
+    for s in item.get("signaling_flow") or []:
+        if isinstance(s, dict) and s.get("config_ref"):
+            refs.add(str(s["config_ref"]))
+    for pv in item.get("parameter_variations") or []:
+        for v in (pv.get("variants") or []) if isinstance(pv, dict) else []:
+            if isinstance(v, dict) and v.get("msg_ref"):
+                refs.add(str(v["msg_ref"]))
+    out = []
+    for m in item.get(messages_key) or []:
+        if isinstance(m, dict) and m.get("msg_id") and str(m["msg_id"]) not in refs:
+            out.append(f"{m['msg_id']} {m.get('message') or m.get('template') or ''}".strip())
     return out
 
 
@@ -80,7 +160,10 @@ def check_messages(messages: List[Dict[str, Any]], autofix: bool = True) -> Dict
             verdict = check_ie(message, ie, autofix=autofix)
             ie["asn1"] = verdict
             if verdict["status"] == "fixed":
-                fixed.append(f"{label}: {ie.get('fixed_from')} → {ie['path']}")
+                if ie.get("fixed_from"):
+                    fixed.append(f"{label}: {ie.get('fixed_from')} → {ie['path']}")
+                if ie.get("value_from") is not None and ie.get("value") != ie.get("value_from"):
+                    fixed.append(f"{label} IE {ie['path']}: 取值 {ie['value_from']} → {ie['value']}（RSRP-Range 索引）")
             elif verdict["status"] == A.ERROR:
                 hint = ""
                 if verdict.get("suggestions"):

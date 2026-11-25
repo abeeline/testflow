@@ -594,6 +594,10 @@ def check_value(node: Optional[Dict[str, Any]], value: Any) -> List[Dict[str, st
         out_of = [x for x in nums if (rng[0] is not None and x < rng[0]) or (rng[1] is not None and x > rng[1])]
         if out_of:
             return [_issue(ERROR, "OUT_OF_RANGE", f"{', '.join(map(str, out_of))} 超出 {label}")]
+        # “T0 + 30s”“当前 UTC + 600s”这类表达式里也有数字，但不是能直接编码的整数；括号里的说明不算
+        core = re.sub(r"[（(][^（）()]*[）)]", "", v).strip()
+        if not re.fullmatch(r"[-+]?\d+(\s*[,，、/]\s*[-+]?\d+)*", core):
+            return [_issue(WARNING, "VALUE_NOT_CONCRETE", f"{label}：取值是表达式或说明（{v[:30]}），执行前要换成具体整数")]
         return []
     if t == "BIT_STR":
         sz = n.get("sz")
@@ -763,6 +767,25 @@ def field_hints(names: List[str], messages: List[str] = None, max_per_name: int 
                 hits.append({"message": rn, "path": _render(walked, rn), "type": _describe(n)})
         out.append({"field": name, "found": bool(hits), "paths": hits[:max_per_name * 2]})
     return out
+
+
+def node_at(message: str, path: str) -> Optional[Dict[str, Any]]:
+    """按路径取到字段节点（路径不合法返回 None）。"""
+    if not available():
+        return None
+    root_name, root = message_root(message)
+    if root is None:
+        return None
+    tokens, issues = parse_path(path)
+    if any(i["severity"] == ERROR for i in issues):
+        return None
+    msg_names = {str(message).strip(), root_name, root_name[:-4] if root_name.endswith("-IEs") else root_name}
+    while tokens and tokens[0]["name"] in msg_names and not tokens[0]["idx"]:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    node, _, fail, _ = _walk(root, tokens)
+    return node if fail is None else None
 
 
 def _child_at(root_name: str, toks: List[Dict[str, Any]]):
