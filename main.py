@@ -24,6 +24,7 @@ from flow import (
     create_test_design_flow,
 )
 from core.clarification import owner_questions
+from core import clarify_stage, spec_checkers
 from core.events import EventLog
 from core.design_map import THEME_SYNC_SCRIPT, render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
@@ -153,7 +154,33 @@ class StageGenerateRequest(BaseModel):
     # 前端算出的输入指纹（测试用例 / 需求 / 产品形态 / Bug 各一段），随可执行用例保存，用来判断结果是否已过期
     input_fingerprint: Optional[Dict[str, str]] = None
     expert_review: bool = True  # 用例质量门里是否再让 LLM 以评审者身份检查一遍
+    # 需求没定稿时生成测试设计：前端二次确认“带待澄清继续”后才传 true
+    allow_pending_clarification: bool = False
     _last_shared: Any = PrivateAttr(default=None)  # 失败时用于报告出错节点
+
+
+class ClarifyRequest(BaseModel):
+    requirement_spec: Dict[str, Any]
+    answers: Optional[List[Dict[str, Any]]] = None  # [{id, action: answer|accept|waive|reopen, answer, by}]
+    confirmations: Optional[Dict[str, Any]] = None  # {req_id: {confirmed, note}}
+    by: str = ""
+    apply_spec_fixes: bool = True
+    # 影响分析用：已经生成的下游产物（可选），返回时带 stale 标记
+    test_design_spec: Optional[Dict[str, Any]] = None
+    test_case_spec: Optional[Dict[str, Any]] = None
+    exec_cases: Optional[Any] = None
+
+
+class ClarifyFreezeRequest(BaseModel):
+    requirement_spec: Dict[str, Any]
+    confirmer: str = ""
+    note: str = ""
+    allow_pending: bool = False
+
+
+class ClarifyImportRequest(BaseModel):
+    filename: str = ""
+    content_base64: str
 
 
 class BugzillaSettingsRequest(BaseModel):
@@ -2040,6 +2067,14 @@ async def stage_start(stage: str, payload: StageGenerateRequest):
 
     if stage_name == "design" and not payload.requirement_spec:
         raise HTTPException(status_code=400, detail="缺少requirement_spec")
+    if stage_name == "design" and not payload.allow_pending_clarification:
+        gate = clarify_stage.gate_status(payload.requirement_spec)
+        if not gate["design_allowed"]:
+            why = "需求基线已过期（定稿后又改过）" if gate["stale"] else "需求还没定稿"
+            raise HTTPException(status_code=409, detail={
+                "code": "requirements_not_frozen", "gate": gate,
+                "error": f"{why}：阻塞问题 {len(gate['blocking_open'])} 条、理解未确认 {len(gate['unconfirmed'])} 条。"
+                         "请在“需求澄清与定稿”页处理后定稿，或确认“带待澄清继续”"})
     if stage_name == "testcases" and not payload.test_design_spec:
         raise HTTPException(status_code=400, detail="缺少test_design_spec")
     if stage_name == "exec_cases" and not payload.test_case_spec:
@@ -2102,6 +2137,89 @@ def save_prompts(payload: PromptSettingsRequest):
         PROMPT_OVERRIDE_DIR.mkdir(parents=True, exist_ok=True)
         (PROMPT_OVERRIDE_DIR / name).write_text(content, encoding="utf-8")
     return {"message": "saved", "count": len(payload.prompts)}
+
+
+# ---------- 需求澄清与定稿 ----------
+# 无状态：前端每次带上当前 requirement_spec，返回更新后的 spec，和其它阶段一样由前端保存会话。
+
+spec_checkers.load_tables(str(CONFIG_DIR / "spec_tables"))
+
+
+@app.post("/api/clarify/view")
+def clarify_view(payload: ClarifyRequest):
+    spec = json.loads(json.dumps(payload.requirement_spec, ensure_ascii=False))
+    return clarify_stage.view(spec)
+
+
+@app.post("/api/clarify/apply")
+def clarify_apply(payload: ClarifyRequest):
+    """回填回答 / 采纳 / 豁免 / 理解确认 → 按规范核对回答 → 写回需求 → 影响分析。"""
+    spec = json.loads(json.dumps(payload.requirement_spec, ensure_ascii=False))
+    res = clarify_stage.apply_answers(spec, payload.answers or [], by=payload.by, confirmations=payload.confirmations,
+                                      apply_spec=payload.apply_spec_fixes)
+    design, cases, execs = payload.test_design_spec, payload.test_case_spec, payload.exec_cases
+    imp = clarify_stage.impact(res["changes"], test_design_spec=design, test_case_spec=cases, exec_cases=execs) \
+        if res["changes"] else {"req_ids": [], "hits": [], "by_artifact": {}, "plan": []}
+    out = clarify_stage.view(spec)
+    out.update({"result": res, "impact": imp, "test_design_spec": design, "test_case_spec": cases, "exec_cases": execs})
+    return out
+
+
+@app.post("/api/clarify/freeze")
+def clarify_freeze(payload: ClarifyFreezeRequest):
+    spec = json.loads(json.dumps(payload.requirement_spec, ensure_ascii=False))
+    ok, info = clarify_stage.freeze(spec, confirmer=payload.confirmer, note=payload.note, allow_pending=payload.allow_pending)
+    if not ok:
+        raise HTTPException(status_code=409, detail={"code": "freeze_blocked", "error": info.get("reason"), "gate": info.get("gate")})
+    return clarify_stage.view(spec)
+
+
+@app.post("/api/clarify/export.xlsx")
+def clarify_export(payload: ClarifyRequest):
+    try:
+        content = clarify_stage.export_xlsx(payload.requirement_spec)
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"缺少openpyxl依赖: {exc}")
+    name = quote(f"需求澄清单_{time.strftime('%Y%m%d_%H%M')}.xlsx")
+    return StreamingResponse(BytesIO(content), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
+
+
+@app.post("/api/clarify/import")
+def clarify_import(payload: ClarifyImportRequest):
+    """读回填好的澄清单 Excel，返回 answers（按 CLR 编号），前端确认后再调 /api/clarify/apply。"""
+    try:
+        content = base64.b64decode(payload.content_base64)
+        return {"answers": clarify_stage.import_xlsx(content)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"读取失败: {exc}")
+
+
+@app.get("/api/clarify/checkers")
+def clarify_checkers():
+    return {"coverage": spec_checkers.coverage()}
+
+
+@app.post("/api/clarify/spec-table")
+def clarify_spec_table(payload: ClarifyImportRequest):
+    """上传用户整理的规范取值表（JSON / CSV），保存到 config/spec_tables/ 并注册核对器。"""
+    name = re.sub(r"[^A-Za-z0-9_.\-]", "_", Path(payload.filename or "").name)
+    if not name.lower().endswith((".json", ".csv")):
+        raise HTTPException(status_code=400, detail="只支持 .json / .csv 规范表")
+    try:
+        text = base64.b64decode(payload.content_base64).decode("utf-8-sig")
+        table = spec_checkers.parse_table(text, name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"规范表解析失败: {exc}")
+    if not table["entries"]:
+        raise HTTPException(status_code=400, detail="规范表里没有可用条目（需要 name，以及 values 或 min/max）")
+    d = CONFIG_DIR / "spec_tables"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(text, encoding="utf-8")
+    spec_checkers.load_tables(str(d))
+    return {"saved": name, "spec": table["spec"], "entries": len(table["entries"]), "coverage": spec_checkers.coverage()}
 
 
 @app.post("/api/export/design-document.html")

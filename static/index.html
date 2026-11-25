@@ -33,9 +33,10 @@
           <div class="nav-group-label">测试流程</div>
           <button class="sheet-tab active" data-sheet="sheet1"><span class="step-no">1</span>需求准备</button>
           <button class="sheet-tab" data-sheet="sheet2"><span class="step-no">2</span>测试需求评审</button>
-          <button class="sheet-tab" data-sheet="sheet3"><span class="step-no">3</span>测试设计</button>
-          <button class="sheet-tab" data-sheet="sheet4"><span class="step-no">4</span>测试用例</button>
-          <button class="sheet-tab" data-sheet="sheet5"><span class="step-no">5</span>可执行用例</button>
+          <button class="sheet-tab" data-sheet="sheetClarify"><span class="step-no">3</span>需求澄清与定稿<span id="clarifyTabBadge" class="tab-badge hidden"></span></button>
+          <button class="sheet-tab" data-sheet="sheet3"><span class="step-no">4</span>测试设计</button>
+          <button class="sheet-tab" data-sheet="sheet4"><span class="step-no">5</span>测试用例</button>
+          <button class="sheet-tab" data-sheet="sheet5"><span class="step-no">6</span>可执行用例</button>
           <div class="nav-group-label">资料</div>
           <button class="sheet-tab" data-sheet="sheet9"><span class="step-no step-icon">▣</span>项目 / Product</button>
           <button class="sheet-tab" data-sheet="sheet8"><span class="step-no step-icon">◷</span>测试设计历史</button>
@@ -194,6 +195,78 @@
           </div>
           <div class="action-bar">
             <button id="regenReqBtn" class="ui-btn ui-btn-secondary">再次生成（下一轮）</button>
+            <button id="goClarifyBtn" class="ui-btn">需求澄清与定稿 →</button>
+          </div>
+        </section>
+
+        <section class="sheet" id="sheetClarify">
+          <header class="page-head">
+            <div>
+              <h2>需求澄清与定稿</h2>
+              <p>测试设计之前把需求本身的问题清掉：字段是否存在、位置和取值是否合规（按 3GPP ASN.1 核对）、需求之间是否矛盾、措辞有没有歧义，再逐条确认 AI 对需求的理解。定稿后才进入测试设计。</p>
+            </div>
+          </header>
+          <div class="card ui-card">
+            <div class="card-head"><h3>澄清状态</h3><button id="clarifyRefreshBtn" class="ui-btn ui-btn-sm ui-btn-secondary" type="button">刷新</button></div>
+            <div id="clarifySummary" class="visual"><em>先完成测试需求评审</em></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head">
+              <h3>澄清单</h3>
+              <div class="btn-row compact-row">
+                <button id="clarifyExportBtn" class="ui-btn ui-btn-sm ui-btn-secondary" type="button" title="导出给需求方离线填写">导出 Excel</button>
+                <button id="clarifyImportBtn" class="ui-btn ui-btn-sm ui-btn-secondary" type="button" title="导入需求方回填的 Excel，按编号对回">导入回填</button>
+                <input id="clarifyImportFile" type="file" accept=".xlsx" hidden />
+              </div>
+            </div>
+            <div class="clarify-filters">
+              <select id="clarifyStatusFilter" class="ui-input">
+                <option value="todo">待处理（待回答）</option>
+                <option value="blocking">只看阻塞的</option>
+                <option value="all">全部</option>
+                <option value="resolved_by_spec">规范已定</option>
+                <option value="resolved_by_owner">需求方已答</option>
+                <option value="waived">已豁免</option>
+              </select>
+              <select id="clarifyKindFilter" class="ui-input"><option value="">全部类型</option></select>
+              <input id="clarifySearch" class="ui-input" type="search" placeholder="按需求ID / 字段 / 关键字筛选" />
+            </div>
+            <div id="clarifyTable" class="visual"></div>
+            <div class="btn-row">
+              <input id="clarifyAnswerBy" class="ui-input clarify-by" type="text" placeholder="回答人（必填，记入澄清记录）" />
+              <button id="clarifyApplyBtn" class="ui-btn" type="button">提交回答并核对</button>
+              <span class="feature-hint">提交后系统按规范再核对一遍回答（字段名、位置、取值能否编码），不通过的退回并写明原因。</span>
+            </div>
+            <div id="clarifyResult" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>需求改动（改前 / 改后）</h3><span class="feature-hint">回答和规范结论写回需求的地方；需求原文 source_text 不改</span></div>
+            <div id="clarifyChanges" class="visual"><em>暂无改动</em></div>
+            <div id="clarifyImpact" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head">
+              <h3>理解确认</h3>
+              <div class="btn-row compact-row">
+                <label class="inline-check"><input id="clarifyCardsTodo" type="checkbox" checked /> 只看未确认的</label>
+                <button id="clarifyConfirmVisibleBtn" class="ui-btn ui-btn-sm ui-btn-secondary" type="button">确认当前列出的全部</button>
+              </div>
+            </div>
+            <p class="feature-hint">AI 把每条需求按“前提 / 触发 / 期望 / 配置 / 判据”复述一遍。理解对就勾选；不对就在备注里写清楚，并回到澄清单或修改需求。需求被澄清修改后要重新确认。</p>
+            <div id="clarifyCards" class="visual"></div>
+          </div>
+          <div class="card ui-card">
+            <div class="card-head"><h3>规范核对范围</h3></div>
+            <div id="clarifyCoverage" class="visual"></div>
+            <div class="btn-row compact-row">
+              <input id="clarifySpecTableFile" type="file" accept=".json,.csv" hidden />
+              <button id="clarifySpecTableBtn" class="ui-btn ui-btn-sm ui-btn-secondary" type="button" title="JSON / CSV：spec, name, values 或 min/max">上传规范取值表（NAS / MAC …）</button>
+            </div>
+          </div>
+          <div class="action-bar">
+            <input id="clarifyConfirmer" class="ui-input clarify-by" type="text" placeholder="定稿确认人" />
+            <input id="clarifyFreezeNote" class="ui-input" type="text" placeholder="定稿备注（可选）" />
+            <button id="clarifyFreezeBtn" class="ui-btn ui-btn-secondary" type="button">定稿</button>
             <button id="genDesignBtn" class="ui-btn">生成测试设计稿 →</button>
           </div>
         </section>
@@ -535,5 +608,6 @@
 
     <script src="/static/app.js"></script>
     <script src="/static/assistant.js"></script>
+    <script src="/static/clarify.js"></script>
   </body>
 </html>

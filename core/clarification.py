@@ -15,6 +15,8 @@ import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from core import asn1_paths as A
+from core import req_checks as _req_checks  # noqa: F401  注册一致性 / 歧义检查
+from core import spec_checkers
 
 _DOUBT = re.compile(r"未能确认|无法确认|需核对|需要核对|需按\s*TS|按\s*TS[^，。；]*核对|存疑|疑为|印象|未见规范|没有这个名字|不存在|"
                     r"规范中疑|与\s*3GPP\s*规范|位置未确认|字段名|IE\s*名称|取值范围")
@@ -81,6 +83,9 @@ class _Builder:
         prev = self.previous.get(qkey)
         if prev and prev.get("status") in ("resolved_by_owner", "waived"):
             item["status"], item["resolution"] = prev["status"], prev.get("resolution", "")
+            for k in ("verify", "answered_by", "answered_at", "answer_raw"):
+                if prev.get(k):
+                    item[k] = prev[k]
         ans = self.answers.get(qkey)
         if ans and str(ans.get("answer") or "").strip():
             item["status"], item["resolution"] = "resolved_by_owner", str(ans["answer"]).strip()
@@ -216,14 +221,18 @@ def _check_value(b: _Builder, req_id: str, cfg: Dict[str, Any]) -> Optional[Dict
 def build_clarifications(final_requirements: List[Dict[str, Any]], *, raw_requirements: Iterable[str] = (),
                          persona_reviews: Optional[Dict[str, Any]] = None, conflicts: Optional[List[Dict[str, Any]]] = None,
                          answered: Optional[List[Dict[str, Any]]] = None,
-                         previous: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """生成澄清单，并把结论写回需求（req["clarification"]、explicit_configs[].clarification）。"""
+                         previous: Optional[List[Dict[str, Any]]] = None,
+                         ambiguities: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """生成澄清单，并把结论写回需求（req["clarification"]、explicit_configs[].clarification）。
+
+    第 1、2 层按 TS 38.331 ASN.1 核对（找不到 IE 树时跳过），其余核对器（一致性、歧义、用户提供的规范表）
+    在 core/spec_checkers.py 注册，这里依次调用。"""
     b = _Builder(answered or [], previous or [])
+    b.ambiguities = ambiguities or []
     raw_list = list(raw_requirements or [])
-    if not A.available():
-        return {"items": [], "pending_req_ids": [], "spec_version": "", "summary": "未找到 ASN.1 IE 树，未做规范核对"}
+    asn1_ok = A.available()
     reqs = [r for r in final_requirements or [] if isinstance(r, dict) and r.get("req_id")]
-    for req in reqs:
+    for req in (reqs if asn1_ok else []):
         rid = str(req["req_id"])
         texts = _texts(req, raw_text_for(rid, raw_list))
         blob = "\n".join(texts)
@@ -278,7 +287,7 @@ def build_clarifications(final_requirements: List[Dict[str, Any]], *, raw_requir
     for c in conflicts or []:
         if isinstance(c, dict) and _DOUBT.search(f"{c.get('topic', '')}{c.get('detail', '')}"):
             doubts.append((str(c.get("req_id")), str(c.get("detail") or c.get("topic") or "").strip(), "综合评审"))
-    for rid, text, label in doubts:
+    for rid, text, label in (doubts if asn1_ok else []):
         if not text:
             continue
         fields = [f for f in dict.fromkeys(_IE_TOKEN.findall(text)) if f.lower() not in _NOT_IE]
@@ -297,6 +306,8 @@ def build_clarifications(final_requirements: List[Dict[str, Any]], *, raw_requir
         else:
             b.add(rid, "spec_doubt", f"评审疑问：{q}", blocking=False, raised_by=label, source_text=text,
                   evidence="ASN.1 不能回答（行为/条款类问题），请需求方确认；设计按评审建议起草并标注")
+    # 5) 其它核对器：需求一致性、歧义、用户提供的规范表（NAS / MAC …）
+    spec_checkers.run(b, reqs, {str(r["req_id"]): _texts(r, raw_text_for(str(r["req_id"]), raw_list)) for r in reqs})
     for i, item in enumerate(b.items, start=1):
         item["id"] = f"CLR-{i:03d}"
     pending = sorted({it["req_id"] for it in b.items if it["blocking"] and it["status"] == "open"})
@@ -306,15 +317,20 @@ def build_clarifications(final_requirements: List[Dict[str, Any]], *, raw_requir
     for req in reqs:
         rid = str(req["req_id"])
         req["clarification"] = {"status": "pending" if rid in pending else "clear", "items": by_req.get(rid, [])}
-    counts = {s: sum(1 for it in b.items if it["status"] == s) for s in ("open", "resolved_by_spec", "resolved_by_owner")}
-    blocking_open = sum(1 for it in b.items if it["blocking"] and it["status"] == "open")
     return {
         "items": b.items,
         "pending_req_ids": pending,
-        "spec_version": A.spec_version(),
-        "summary": (f"需求澄清：{len(b.items)} 条（规范已定 {counts['resolved_by_spec']}、需求方已答 {counts['resolved_by_owner']}、"
-                    f"待回答 {counts['open']}，其中阻塞 {blocking_open} 条，涉及需求 {len(pending)} 条）"),
+        "spec_version": A.spec_version() if asn1_ok else "",
+        "summary": summary_text(b.items, pending) + ("" if asn1_ok else "；未找到 ASN.1 IE 树，未做 38.331 核对"),
     }
+
+
+def summary_text(items: List[Dict[str, Any]], pending: Iterable[str]) -> str:
+    counts = {s: sum(1 for it in items if it.get("status") == s) for s in ("open", "resolved_by_spec", "resolved_by_owner", "waived")}
+    blocking_open = sum(1 for it in items if it.get("blocking") and it.get("status") == "open")
+    waived = f"、豁免 {counts['waived']}" if counts["waived"] else ""
+    return (f"需求澄清：{len(items)} 条（规范已定 {counts['resolved_by_spec']}、需求方已答 {counts['resolved_by_owner']}{waived}、"
+            f"待回答 {counts['open']}，其中阻塞 {blocking_open} 条，涉及需求 {len(list(pending))} 条）")
 
 
 def items_for(spec: Dict[str, Any], req_ids: Iterable[str]) -> List[Dict[str, Any]]:

@@ -802,3 +802,50 @@ tr.verdict-row td { background: var(--success-soft); }
   .run-step:not(:last-child)::after { display: none; }
   .run-step-text { padding-top: 3px; }
 }
+
+/* ---------- 需求澄清与定稿 ---------- */
+.tab-badge { margin-left: auto; min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--danger-soft); color: var(--danger); font-size: 11px; font-weight: 700; text-align: center; }
+.tab-badge.is-ok { background: var(--tf-success-soft); color: var(--tf-success); }
+.clarify-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.clarify-filters .ui-input { width: auto; min-width: 150px; flex: 0 1 auto; }
+.clarify-filters input[type="search"] { flex: 1 1 220px; }
+.clarify-by { max-width: 220px; }
+.clarify-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.clarify-stat { padding: 6px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--muted); font-size: 13px; }
+.clarify-stat strong { font-size: 16px; margin-right: 4px; }
+.clarify-stat.is-bad { border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: var(--danger-soft); color: var(--danger); }
+.clarify-stat.is-good { border-color: color-mix(in srgb, var(--tf-success) 35%, transparent); background: var(--tf-success-soft); color: var(--tf-success); }
+.clarify-gate { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.6; }
+.clarify-gate.is-frozen { background: var(--tf-success-soft); color: color-mix(in srgb, var(--tf-success) 80%, var(--foreground)); }
+.clarify-gate.is-open { background: var(--warning-soft); color: color-mix(in srgb, var(--warning) 80%, var(--foreground)); }
+.clarify-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; background: var(--card); }
+.clarify-item.is-blocking { border-left: 3px solid var(--danger); }
+.clarify-item .ci-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted-foreground); }
+.clarify-item .ci-q { margin: 6px 0 4px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.clarify-item .ci-meta { font-size: 12px; color: var(--muted-foreground); line-height: 1.5; overflow-wrap: anywhere; }
+.clarify-item .ci-verify { margin-top: 6px; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--muted); overflow-wrap: anywhere; }
+.clarify-item .ci-verify.is-reject { background: var(--danger-soft); color: var(--danger); }
+.clarify-item .ci-verify.is-corrected { background: var(--warning-soft); color: var(--warning); }
+.clarify-item .ci-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.clarify-item .ci-actions input[type="text"] { flex: 1 1 260px; }
+.clarify-item .ci-actions label { font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
+.st { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--muted); }
+.st-open { background: var(--warning-soft); color: var(--warning); }
+.st-resolved_by_spec, .st-resolved_by_owner { background: var(--tf-success-soft); color: var(--tf-success); }
+.st-waived { background: var(--muted); color: var(--muted-foreground); }
+.clarify-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; }
+.clarify-card.is-confirmed { opacity: 0.75; }
+.clarify-card .cc-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-weight: 600; }
+.clarify-card dl { display: grid; grid-template-columns: 44px 1fr; gap: 2px 8px; margin: 6px 0; font-size: 13px; }
+.clarify-card dt { color: var(--muted-foreground); }
+.clarify-card dd { margin: 0; overflow-wrap: anywhere; }
+.clarify-card .cc-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.clarify-card .cc-actions input[type="text"] { flex: 1 1 240px; }
+.clarify-diff td { vertical-align: top; overflow-wrap: anywhere; }
+.clarify-diff del { color: var(--danger); text-decoration: line-through; }
+.clarify-diff ins { color: var(--tf-success); text-decoration: none; }
+#sheetClarify .action-bar { flex-wrap: wrap; }
+#sheetClarify .action-bar .ui-input { flex: 1 1 160px; min-width: 0; }
+@media (max-width: 640px) {
+  #sheetClarify .action-bar .ui-input { flex-basis: 100%; max-width: none; }
+}
