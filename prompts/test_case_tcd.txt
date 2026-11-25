@@ -21,7 +21,7 @@ TCD 是平台无关的中间表示：后续会被直接映射成 Artemis（手�
    实网用例（REAL_NETWORK）不能控制网络侧，cells/core 只写需要满足的网络条件（如“NR SA 覆盖，RSRP > -100dBm”）。
 7) message_contents：被测流程中需要偏离默认消息内容的关键消息（参照 TS 38.508-1 §4.6 / 36.508 §4.6 默认消息内容），每条：
    msg_id（M1、M2…）、message（3GPP 消息名）、direction（DL=网络下发，ies 是要配置的值；UL=UE 上报，ies 是期望值）、based_on、purpose、
-   ies[{path, value, note, vary}]：path 按 ASN.1 / NAS IE 名逐级写（点号连接，列表用 [序号]），value 用规范拼写（如 "ms1000"、"setup"、"eventA3"、"#22"），
+   ies[{path, value, note, vary}]：RRC 消息的 path 按下面“IE 路径和取值”的规则从消息根写全；NAS 消息写 TS 24.501 的 IE 名；value 用规范拼写（如 "ms1000"、"setup"、"eventA3"、"#22"），
    只列与本用例相关、需要偏离默认值的 IE（通常 3~20 项）；需要扫描的 IE 在 vary 写参数名，value 写基线值。
 8) procedure：主体测试步骤（3GPP 的 Main behaviour 表），每步：
    step、actor（SS=系统模拟器/基站/仪表，UE=被测终端，TESTER=测试执行者在终端侧操作，如 UI/AT 指令/开关机）、
@@ -37,7 +37,21 @@ TCD 是平台无关的中间表示：后续会被直接映射成 Artemis（手�
 
 需求写明的配置必须原样落地（最重要）：
 - requirements[].explicit_configs 是需求原文写明的取值；与本用例相关的每一项都要写进 configuration / message_contents / procedure.params，
-  value 与原文一字不差（数值、单位、枚举拼写都不改，不换算、不取整、不用“典型值”替换）。与规范冲突时仍按需求值，并在 open_points 说明。
+  value 与原文一字不差（数值、单位、枚举拼写都不改，不换算、不取整、不用“典型值”替换）。
+- 例外：带 clarification 的 explicit_configs 项已判定与规范不符、待需求方回答，不要写进用例，写进 open_points。
+  需求的字段名 / 位置与 ASN.1 不符时，以 ASN.1 为准（见下一节），不要为了“照抄需求”写出规范里不存在的路径。
+
+IE 路径和取值必须符合 TS 38.331 ASN.1（交付前会被逐条机器核对，不符合的用例会被退回或标为待澄清）：
+- 路径从消息根开始逐级写全，点号连接，列表写 [0]/[1]，CHOICE 写出所选分支（setup / release / eventTriggered / reportConfigNR 前的 reportConfig 等）。
+  R16/R17/R18 扩展字段要写进它所在的扩展容器，不要挂到基础结构下：例如 RRCReconfiguration 里 masterCellGroup 在
+  nonCriticalExtension（→RRCReconfiguration-v1530-IEs）下，otherConfig-v1700 在 nonCriticalExtension×5（→RRCReconfiguration-v1700-IEs）下；
+  SIB1 的 R17 扩展在 nonCriticalExtension×3（→SIB1-v1700-IEs）下；RLC 的 R17 扩展在 RLC-BearerConfig.rlc-Config-v1700 下。
+- 禁止用“…”“...”省略中间层，禁止把“A / B”、说明文字或 <占位符> 当路径。
+- 不能编造字段：规范里没有的字段（哪怕需求原文这么写）不能出现在 path 里；requirements[].asn1_ie_paths 给出了需求涉及字段在 ASN.1 里的完整路径和类型，照抄。
+- 取值用 ASN.1 的编码：枚举写规范枚举值（sibType19 而不是 sibType19-v1700）；INTEGER 索引（如 RSRP-Range 0..127）写索引不写 dBm；
+  BIT STRING 写位串（如 '0101'B）；SetupRelease 写 setup / release。
+- requirements[].clarification.notes 是需求澄清结论：status=resolved_by_spec 的按其中的规范写法写；status=open 的说明需求本身有问题、还没定，
+  不要照抄需求原文的错误字段或取值，相关 IE 不写，把问题写进 open_points（用例会被标为待澄清）。
 - context.knowledge_references 有内容时，用它确定 IE 取值、定时器、信令顺序和条款，并在 references 中写出编号（如 [K-3]）。
 - context.feedback 有内容时，说明上一次生成有问题，必须逐条改正。
 - 说明文字用简体中文；消息名、IE 名、参数名、枚举值、动作名保持英文原样。

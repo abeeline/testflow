@@ -19,11 +19,23 @@ Amarisoft Agent 会自己编写 enb/gnb/mme 配置并控制模拟基站执行测
    - requirement_configs.per_testcase[tc_id] 是该用例关联需求原文写明的配置（name/value/source_text），每一项都要落到 cell_config / core_config / key_parameters / message_configs 中，
      value 与原文一字不差（数值、单位、枚举拼写都不改，不换算、不取整、不用“典型值”替换）。
    - requirement_configs.source_config_lines 是需求原文里的配置行，和本用例相关的也要照原文取值落地。
-   - 与 3GPP 规范或其他条件冲突时仍按需求值配置，status 写 conflict 并在 note 和 open_points 说明。
+   - 带 clarification 的配置项已判定与 3GPP 规范不符、待需求方回答：不要写入，status 写 pending_clarification。
+     与其他条件冲突时按需求值配置，status 写 conflict 并在 note 和 open_points 说明；RRC IE 的路径以 ASN.1 为准（见第 13 条）。
    - 输出 requirement_configs 数组逐项回报：{"req_id","name","value","source_text","applied_to"（落到哪个字段路径，如 cell_config.ssb_arfcn），"status"（applied / not_applicable / conflict），"note"}。
-10) message_configs（可选）：需求对 SIB/RRC/NAS 消息的具体 IE 有要求时填写，每条 message、direction、ies[{path, value, note}]，path 用 ASN.1 字段名逐级写。
+10) message_configs（可选）：需求对 SIB/RRC/NAS 消息的具体 IE 有要求时填写，每条 message、direction、ies[{path, value, note}]，path 用 ASN.1 字段名从消息根逐级写全。
 11) open_points：执行前仍需确认的问题（只列真正不确定的）。
 12) 所有说明文字用简体中文，3GPP 消息名、IE 名、参数名保持英文原样。
+13) IE 路径和取值必须符合 TS 38.331 ASN.1（交付前会被逐条机器核对，不符合的用例会被退回或标为待澄清）：
+    - 路径从消息根开始逐级写全，点号连接，列表写 [0]/[1]，CHOICE 写出所选分支（setup / release / eventTriggered / reportConfigNR 前的 reportConfig 等）。
+      R16/R17/R18 扩展字段要写进它所在的扩展容器，不要挂到基础结构下：例如 RRCReconfiguration 里 masterCellGroup 在
+      nonCriticalExtension（→RRCReconfiguration-v1530-IEs）下，otherConfig-v1700 在 nonCriticalExtension×5（→RRCReconfiguration-v1700-IEs）下；
+      SIB1 的 R17 扩展在 nonCriticalExtension×3（→SIB1-v1700-IEs）下；RLC 的 R17 扩展在 RLC-BearerConfig.rlc-Config-v1700 下。
+    - 禁止用“…”“...”省略中间层，禁止把“A / B”、说明文字或 <占位符> 当路径。
+    - 不能编造字段：规范里没有的字段（哪怕需求原文这么写）不能出现在 path 里；requirements[].asn1_ie_paths 给出了需求涉及字段在 ASN.1 里的完整路径和类型，照抄。
+    - 取值用 ASN.1 的编码：枚举写规范枚举值（sibType19 而不是 sibType19-v1700）；INTEGER 索引（如 RSRP-Range 0..127）写索引不写 dBm；
+      BIT STRING 写位串（如 '0101'B）；SetupRelease 写 setup / release。
+    - requirements[].clarification.notes 是需求澄清结论：status=resolved_by_spec 的按其中的规范写法写；status=open 的说明需求本身有问题、还没定，
+      不要照抄需求原文的错误字段或取值，相关 IE 不写，把问题写进 open_points（用例会被标为待澄清）。
 
 只输出 JSON：
 {

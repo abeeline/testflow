@@ -14,6 +14,7 @@
 import re
 from typing import Any, Dict, List, Tuple
 
+from core import ie_gate
 from core.tcd import patch_explicit_configs
 from utils.req_configs import config_status, group_configs, normalize_explicit_configs
 
@@ -69,7 +70,11 @@ def repair_design_rows(rows: List[Dict[str, Any]], final_requirements: List[Dict
             continue
         by_req.setdefault(str(row.get("req_id")), []).append(row)
         cfg = row.setdefault("key_configuration", {})
-        for group in group_configs(normalize_explicit_configs(req)):
+        configs = normalize_explicit_configs(req)
+        for c in configs:
+            if c.get("clarification"):  # 需求值与规范不符、待需求方回答：不当成已批准的配置写进矩阵
+                cfg[f"{c['name'] or 'param'}（待澄清）"] = f"需求写 {c['value']}，{c['clarification']}"
+        for group in group_configs([c for c in configs if not c.get("clarification")]):
             states = [config_status(c, row, _ROW_CONFIG_FIELDS) for c in group]
             name = group[0]["name"] or "param"
             if len(group) > 1:  # 需求给了一组取值：本行用到其中一个就行，一个都没有就把整组列出来
@@ -165,7 +170,7 @@ def review_testcases(tcs: List[Dict[str, Any]], final_requirements: List[Dict[st
     row_map = {str(r.get("row_id")): r for r in rows or [] if isinstance(r, dict)}
     per_tc: Dict[str, List[str]] = {}
     retry_rows: List[str] = []
-    patched = conflicts = criteria_added = 0
+    patched = conflicts = criteria_added = ie_fixed = 0
     covered = set()
     for tc in tcs:
         trace = tc.get("trace") or {}
@@ -175,6 +180,15 @@ def review_testcases(tcs: List[Dict[str, Any]], final_requirements: List[Dict[st
             if str(rid) in reqs:
                 configs.extend(normalize_explicit_configs(reqs[str(rid)]))
         issues = check_testcase(tc)
+        # 消息 IE 逐条按 TS 38.331 ASN.1 核对：能确定的直接改正，其余作为返工问题（附候选路径）
+        ie_rep = ie_gate.check_messages(tc.get("message_contents") or [], autofix=True)
+        ie_fixed += len(ie_rep["fixed"])
+        for f in ie_rep["fixed"]:
+            notes = tc.setdefault("review_notes", [])
+            if f"IE 路径已按 ASN.1 改正：{f}" not in notes:
+                notes.append(f"IE 路径已按 ASN.1 改正：{f}")
+        for e in ie_rep["errors"]:
+            issues.append(f"IE 不符合 TS 38.331 ASN.1（不能编造字段、不能用“…”省略、R16+ 扩展写到对应扩展容器里）：{e}")
         for r in patch_explicit_configs(tc, configs):
             if r["status"] == "patched":
                 patched += 1
@@ -202,7 +216,38 @@ def review_testcases(tcs: List[Dict[str, Any]], final_requirements: List[Dict[st
         metrics_missing.extend(m for m in req_metrics(req) if _NUMBER.search(m) and not criterion_covered(m, texts))
     return {"issues": issues, "retry_rows": retry_rows, "patched": patched, "conflicts": conflicts,
             "criteria_added": criteria_added, "per_tc": per_tc, "missing_reqs": missing,
-            "metrics_missing": metrics_missing}
+            "metrics_missing": metrics_missing, "ie_fixed": ie_fixed}
+
+
+def finalize_pending(tcs: List[Dict[str, Any]], spec: Dict[str, Any]) -> Dict[str, int]:
+    """返工结束后收口：IE 仍不符合 ASN.1 的用例、所属需求还有阻塞澄清问题的用例，标为待澄清（status=pending_clarification），
+    原因写进 open_points。不再“标注待确认后照常输出”。"""
+    items = ((spec or {}).get("clarifications") or {}).get("items") or []
+    pending_reqs = set(((spec or {}).get("clarifications") or {}).get("pending_req_ids") or [])
+    by_req: Dict[str, List[Dict[str, Any]]] = {}
+    for it in items:
+        if it.get("blocking") and it.get("status") == "open":
+            by_req.setdefault(str(it.get("req_id")), []).append(it)
+    ie_bad = req_bad = 0
+    for tc in tcs:
+        reasons = []
+        for m in tc.get("message_contents") or []:
+            for ie in m.get("ies") or []:
+                a = ie.get("asn1") or {}
+                if a.get("status") == "error":
+                    reasons.append(f"{m.get('msg_id', '')} {m.get('message', '')} IE {ie.get('path')}：{'；'.join(a.get('issues') or [])}")
+        if reasons:
+            ie_bad += 1
+        for rid in (tc.get("trace") or {}).get("req_ids") or []:
+            if str(rid) in pending_reqs:
+                reasons.extend(f"{it['id']} {it['question']}" for it in by_req.get(str(rid), []))
+                req_bad += 1
+        if reasons:
+            ie_gate.mark_pending(tc, reasons)
+        elif tc.get("status") == ie_gate.PENDING:
+            tc.pop("status", None)
+            tc.pop("blocked_by", None)
+    return {"ie_invalid": ie_bad, "req_pending": req_bad}
 
 
 def review_stats(tcs: List[Dict[str, Any]]) -> Dict[str, int]:

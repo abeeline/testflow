@@ -22,8 +22,9 @@
    - direction：DL（仪表下发，ies 是要配置的值）或 UL（UE 上报，ies 是期望值）
    - purpose：这条消息在本用例里的作用
    - ies：数组，每项 {"path": ASN.1 字段路径, "value": 具体取值, "note": 说明, "vary": 对应 parameter_variations 的 name，固定值留空}
-     · path 按 TS 38.331 / TS 36.331 / TS 24.501 的 ASN.1 字段名逐级写，用点号连接，列表用 [序号]，例如：
-       "criticalExtensions.rrcReconfiguration.nonCriticalExtension.nonCriticalExtension.conditionalReconfiguration-r16.condReconfigToAddModList-r16[0].condReconfigId-r16"
+     · path 按 TS 38.331 / TS 36.331 / TS 24.501 的 ASN.1 字段名从消息根逐级写全（规则见第 14 条），用点号连接，列表用 [序号]，例如：
+       "nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.conditionalReconfiguration-r16.condReconfigToAddModList-r16[0].condReconfigId-r16"
+       （conditionalReconfiguration-r16 在 RRCReconfiguration-v1610-IEs 里，即第 4 层 nonCriticalExtension 下）
      · value 写具体值（数字、枚举名、布尔、十六进制），枚举用规范里的拼写（如 "ms1000"、"setup"、"eventA3"）；嵌套的 RRC 容器（如 condRRCReconfig-r16）
        里被测相关的字段也要展开写出来（目标 PCI、ARFCN、t304、rach-ConfigDedicated 等）
      · 只列被测相关、需要偏离模板默认值的 IE，通常每条消息 5~25 项；与测试无关的字段用模板默认值，不要罗列
@@ -39,9 +40,21 @@
    - requirement_configs.per_testcase[tc_id] 是该用例关联需求原文写明的配置（name/value/source_text），每一项都要落到 cell_config 或 message_configs[].ies（或 parameter_variations）中，
      value 与原文一字不差（数值、单位、枚举拼写都不改，不换算、不取整、不用“建议值”替换）。需求给了取值的 IE 不能再写成 open_points。
    - requirement_configs.source_config_lines 是需求原文里的配置行，和本用例相关的也要照原文取值落地。
-   - 与 3GPP 规范冲突时仍按需求值配置，status 写 conflict 并在 note 和 open_points 说明。
+   - 需求取值与 3GPP 规范冲突（字段不存在、位置不对、单位/类型不对）时不要按需求值硬写：带 clarification 的配置项不写入，status 写 pending_clarification；
+     其他冲突按 ASN.1 写正确路径，status 写 conflict 并在 note 和 open_points 说明需求原文的写法。
    - 输出 requirement_configs 数组逐项回报：{"req_id","name","value","source_text","applied_to"（如 message_configs.M1.ies[...].path 或 cell_config.band），"status"（applied / not_applicable / conflict），"note"}。
 13) 所有说明文字用简体中文，消息名、IE 名、参数名、枚举值保持英文原样。
+14) IE 路径和取值必须符合 TS 38.331 ASN.1（交付前会被逐条机器核对，不符合的用例会被退回或标为待澄清）：
+    - 路径从消息根开始逐级写全，点号连接，列表写 [0]/[1]，CHOICE 写出所选分支（setup / release / eventTriggered / reportConfigNR 前的 reportConfig 等）。
+      R16/R17/R18 扩展字段要写进它所在的扩展容器，不要挂到基础结构下：例如 RRCReconfiguration 里 masterCellGroup 在
+      nonCriticalExtension（→RRCReconfiguration-v1530-IEs）下，otherConfig-v1700 在 nonCriticalExtension×5（→RRCReconfiguration-v1700-IEs）下；
+      SIB1 的 R17 扩展在 nonCriticalExtension×3（→SIB1-v1700-IEs）下；RLC 的 R17 扩展在 RLC-BearerConfig.rlc-Config-v1700 下。
+    - 禁止用“…”“...”省略中间层，禁止把“A / B”、说明文字或 <占位符> 当路径。
+    - 不能编造字段：规范里没有的字段（哪怕需求原文这么写）不能出现在 path 里；requirements[].asn1_ie_paths 给出了需求涉及字段在 ASN.1 里的完整路径和类型，照抄。
+    - 取值用 ASN.1 的编码：枚举写规范枚举值（sibType19 而不是 sibType19-v1700）；INTEGER 索引（如 RSRP-Range 0..127）写索引不写 dBm；
+      BIT STRING 写位串（如 '0101'B）；SetupRelease 写 setup / release。
+    - requirements[].clarification.notes 是需求澄清结论：status=resolved_by_spec 的按其中的规范写法写；status=open 的说明需求本身有问题、还没定，
+      不要照抄需求原文的错误字段或取值，相关 IE 不写，把问题写进 open_points（用例会被标为待澄清）。
 
 只输出 JSON：
 {
@@ -64,9 +77,9 @@
           "purpose": "下发条件切换候选配置",
           "ies": [
             {"path": "rrc-TransactionIdentifier", "value": 1, "note": "", "vary": ""},
-            {"path": "criticalExtensions.rrcReconfiguration.nonCriticalExtension.nonCriticalExtension.conditionalReconfiguration-r16.condReconfigToAddModList-r16[0].condReconfigId-r16", "value": 1, "note": "候选 1", "vary": ""},
-            {"path": "...condExecutionCond-r16[0]", "value": "measId 3", "note": "关联 eventA3 测量", "vary": ""},
-            {"path": "...condRRCReconfig-r16.criticalExtensions.rrcReconfiguration.secondaryCellGroup.spCellConfig.reconfigurationWithSync.t304", "value": "ms1000", "note": "", "vary": "t304"}
+            {"path": "nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.conditionalReconfiguration-r16.condReconfigToAddModList-r16[0].condReconfigId-r16", "value": 1, "note": "候选 1", "vary": ""},
+            {"path": "nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.conditionalReconfiguration-r16.condReconfigToAddModList-r16[0].condExecutionCond-r16[0]", "value": 3, "note": "measId 3，关联 eventA3 测量", "vary": ""},
+            {"path": "nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.nonCriticalExtension.conditionalReconfiguration-r16.condReconfigToAddModList-r16[0].condRRCReconfig-r16.criticalExtensions.rrcReconfiguration.nonCriticalExtension.masterCellGroup.spCellConfig.reconfigurationWithSync.t304", "value": "ms1000", "note": "", "vary": "t304"}
           ]
         }
       ],

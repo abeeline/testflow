@@ -18,6 +18,8 @@ import uuid
 from typing import Any, Dict, List
 
 from pocketflow import AsyncNode
+from core import ie_gate
+from core.clarification import pending_ids
 from core.events import emit
 from core.grouping import ensure_suite, suite_tree
 from core.llm import generate_json, run_split_on_truncate
@@ -79,8 +81,11 @@ FIELD_GUIDE = {
         "expected_signaling": "期望信令序列：layer、direction、message、key_ies",
         "pass_criteria": "通过标准（保留原用例数值门限）",
         "references": "3GPP 规范条款",
-        "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，patched 生成结果里没有、已按需求原值补入（applied_to 写明补到哪），not_applicable 不适用（note 说明），conflict 与规范冲突（仍按需求值）",
+        "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，patched 生成结果里没有、已按需求原值补入（applied_to 写明补到哪），not_applicable 不适用（note 说明），conflict 与用例取值冲突，pending_clarification 需求取值与规范不符、待需求方澄清（未写入）",
         "open_points": "执行前仍需确认的问题",
+        "status": "pending_clarification = 待澄清：需求或消息 IE 还有没定的问题（见 blocked_by），澄清前不要执行；没有该字段表示可执行",
+        "blocked_by": "待澄清的原因（IE 不符合 TS 38.331 ASN.1、所属需求的阻塞澄清问题）",
+        "message_configs[].ies[].asn1": "IE 按 TS 38.331 ASN.1 核对的结论：ok / fixed（已改正，fixed_from 是原路径）/ warning / error / unchecked（非 RRC 消息）",
     },
     "protocol": {
         "source_tc_id": "来源测试用例编号",
@@ -98,9 +103,12 @@ FIELD_GUIDE = {
         "signaling_flow": "procedure 中信令步骤的视图：seq、step（对应 procedure 的步骤号）、direction、layer、message、config_ref（引用 msg_id）、key_ies、timing",
         "parameter_variations": "需要扫描的参数，name 对应 ies[].vary；各取值的前置或预期不同时用 variants 逐个列出（id、value、preconditions、expected）",
         "checkpoints": "逐项检查点",
-        "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，patched 生成结果里没有、已按需求原值补入（applied_to 写明补到哪），not_applicable 不适用（note 说明），conflict 与规范冲突（仍按需求值），missing 没有落地且无法确定该放在哪（见 open_points）",
+        "requirement_configs": "需求原文写明的配置及落地情况：status=applied 已落到上面字段，patched 生成结果里没有、已按需求原值补入（applied_to 写明补到哪），not_applicable 不适用（note 说明），conflict 与用例取值冲突，pending_clarification 需求取值与规范不符、待需求方澄清（未写入），missing 没有落地且无法确定该放在哪（见 open_points）",
         "references": "3GPP 规范条款",
         "open_points": "落地前仍需确认的问题",
+        "status": "pending_clarification = 待澄清：需求或消息 IE 还有没定的问题（见 blocked_by），澄清前不要编写 XML / 执行；没有该字段表示可执行",
+        "blocked_by": "待澄清的原因（IE 不符合 TS 38.331 ASN.1、所属需求的阻塞澄清问题）",
+        "message_configs[].ies[].asn1": "IE 按 TS 38.331 ASN.1 核对的结论：ok / fixed（已改正，fixed_from 是原路径）/ warning / error / unchecked（非 RRC 消息）",
     },
 }
 SOURCE_LINES_NOTE = ("需求原文中的配置行（原样摘录）。status：covered=取值都已出现在本文件的 case 中，partial=部分出现，"
@@ -186,7 +194,28 @@ def _requirement_view(req: Dict[str, Any]) -> Dict[str, Any]:
     configs = normalize_explicit_configs(req)
     if configs:
         view["explicit_configs"] = [{k: v for k, v in c.items() if k != "req_id"} for c in configs]
+    clar = req.get("clarification") or {}
+    if clar.get("notes"):
+        view["clarification"] = {"status": clar.get("status"), "notes": clar["notes"]}
     return view
+
+
+def gate_exec_item(route: str, item: Dict[str, Any], tc: Dict[str, Any], pending_reqs: set) -> Dict[str, Any]:
+    """可执行用例出口的闸门：消息 IE 按 TS 38.331 ASN.1 核对（能确定的改正，其余标待澄清）；
+    源用例待澄清、或所属需求有阻塞澄清问题的，整条标为待澄清（status=pending_clarification），下游不要直接执行。"""
+    rep = {"errors": [], "fixed": [], "warnings": []}
+    if route not in ("amarisoft", "protocol"):
+        return rep  # 实网用例不带消息 IE；Artemis / AT Agent 导入格式不允许多余字段
+    rep = ie_gate.gate_item(item, "message_configs", autofix=True)
+    reasons = []
+    if tc.get("status") == ie_gate.PENDING:
+        reasons.extend(x for x in tc.get("blocked_by") or [] if x not in (item.get("blocked_by") or []))
+    rids = [str(r) for r in (tc.get("trace") or {}).get("req_ids") or []]
+    if any(r in pending_reqs for r in rids) and not reasons:
+        reasons.append(f"所属需求 {', '.join(r for r in rids if r in pending_reqs)} 有阻塞的澄清问题待需求方回答")
+    if reasons:
+        ie_gate.mark_pending(item, reasons)
+    return rep
 
 
 def _linked_configs(tc: Dict[str, Any], req_index: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -318,6 +347,11 @@ def apply_requirement_configs(route: str, item: Dict[str, Any], configs: List[Di
     llm_entries = [e for e in (item.get("requirement_configs") or []) if isinstance(e, dict)]
     fields = ROUTE_CONFIG_FIELDS[route]
     results, patched, used, unplaced = [], [], set(), []
+    for c in [c for c in configs if c.get("clarification")]:
+        results.append({"req_id": c.get("req_id", ""), "name": c["name"], "value": c["value"], "layer": c.get("layer", ""),
+                        "target": c.get("target", ""), "source_text": c.get("source_text", ""), "applied_to": "",
+                        "status": "pending_clarification", "note": f"需求取值与规范不符，待需求方澄清，未写入：{c['clarification']}"})
+    configs = [c for c in configs if not c.get("clarification")]
     for c in configs:
         e = _match_llm_entry(c, llm_entries)
         if e:
@@ -533,6 +567,8 @@ class ExecutableCaseNode(AsyncNode):
             return {"type": "object", "required": [list_key], "properties": {list_key: {"type": "array", "items": item_schema}}}
 
         draft_only = {r: 0 for r in ROUTES}  # 没经过大模型适配、直接用草稿的用例数
+        pending_reqs = pending_ids(shared.get("requirement_spec") or {})
+        gate_stats = {r: {"ie_fixed": 0, "ie_errors": 0} for r in ROUTES}
 
         drafts = {str(tc.get("tc_id") or ""): project(routes[str(tc.get("tc_id") or "")], tc) for tc in tcs}
 
@@ -600,6 +636,10 @@ class ExecutableCaseNode(AsyncNode):
                     lost = uncovered_thresholds(tc.get("pass_fail"), [_text(it.get("expected_result")), _text(it.get("goal"))])
                     if lost:
                         it["expected_result"] = "；".join(x for x in [_text(it.get("expected_result"))] + lost if x)
+            for it in items:
+                rep = gate_exec_item(route, it, tcs_by_id.get(str(it.get("source_tc_id") or ""), {}), pending_reqs)
+                gate_stats[route]["ie_fixed"] += len(rep["fixed"])
+                gate_stats[route]["ie_errors"] += len(rep["errors"])
             return items
 
         async def run_route(route: str, route_tcs: List[Dict[str, Any]]):
@@ -621,6 +661,9 @@ class ExecutableCaseNode(AsyncNode):
             for line in ((bundles.get(r) or {}).get("source_requirement") or {}).get("config_lines") or []:
                 if line["status"] != "not_found":
                     continue
+                if line.get("req_id") and line["req_id"] in pending_reqs:
+                    line["status"] = "pending_clarification"  # 需求本身待澄清，取值没进用例是对的，不再催着补
+                    continue
                 elsewhere = [o for o, blob in blobs.items() if o != r and any(value_present(v, blob) for v in line["values"])]
                 if elsewhere:
                     line["status"], line["found_in"] = "other_route", elsewhere
@@ -630,9 +673,23 @@ class ExecutableCaseNode(AsyncNode):
             shared.setdefault("warnings", []).append(
                 f"可执行用例: 需求原文有 {len(lost)} 行配置的取值没有出现在任何平台的用例中（{', '.join(sorted(lost)[:10])}），"
                 "请在导出文件的 source_requirement 中确认是否遗漏")
+        pending_counts = {r: sum(1 for c in (b.get("cases") or b.get("items") or []) if c.get("status") == ie_gate.PENDING)
+                          for r, b in bundles.items()}
+        for r, st in gate_stats.items():
+            if st["ie_fixed"]:
+                shared.setdefault("warnings", []).append(
+                    f"ExecutableCaseNode-{r}: {st['ie_fixed']} 条消息 IE 路径已按 TS 38.331 ASN.1 改正（open_points 有记录）")
+            if st["ie_errors"]:
+                shared.setdefault("warnings", []).append(
+                    f"ExecutableCaseNode-{r}: {st['ie_errors']} 条消息 IE 不符合 TS 38.331 ASN.1 且无法确定改法，所在用例标为待澄清")
+        if any(pending_counts.values()):
+            shared.setdefault("warnings", []).append(
+                "可执行用例: " + "、".join(f"{ROUTE_LABELS.get(r, r)} {n} 条" for r, n in pending_counts.items() if n)
+                + " 标为待澄清（status=pending_clarification，blocked_by 写明原因），澄清前不要直接执行")
         return {
             "generated_at": _now(),
             "summary": {r: len(groups[r]) for r in ROUTES},
+            "pending_clarification": pending_counts,
             "draft_only": draft_only,
             "route_labels": ROUTE_LABELS,
             "routes": routes,

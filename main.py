@@ -23,6 +23,7 @@ from flow import (
     create_test_case_flow,
     create_test_design_flow,
 )
+from core.clarification import owner_questions
 from core.events import EventLog
 from core.design_map import THEME_SYNC_SCRIPT, render_design_map_html, report_theme_css
 from core.grouping import ensure_suite, requirement_group, suite_tree
@@ -626,6 +627,7 @@ def _render_design_document_html(record: Dict[str, Any]) -> str:
         ("doc-review", "四、三人评审记录",
          "".join(review_sections)
          + f"<section><h3>用户已确认问题</h3>{answered_question_table}</section><section><h3>参考资料</h3>{knowledge_table}</section>"),
+        ("doc-clarify", "四（续）、需求澄清", _render_clarification_html(requirement_spec)),
         ("doc-objectives", "五、测试目标", objective_table),
         ("doc-matrices", "六、覆盖矩阵", matrix_html),
         ("doc-integrated", "七、整合覆盖矩阵", integrated_table),
@@ -1457,6 +1459,52 @@ def _triage_open_questions(persona_reviews: Dict[str, Any], answered: Any = None
     return user_qs, auto_qs
 
 
+def _with_clarification_questions(requirement_spec: Dict[str, Any], user_qs: List[Dict[str, Any]],
+                                  auto_qs: List[Dict[str, Any]]):
+    """需求澄清单里的阻塞问题（规范里没有的字段、取值类型不对……）排在最前面问需求方，不占每轮问题名额，
+    也不会被“AI 自行确认 / 暂按需求原文理解”吞掉。同时写进 requirement_spec.questions_to_ask，设计文档里可见。"""
+    clar = owner_questions(requirement_spec)
+    if not clar:
+        return user_qs, auto_qs
+    keys = {f"{q['req_id']}::{q['question']}" for q in clar}
+    fields = {(q["req_id"], q["question"]) for q in clar}
+    user_rest = [q for q in user_qs if f"{q['req_id']}::{q['question']}" not in keys]
+    auto_rest = [q for q in auto_qs if f"{q['req_id']}::{q['question']}" not in keys]
+    asks = requirement_spec.setdefault("questions_to_ask", [])
+    for rid, question in fields:
+        text = f"【待澄清·阻塞】{rid}：{question}"
+        if text not in asks:
+            asks.append(text)
+    return clar + user_rest, auto_rest
+
+
+def _render_clarification_html(requirement_spec: Dict[str, Any]) -> str:
+    """设计文档里的需求澄清：先列阻塞且待回答的，再列按规范已定的（只列条数和前几条）。"""
+    clar = (requirement_spec or {}).get("clarifications") or {}
+    items = [it for it in clar.get("items") or [] if isinstance(it, dict)]
+    if not items:
+        return "<p>未生成需求澄清单（旧记录，或未做 ASN.1 核对）。</p>"
+    def table(rows):
+        head = "<tr><th>编号</th><th>需求</th><th>问题</th><th>规范依据 / 答复</th></tr>"
+        body = "".join(
+            f"<tr><td>{html.escape(it.get('id', ''))}</td><td>{html.escape(it.get('req_id', ''))}</td>"
+            f"<td>{html.escape(it.get('question', ''))}</td><td>{html.escape(it.get('resolution') or it.get('evidence', ''))}</td></tr>"
+            for it in rows)
+        return f"<table>{head}{body}</table>"
+    blocking = [it for it in items if it.get("blocking") and it.get("status") == "open"]
+    by_spec = [it for it in items if it.get("status") == "resolved_by_spec"]
+    by_owner = [it for it in items if it.get("status") == "resolved_by_owner"]
+    out = [f"<p>{html.escape(clar.get('summary', ''))}。规范版本：{html.escape(clar.get('spec_version', ''))}。"
+           "阻塞问题未回答的需求，其用例标为待澄清，可执行用例不作为可执行项输出。</p>"]
+    if blocking:
+        out.append(f"<h3>待需求方回答（阻塞，{len(blocking)} 条）</h3>{table(blocking)}")
+    if by_owner:
+        out.append(f"<h3>需求方已回答（{len(by_owner)} 条）</h3>{table(by_owner)}")
+    if by_spec:
+        out.append(f"<h3>按 TS 38.331 ASN.1 已定（{len(by_spec)} 条，设计按规范写法）</h3>{table(by_spec[:40])}")
+    return "".join(out)
+
+
 MAX_FINISHED_JOBS = 30
 
 
@@ -1519,6 +1567,9 @@ async def _run_requirement_hitl_job(job_id: str):
                 "trace": [],
                 "review_feedback": job.get("review_feedback", ""),
                 "events": events,
+                # 需求澄清单要用：用户已答的问题、上一轮的澄清结论
+                "answered_questions": job.get("answered_questions", []),
+                "requirement_spec": (job.get("last_payload") or {}).get("requirement_spec") or {},
             }
             flow = create_requirement_analysis_flow()
             await flow.run_async(shared)
@@ -1529,6 +1580,7 @@ async def _run_requirement_hitl_job(job_id: str):
             user_questions, auto_confirmed = await asyncio.to_thread(
                 _kb_resolve_questions, user_questions, auto_confirmed, job.get("project_id", ""), shared["llm_client"]
             )
+            user_questions, auto_confirmed = _with_clarification_questions(requirement_spec, user_questions, auto_confirmed)
             # AI 自行确认的问题直接记入已确认列表，用户跳过后续轮次直接生成设计时也能带上这些假设
             job["answered_questions"] = _merge_answered_questions(
                 job.get("answered_questions", []),
@@ -1586,6 +1638,8 @@ async def _run_requirement_hitl_job(job_id: str):
             accepted = []
             for q in job.get("pending_questions", []) or []:
                 key = f"{q['req_id']}::{q['question']}"
+                if q.get("blocking"):
+                    continue  # 需求澄清的阻塞问题必须由需求方回答，留空就继续挂起，不采纳 AI 建议
                 if key not in answers and q.get("ai_answer"):
                     accepted.append({"source_round": round_no, "req_id": q["req_id"], "question": q["question"],
                                      "answer": q["ai_answer"], "source": "采纳 AI 建议"})
@@ -1885,6 +1939,11 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
     events.emit("node_running", {"node": "KnowledgeResolve", "label": "查证评审问题",
                                  "detail": f"{len(user_qs) + len(auto_qs)} 个问题" if (user_qs or auto_qs) else ""})
     user_qs, auto_qs = await asyncio.to_thread(_kb_resolve_questions, user_qs, auto_qs, project_id, shared["llm_client"])
+    requirement_spec = shared.get("requirement_spec", {})
+    user_qs, auto_qs = _with_clarification_questions(requirement_spec, user_qs, auto_qs)
+    # 一键模式没人回答：普通问题采纳 AI 建议，需求澄清的阻塞问题保持挂起（对应需求的用例标为待澄清）
+    clar_qs = [q for q in user_qs if q.get("blocking")]
+    user_qs = [q for q in user_qs if not q.get("blocking")]
     answered = _merge_answered_questions([], [
         {"source_round": 1, "req_id": q["req_id"], "question": q["question"], "answer": q["ai_answer"],
          "source": "知识库确认" if q.get("kb_status") == "resolved" else "AI 自行确认", "basis": q.get("basis", "")}
@@ -1896,9 +1955,10 @@ async def _stage_requirements_auto(payload: "StageGenerateRequest", events: Even
         for q in user_qs
     ])
     summary = {"round": 1, "is_final_round": True, "issues": _collect_review_issues(persona_reviews),
-               "open_questions": [], "auto_confirmed": auto_qs + user_qs, "knowledge_refs": ref_summary(rag_hits)}
+               "open_questions": clar_qs, "auto_confirmed": auto_qs + user_qs, "knowledge_refs": ref_summary(rag_hits)}
     return {
-        "requirement_spec": shared.get("requirement_spec", {}),
+        "requirement_spec": requirement_spec,
+        "pending_clarifications": clar_qs,
         "persona_reviews": persona_reviews,
         "requirement_review_history": _build_requirement_review_history([summary], answered),
         "auto_answered_user_questions": user_qs,
@@ -2165,6 +2225,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
             _ic_text(tc.get("initial_conditions")) or _numbered(tc.get("preconditions", [])),
             _cfg_text(tc.get("configuration")), _proc_text(tc.get("procedure")) or _numbered(tc.get("expected", [])),
             _numbered(tc.get("pass_fail", [])), env_text, risk_text, "、".join(str(x) for x in tc.get("tags", []) or []),
+            "待澄清" if tc.get("status") == "pending_clarification" else "",
             _numbered(list(tc.get("open_points") or []) + [f"评审：{x}" for x in tc.get("review_notes") or []]),
         ])
         for p in tc.get("procedure") or []:
@@ -2178,13 +2239,17 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                 continue
             for ie in m.get("ies") or []:
                 if isinstance(ie, dict):
+                    a = ie.get("asn1") or {}
+                    check = {"ok": "通过", "fixed": "已改正", "warning": "提示", "error": "不符合", "unchecked": "非RRC"}.get(a.get("status"), "")
+                    detail = "；".join(x for x in [a.get("note", "")] + list(a.get("issues") or [])
+                                       + [f"原路径：{ie['fixed_from']}" if ie.get("fixed_from") else ""] if x)
                     msg_rows.append([tc.get("tc_id", ""), m.get("msg_id", ""), m.get("message", ""), m.get("direction", ""),
                                      ie.get("path", ""), _safe_json(ie.get("value")) if isinstance(ie.get("value"), (dict, list)) else str(ie.get("value", "")),
-                                     ie.get("vary", ""), ie.get("note", "")])
+                                     ie.get("vary", ""), ie.get("note", ""), check, detail])
     # “测试点”是设计矩阵的行号：需求清单增删后用例编号会重排，测试点编号不变，适合用来关联历史结果和缺陷
     _sheet("测试用例", [("一级模块", 26), ("二级模块", 30), ("用例编号", 12), ("测试点", 16), ("用例标题", 36), ("测试技术", 12), ("测试目的（TP）", 50), ("参考条款", 22),
                         ("测试目标", 10), ("初始条件", 40), ("关键配置", 40), ("测试步骤", 60), ("通过标准", 45),
-                        ("测试环境", 16), ("环境风险", 26), ("标签", 14), ("待确认 / 评审意见", 45)], case_rows, first=True)
+                        ("测试环境", 16), ("环境风险", 26), ("标签", 14), ("状态", 8), ("待确认 / 评审意见", 45)], case_rows, first=True)
     # 用例分组：一级模块 / 二级模块 两级套件，带每级用例数，便于按模块分配和导入用例管理系统
     group_rows = []
     for g in suite_tree(suite_entries):
@@ -2197,7 +2262,7 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
                           ("动作", 18), ("参数", 30), ("期望", 50), ("判定点", 7), ("时序", 18)], step_rows)
     if msg_rows:
         _sheet("消息内容", [("用例", 10), ("消息编号", 9), ("消息", 26), ("方向", 6), ("IE 路径", 60), ("取值", 22),
-                          ("扫描参数", 12), ("说明", 36)], msg_rows)
+                          ("扫描参数", 12), ("说明", 36), ("ASN.1 核对", 10), ("核对说明", 50)], msg_rows)
 
     matrix_rows = []
     for row in test_design_spec.get("integrated_matrix", []) if isinstance(test_design_spec, dict) else []:
@@ -2233,6 +2298,17 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
     _sheet("测试需求", [("一级模块", 26), ("需求编号", 12), ("需求标题", 45), ("优先级", 8), ("制式范围", 14), ("通过/失败判定", 50),
                       ("KPI", 40)], req_rows)
 
+    clar = (requirement_spec.get("clarifications") or {}) if isinstance(requirement_spec, dict) else {}
+    clar_status = {"open": "待需求方回答", "resolved_by_spec": "按规范已定", "resolved_by_owner": "需求方已答", "waived": "已豁免"}
+    clar_rows = [[it.get("id", ""), it.get("req_id", ""), "是" if it.get("blocking") else "", clar_status.get(it.get("status"), it.get("status", "")),
+                  it.get("kind", ""), it.get("question", ""), it.get("evidence", ""), it.get("suggestion", ""), it.get("resolution", ""),
+                  "、".join(it.get("raised_by") or []), it.get("source_text", "")]
+                 for it in clar.get("items") or [] if isinstance(it, dict)]
+    if clar_rows:
+        clar_rows.sort(key=lambda r: (r[3] != "待需求方回答", r[2] != "是", r[1]))
+        _sheet("需求澄清", [("编号", 9), ("需求", 12), ("阻塞", 6), ("状态", 12), ("类型", 14), ("问题", 60), ("规范依据", 60),
+                          ("建议", 40), ("需求方答复", 30), ("提出方", 16), ("需求原文", 50)], clar_rows)
+
     answer_rows = [
         [item.get("source_round", ""), item.get("req_id", ""), item.get("question", ""), item.get("answer", ""),
          item.get("source", "用户")]
@@ -2265,7 +2341,8 @@ def export_testcases_excel(payload: ExportTestCasesRequest):
         ])
 
     cfg_rows = []
-    status_label = {"applied": "已落地", "missing": "未落地", "not_applicable": "不适用", "conflict": "与规范冲突"}
+    status_label = {"applied": "已落地", "missing": "未落地", "not_applicable": "不适用", "conflict": "冲突待确认",
+                    "patched": "已补入", "pending_clarification": "待澄清（未写入）"}
     for route, label in (("amarisoft", "Amarisoft"), ("protocol", "协议仪表")):
         bundle = (executable_cases.get("bundles") or {}).get(route) or {}
         for c in bundle.get("cases") or bundle.get("items") or []:

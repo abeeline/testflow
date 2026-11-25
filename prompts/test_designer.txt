@@ -27,6 +27,9 @@
 - 追溯：每条需求至少一个目标、每个目标至少一个整合矩阵行；req_to_objective_map 写明覆盖的指标和缺失的指标。
 - 数值不丢：需求 acceptance.pass_fail / kpi 里的门限（时间窗、门限、时延、成功率、恢复时间）原样进入 success_criteria 和 pass_criteria。
 - 需求写明的配置（final_requirements[].explicit_configs）是固定值：原样写进相关行的 key_configuration（键名用参数名，如 band、ssb_arfcn、T3412、cause），不换算、不取整、不用“默认/典型值”替换；只有需求本身要求扫描时才变化。
+  例外：带 clarification 的配置项已判定与 TS 38.331 不符、待需求方回答，不要当成已批准的取值。
+- final_requirements[].clarification 是需求澄清结论：resolved_by_spec 的按规范写法（字段名、所在消息、位置）设计；status=open 且阻塞的，
+  测试点照常按评审建议起草，但不要沿用需求原文的错误字段或取值，在 design_notes 写明“待澄清：…”。
 - key_configuration 只放本行实际选定的取值（制式、频段、移动性、信号条件、并发业务、运营商等与本行相关的维度），不要列空维度。
 - constraints.knowledge_references 有内容时，用它确定参数取值、定时器、信令流程和条款，并在 references 或 design_notes 中引用编号（如 [K-3]）；项目资料与公共资料冲突时以项目资料为准并写明冲突。没有依据的条款号不要编造。
 - product_profile：勾选的能力要体现在维度和场景里；与需求相关但未勾选的能力写进 de_scoped。
