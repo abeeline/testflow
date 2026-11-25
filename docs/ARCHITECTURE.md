@@ -84,3 +84,16 @@ TCD ──project()──► 平台草稿 ──LLM 平台适配──► 合并
   各模板用在哪个环节改为在“系统设置 → Prompt 模板”的下拉框里标出。去掉早期 9 个通用动作词表（`action_vocabulary` / `assertion_vocabulary` / `capabilities`），
   用例改用 TCD 后它们只会作为 `preferred_actions` 混进用例提示词，和模板里的动作写法冲突；旧客户端还传这些字段时服务端直接忽略。
 - 设计历史记录新增 `requirement_meta`（导入需求清单的编号和分组），载入历史记录时整份清单原样恢复。
+
+## 6. 需求澄清与 ASN.1 闸门
+
+```
+SynthesisNode ─ attach_clarifications ─▶ requirement_spec.clarifications（规范已定 / 待回答 / 阻塞）
+                                         │ 阻塞未答的需求 → pending_req_ids
+TestDesignNode ─ mark_pending_rows ─────▶ 测试点标待澄清（照常起草）
+TestCaseReview ─ ie_gate.check_messages ▶ 唯一确定的路径自动改；其余作为严重问题返工
+TestCaseSupervisor ─ finalize_pending ──▶ 返工后仍有 IE 错误 / 需求待澄清 → 用例 status=pending_clarification
+ExecutableCase ─ gate_exec_item ────────▶ 再核对一次 message_configs；源用例或需求待澄清 → 可执行用例待澄清
+```
+
+原则：宁可停下来问，也不输出错的信令。需求稿写错的 IE，不再“保留原值、标注待确认”后放行。

@@ -7,6 +7,7 @@
 - 其余错误（规范里没有的字段、字段在别的消息里、多处可选、枚举/类型不对、“…”省略……）不猜：
   IE 标 asn1.status = error，所在用例转为“待澄清”，问题写进 open_points，交给返工或需求方确认。
 """
+import re
 from typing import Any, Dict, List
 
 from core import asn1_paths as A
@@ -16,6 +17,16 @@ PENDING = "pending_clarification"
 
 def _short(issues: List[Dict[str, str]], limit: int = 2) -> List[str]:
     return [i["message"] for i in issues if i["severity"] == A.ERROR][:limit] or [i["message"] for i in issues][:limit]
+
+
+def _renames_safe(renamed: List[str]) -> bool:
+    """只接受“补上版本后缀”的改名（timeToTrigger → timeToTrigger-r17）。
+    去掉后缀或换成别的后缀（si-SchedulingInfo-v1700 → si-SchedulingInfo）会换成另一个版本的字段，不能自动改。"""
+    for r in renamed or []:
+        old, _, new = (x.strip() for x in r.partition("→"))
+        if not new or not re.fullmatch(re.escape(old) + r"-[rv]\d+", new):
+            return False
+    return True
 
 
 def check_ie(message: str, ie: Dict[str, Any], autofix: bool = True) -> Dict[str, Any]:
@@ -33,10 +44,11 @@ def check_ie(message: str, ie: Dict[str, Any], autofix: bool = True) -> Dict[str
         return out
     sugg = res["suggestions"][0] if res["suggestions"] else None
     fixable_codes = {"WRONG_LOCATION", "ELIDED_PATH", "MISSING_INDEX"}
-    if autofix and sugg and sugg.get("unique") and not sugg.get("heuristic") and codes <= fixable_codes:
+    if autofix and sugg and sugg.get("unique") and not sugg.get("heuristic") and codes <= fixable_codes \
+            and _renames_safe(sugg.get("renamed")):
         again = A.validate_ie(message, sugg["path"], value)
         if again["status"] != A.ERROR:
-            ie["fixed_from"] = path
+            ie.setdefault("fixed_from", path)  # 保留最初的路径（前面可能已按评审清单改过一次）
             ie["path"] = sugg["path"]
             note = f"按 {A.spec_version() or 'TS 38.331 ASN.1'} 改正路径：{sugg['display']}"
             if sugg.get("renamed"):

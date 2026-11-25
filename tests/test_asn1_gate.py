@@ -118,6 +118,17 @@ def test_gate_autofixes_only_certain_cases():
     assert len(rep["fixed"]) == 3 and len(rep["errors"]) == 1
 
 
+def test_gate_never_drops_a_version_suffix():
+    # si-SchedulingInfo-v1700 改成老的 si-SchedulingInfo 等于换了一个版本的字段，不能自动改
+    msgs = [{"msg_id": "M1", "message": "SIB1", "direction": "DL", "ies": [
+        {"path": "si-SchedulingInfo-v1700 … sib-MappingInfo", "value": "含 SIB25"}]}]
+    ie_gate.check_messages(msgs)
+    ie = msgs[0]["ies"][0]
+    assert ie["asn1"]["status"] == "error" and "fixed_from" not in ie
+    assert ie_gate._renames_safe(["timeToTrigger → timeToTrigger-r17"])
+    assert not ie_gate._renames_safe(["si-SchedulingInfo-v1700 → si-SchedulingInfo"])
+
+
 def test_finalize_marks_cases_pending():
     tc = {"tc_id": "TC-1", "trace": {"req_ids": ["AR-1"]}, "open_points": [],
           "message_contents": [{"msg_id": "M1", "message": "SIB1", "ies": [
