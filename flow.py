@@ -1,7 +1,6 @@
 from pocketflow import AsyncFlow, AsyncParallelBatchFlow
 from exec_cases import ExecutableCaseNode
 from nodes import (
-    AssembleResultNode,
     FinalizeTestCaseNode,
     IntakeNode,
     ReqParseNode,
@@ -36,28 +35,6 @@ class TestCaseParallelFlow(AsyncParallelBatchFlow):
             {"batch_index": idx, "batch_total": len(chunks), "integrated_chunk": chunk}
             for idx, chunk in enumerate(chunks)
         ]
-
-
-def create_system_test_flow() -> AsyncFlow:
-    intake = IntakeNode()
-    req_parse = ReqParseNode()
-    tri = TriPersonaReviewNode()
-    synth = SynthesisNode()
-    design = TestDesignNode()
-    design_sup = TestDesignSupervisorNode()
-    cases_parallel = TestCaseParallelFlow(start=TestCaseBatchGenNode())
-    cases_finalize = FinalizeTestCaseNode()
-    case_sup = TestCaseSupervisorNode()
-    exec_cases = ExecutableCaseNode()
-    assemble = AssembleResultNode()
-
-    intake >> req_parse >> tri >> synth >> design
-    design >> design_sup
-    design_sup - "retry" >> design
-    design_sup >> cases_parallel >> cases_finalize >> case_sup
-    case_sup - "retry" >> cases_parallel
-    case_sup >> exec_cases >> assemble
-    return AsyncFlow(start=intake)
 
 
 def create_requirement_analysis_flow() -> AsyncFlow:

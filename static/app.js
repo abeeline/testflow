@@ -12,10 +12,6 @@ const promptSelect = document.getElementById("promptSelect");
 const promptEditor = document.getElementById("promptEditor");
 const savePromptBtn = document.getElementById("savePromptBtn");
 const reloadPromptsBtn = document.getElementById("reloadPromptsBtn");
-const refreshFlowVizBtn = document.getElementById("refreshFlowVizBtn");
-const flowVizCanvas = document.getElementById("flowVizCanvas");
-const flowMermaid = document.getElementById("flowMermaid");
-const flowPromptRoles = document.getElementById("flowPromptRoles");
 const themeToggle = document.getElementById("themeToggle");
 
 const requirementsEl = document.getElementById("requirements");
@@ -131,7 +127,6 @@ let currentProjectId = DEFAULT_PROJECT_ID;
 let editingProjectId = "";
 let promptCache = {};
 let latestStructured = null;
-let flowVizLoaded = false;
 let designHistoryLoaded = false;
 let hitlStream = null;
 let hitlStreamJobId = "";
@@ -221,10 +216,6 @@ function setStatus(text) {
   if (typeof assistantOnStatus === "function") assistantOnStatus(text);
 }
 
-function setButtonsBusy(busy) {
-  stageButtons.forEach((btn) => btn && (btn.disabled = !!busy));
-}
-
 function setSingleButtonBusy(button, busy, pendingText) {
   if (!button) return;
   // 流程按钮忙碌 = 有生成任务在跑：同步给侧栏运行状态和助手面板
@@ -243,6 +234,20 @@ function parseRequirements(text) {
   if (importedRequirements?.requirements?.length) return importedRequirements.requirements.slice();
   const one = (text || "").trim();
   return one ? [one] : [];
+}
+
+// 恢复会话或载入历史记录时还原需求输入：多条需求（导入的清单）恢复成导入状态，单条放回输入框
+function restoreRequirementInput(list, meta, filename) {
+  const reqs = (Array.isArray(list) ? list : []).map((x) => String(x || "")).filter((x) => x.trim());
+  const metaOk = Array.isArray(meta) && meta.length === reqs.length && meta.some((m) => m?.req_id);
+  if (reqs.length > 1 || (reqs.length && metaOk)) {
+    const m = metaOk ? meta : reqs.map(() => ({}));
+    importedRequirements = { filename: filename || "", requirements: reqs, meta: m, groups: [], warnings: [] };
+  } else {
+    importedRequirements = null;
+    if (requirementsEl) requirementsEl.value = reqs[0] || "";
+  }
+  renderRequirementImport();
 }
 
 function requirementMeta() {
@@ -271,6 +276,7 @@ function renderRequirementImport() {
     importedRequirements = null;
     if (requirementsEl) requirementsEl.value = "";
     renderRequirementImport();
+    persistCurrentState();
   });
 }
 
@@ -281,11 +287,7 @@ async function importRequirementFile(file) {
   const data = await postJson("/api/requirements/import", { filename: file.name, content_base64: btoa(bin) });
   importedRequirements = { filename: file.name, ...data };
   renderRequirementImport();
-}
-
-function parseCSVLine(text) {
-  if (!text.trim()) return null;
-  return text.split(",").map((x) => x.trim()).filter((x) => x.length > 0);
+  persistCurrentState();
 }
 
 function toProfileOptionId(groupKey, option) {
@@ -1125,8 +1127,7 @@ function applyHistoryRecordToCurrentSession(record) {
   if (!record) return;
   const recordProjectId = record.summary?.project_id || record.project_id || DEFAULT_PROJECT_ID;
   setCurrentProject(recordProjectId, { applyDefaults: false, askReset: false });
-  const reqInput = Array.isArray(record.requirement_input) ? record.requirement_input : [];
-  if (requirementsEl) requirementsEl.value = reqInput[0] || "";
+  restoreRequirementInput(record.requirement_input, record.requirement_meta, "历史记录");
   setSelectedTestEnvironments(record.test_environments?.selected_ids || record.test_environments?.selected || []);
   setSelectedProductProfile(record.product_profile?.selected || {});
   setSelectedTestTypes(record.product_profile?.test_types || record.test_design_spec?.test_types);
@@ -1179,7 +1180,13 @@ function applyStageOutputs() {
 
 function restoreLastResultUI(snapshot) {
   if (!snapshot) return;
-  requirementsEl.value = snapshot.form?.requirements || "";
+  const imp = snapshot.form?.imported_requirements;
+  if (imp?.requirements?.length) {
+    importedRequirements = imp;
+    renderRequirementImport();
+  } else {
+    restoreRequirementInput([snapshot.form?.requirements || ""]);
+  }
   ragEl.value = snapshot.form?.rag || "";
   if (bzIdsEl) bzIdsEl.value = snapshot.form?.bz_ids || "";
   if (bzExcludedEl) bzExcludedEl.value = snapshot.form?.bz_excluded || "";
@@ -1218,6 +1225,7 @@ function persistCurrentState(customStatus) {
     stage_state: stageState,
     form: {
       requirements: requirementsEl.value,
+      imported_requirements: importedRequirements,
       rag: ragEl.value,
       bz_ids: bzIdsEl?.value || "",
       bz_excluded: bzExcludedEl?.value || "",
@@ -2169,13 +2177,15 @@ async function loadPrompts() {
   if (!resp.ok) throw new Error("加载模板失败");
   const data = await resp.json();
   promptCache = data.prompts || {};
+  const labels = data.labels || {};
 
-  const names = Object.keys(promptCache).sort();
+  // 按流水线顺序列出（服务端已排好），选项上标明是哪个环节用的模板
+  const names = Object.keys(promptCache);
   promptSelect.innerHTML = "";
   names.forEach((name) => {
     const opt = document.createElement("option");
     opt.value = name;
-    opt.textContent = name;
+    opt.textContent = labels[name] ? `${labels[name]}（${name}）` : name;
     promptSelect.appendChild(opt);
   });
   if (names.length) {
@@ -2184,164 +2194,6 @@ async function loadPrompts() {
   } else {
     promptEditor.value = "";
   }
-}
-
-function renderPromptRoles(roles) {
-  if (!roles || !roles.length) {
-    flowPromptRoles.innerHTML = "<em>暂无Prompt角色映射</em>";
-    return;
-  }
-  const rows = roles
-    .map((r) => `<tr><td>${esc(r.role)}</td><td>${esc(r.node)}</td><td>${esc(r.prompt)}</td><td>${esc(r.exists ? "yes" : "no")}</td><td>${esc(r.first_line || "")}</td></tr>`)
-    .join("");
-  flowPromptRoles.innerHTML = `<table><thead><tr><th>Role</th><th>Node</th><th>Prompt</th><th>Exists</th><th>Preview</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderFlowGraph(graph, promptRoles = [], startNodeId = "") {
-  // 流水线视图：按执行顺序把节点排成蛇形网格，Prompt 角色挂在节点下方，回流边用虚线弧标出。
-  const nodes = graph?.nodes || [];
-  const links = graph?.links || [];
-  if (!nodes.length) {
-    flowVizCanvas.innerHTML = "<em style='padding:16px;display:block'>暂无流程节点</em>";
-    return;
-  }
-
-  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
-  const order = [];
-  const seen = new Set();
-  const queue = [startNodeId && byId[startNodeId] ? startNodeId : nodes[0].id];
-  while (queue.length) {
-    const id = queue.shift();
-    if (seen.has(id)) continue;
-    seen.add(id);
-    order.push(id);
-    links.filter((l) => l.source === id && (l.action || "default") !== "retry").forEach((l) => queue.push(l.target));
-  }
-  nodes.forEach((n) => { if (!seen.has(n.id)) order.push(n.id); });
-
-  const rolesByNode = {};
-  (promptRoles || []).forEach((r) => {
-    const nid = nodes.find((n) => n.label === r.node)?.id;
-    if (nid) (rolesByNode[nid] = rolesByNode[nid] || []).push(r);
-  });
-
-  const width = Math.max(flowVizCanvas.clientWidth || 960, 640);
-  const NODE_W = 184, NODE_H = 40, GAP_X = 36, ROLE_H = 34, PAD = 28, TOP = 56;
-  const cols = Math.max(2, Math.floor((width - PAD * 2 + GAP_X) / (NODE_W + GAP_X)));
-  const maxRoles = Math.max(0, ...Object.values(rolesByNode).map((r) => r.length));
-  const rowH = NODE_H + 22 + maxRoles * (ROLE_H + 6) + 40;
-  const rows = Math.ceil(order.length / cols);
-  const height = TOP + PAD + rows * rowH - 30;
-  const usedW = cols * NODE_W + (cols - 1) * GAP_X;
-  const offsetX = Math.max(PAD, (width - usedW) / 2);
-
-  const pos = {};
-  order.forEach((id, i) => {
-    const row = Math.floor(i / cols);
-    let col = i % cols;
-    if (row % 2 === 1) col = cols - 1 - col; // 蛇形排列，保证相邻节点挨着
-    pos[id] = { x: offsetX + col * (NODE_W + GAP_X), y: TOP + row * rowH, idx: i };
-  });
-
-  const svgNS = "http://www.w3.org/2000/svg";
-  const el = (tag, attrs = {}, text) => {
-    const e = document.createElementNS(svgNS, tag);
-    Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
-    if (text !== undefined) e.textContent = text;
-    return e;
-  };
-  const clip = (t, n) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
-  const css = getComputedStyle(document.documentElement);
-  const c = (name) => css.getPropertyValue(name).trim();
-  const svg = el("svg", { width, height, viewBox: `0 0 ${width} ${height}` });
-  const defs = el("defs");
-  const marker = el("marker", { id: "flowArrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  marker.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: c("--muted-foreground") }));
-  const markerBack = el("marker", { id: "flowArrowBack", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  markerBack.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: c("--warning") }));
-  defs.append(marker, markerBack);
-  svg.appendChild(defs);
-
-  const edgeLayer = el("g");
-  const nodeLayer = el("g");
-  svg.append(edgeLayer, nodeLayer);
-
-  links.forEach((l) => {
-    const a = pos[l.source], b = pos[l.target];
-    if (!a || !b) return;
-    const back = b.idx <= a.idx;
-    const action = l.action || "default";
-    let d, lx, ly;
-    if (!back && a.y === b.y) {
-      const ltr = b.x > a.x;
-      const x1 = ltr ? a.x + NODE_W : a.x, x2 = ltr ? b.x : b.x + NODE_W, y = a.y + NODE_H / 2;
-      d = `M${x1},${y} L${x2 + (ltr ? -2 : 2)},${y}`;
-      lx = (x1 + x2) / 2; ly = y - 6;
-    } else if (!back) {
-      // 换行：从行尾节点的外侧绕到下一行
-      const right = a.x + NODE_W / 2 > width / 2;
-      const xs = right ? a.x + NODE_W : a.x, xe = right ? b.x + NODE_W : b.x;
-      const bulge = right ? Math.max(xs, xe) + 22 : Math.min(xs, xe) - 22;
-      const ys = a.y + NODE_H / 2, ye = b.y + NODE_H / 2;
-      d = `M${xs},${ys} C${bulge},${ys} ${bulge},${ye} ${xe + (right ? 2 : -2)},${ye}`;
-      lx = bulge; ly = (ys + ye) / 2;
-    } else {
-      const x1 = a.x + NODE_W / 2, x2 = b.x + NODE_W / 2, y = Math.min(a.y, b.y);
-      d = `M${x1},${a.y} C${x1},${y - 34} ${x2},${y - 34} ${x2},${b.y - 2}`;
-      lx = (x1 + x2) / 2; ly = y - 26;
-    }
-    edgeLayer.appendChild(el("path", {
-      d, fill: "none",
-      stroke: back ? c("--warning") : c("--muted-foreground"),
-      "stroke-width": back ? 1.4 : 1.4,
-      "stroke-dasharray": back ? "5 4" : "",
-      "stroke-opacity": back ? 0.9 : 0.6,
-      "marker-end": back ? "url(#flowArrowBack)" : "url(#flowArrow)",
-    }));
-    if (action !== "default") {
-      edgeLayer.appendChild(el("text", { x: lx, y: ly, "text-anchor": "middle", "font-size": 11, fill: back ? c("--warning") : c("--muted-foreground") }, action));
-    }
-  });
-
-  order.forEach((id) => {
-    const n = byId[id], p = pos[id];
-    const isStart = id === startNodeId;
-    const g = el("g", { transform: `translate(${p.x},${p.y})` });
-    g.appendChild(el("rect", {
-      width: NODE_W, height: NODE_H, rx: 9,
-      fill: isStart ? c("--primary") : c("--card"),
-      stroke: isStart ? c("--primary") : c("--input"), "stroke-width": 1.2,
-    }));
-    g.appendChild(el("text", {
-      x: 12, y: NODE_H / 2 + 4, "font-size": 11, "font-weight": 700,
-      fill: isStart ? c("--primary-foreground") : c("--muted-foreground"),
-    }, String(p.idx + 1).padStart(2, "0")));
-    g.appendChild(el("text", {
-      x: 34, y: NODE_H / 2 + 4, "font-size": 12, "font-weight": 600,
-      fill: isStart ? c("--primary-foreground") : c("--foreground"),
-    }, String(n.label || "").replace(/Node$|Flow$/, "")));
-    (rolesByNode[id] || []).forEach((r, i) => {
-      const ry = NODE_H + 14 + i * (ROLE_H + 6);
-      g.appendChild(el("line", { x1: 20, y1: NODE_H, x2: 20, y2: ry + ROLE_H / 2, stroke: c("--warning"), "stroke-opacity": 0.5, "stroke-dasharray": "3 3" }));
-      g.appendChild(el("rect", { x: 30, y: ry, width: NODE_W - 30, height: ROLE_H, rx: 7, fill: c("--warning-soft"), stroke: c("--warning"), "stroke-opacity": 0.45 }));
-      g.appendChild(el("text", { x: 40, y: ry + 14, "font-size": 11, "font-weight": 600, fill: c("--warning") }, clip(r.role || "Prompt", 24)));
-      g.appendChild(el("text", { x: 40, y: ry + 27, "font-size": 10, fill: c("--muted-foreground") }, clip(r.prompt || "", 28)));
-    });
-    nodeLayer.appendChild(g);
-  });
-
-  flowVizCanvas.innerHTML = "";
-  flowVizCanvas.style.height = `${height}px`;
-  flowVizCanvas.appendChild(svg);
-}
-
-async function loadFlowVisualization() {
-  const resp = await fetch("/api/settings/flow-visualization");
-  if (!resp.ok) throw new Error(await resp.text());
-  const data = await resp.json();
-  flowMermaid.textContent = data.mermaid || "";
-  renderPromptRoles(data.prompt_roles || []);
-  renderFlowGraph(data.graph || {}, data.prompt_roles || [], data.graph?.start_node_id || "");
 }
 
 async function saveCurrentPrompt() {
@@ -2416,11 +2268,6 @@ function switchSheetById(id) {
     s.classList.toggle("active", s.id === id);
   });
   if (id === "sheet5") refreshExecCasesControls();
-  if (id === "sheet6" && !flowVizLoaded) {
-    loadFlowVisualization()
-      .then(() => { flowVizLoaded = true; })
-      .catch((e) => setStatus(`流程可视化加载失败: ${e.message}`));
-  }
   if (id === "sheet9") {
     loadProjects()
       .then(() => renderProjectForm(editingProjectId || currentProjectId))
@@ -2924,17 +2771,6 @@ reloadPromptsBtn.addEventListener("click", async () => {
 });
 savePromptBtn.addEventListener("click", async () => {
   try { await saveCurrentPrompt(); setStatus(`模板已保存: ${promptSelect.value}`); } catch (e) { setStatus(`保存模板失败: ${e.message}`); }
-});
-refreshFlowVizBtn?.addEventListener("click", async () => {
-  try {
-    setSingleButtonBusy(refreshFlowVizBtn, true, "刷新中...");
-    await loadFlowVisualization();
-    flowVizLoaded = true;
-  } catch (e) {
-    setStatus(`流程可视化刷新失败: ${e.message}`);
-  } finally {
-    setSingleButtonBusy(refreshFlowVizBtn, false);
-  }
 });
 promptSelect.addEventListener("change", () => {
   const name = promptSelect.value;

@@ -465,9 +465,11 @@ def test_api_smoke():
     import main
 
     client = TestClient(main.app)
-    assert client.get("/api/settings/flow-visualization").status_code == 200
     prompts = client.get("/api/settings/prompts").json()
-    assert "test_case_tcd.txt" in json.dumps(prompts, ensure_ascii=False)
+    assert "test_case_tcd.txt" in prompts["prompts"]
+    # 模板按流水线顺序给出，并标明是哪个环节用的
+    assert list(prompts["prompts"])[0] == "req_parse.txt" and list(prompts["prompts"])[-1] == "exec_case_protocol.txt"
+    assert set(prompts["labels"]) == set(prompts["prompts"]) and "专家评审" in prompts["labels"]["test_case_reviewer.txt"]
     r = client.post("/api/export/testcases.xlsx", json={"test_case_spec": {"testcases": [normalize_tcd({
         "title": "x", "procedure": [{"action": "SEND", "message": "RRCSetupRequest", "direction": "UL", "expected": "ok", "verdict": True}],
         "message_contents": [{"msg_id": "M1", "message": "RRCSetup", "ies": [{"path": "a.b", "value": 1}]}]})]}})
@@ -489,12 +491,14 @@ def test_chat_queries_selected_project_knowledge(monkeypatch):
 
     monkeypatch.setattr(main, "_query_kb", fake_query)
     try:
-        assert main._gather_project_knowledge("T3346 到期后行为", "") == ([], [])
-        assert main._gather_project_knowledge("T3346 到期后行为", main.DEFAULT_PROJECT_ID) == ([], [])
+        # 没选项目 / 默认项目：问题里没有协议关键词时一个来源都不查
+        assert main._gather_chat_knowledge("这个功能默认开吗", "") == ([], [])
+        assert main._gather_chat_knowledge("这个功能默认开吗", main.DEFAULT_PROJECT_ID) == ([], [])
         assert not calls
-        hits, errors = main._gather_project_knowledge("T3346 到期后行为", pid)
-        assert not errors and calls == [("kb_project", project["kb_mcp_url"], "T3346 到期后行为")]
+        hits, sources = main._gather_chat_knowledge("这个功能默认开吗", pid)
+        assert calls == [("kb_project", project["kb_mcp_url"], "这个功能默认开吗")]
         assert any(h["scope"] == "kb_project" for h in hits)
+        calls.clear()
 
         captured = {}
 
@@ -587,3 +591,23 @@ def test_design_knowledge_includes_uploaded_project_docs(monkeypatch):
         assert "自动重新发起注册" not in main._build_design_knowledge(spec, main.DEFAULT_PROJECT_ID)[0]
     finally:
         main.project_store.delete(pid)
+
+
+def test_history_keeps_imported_requirement_meta():
+    """导入的需求清单归档时保存编号和分组，后续阶段没带 meta 时不覆盖；换了需求才清空。"""
+    import main
+
+    reqs = ["需求甲", "需求乙"]
+    meta = [{"req_id": "AR-1", "group": ["SR-1"]}, {"req_id": "AR-2", "group": ["SR-1"]}]
+    rec = main._upsert_design_history_record(requirement_input=reqs, requirement_meta=meta,
+                                             test_design_spec={"objectives": []})
+    rid = rec["record_id"]
+    try:
+        assert main._load_design_history_record(rid)["requirement_meta"] == meta
+        main._upsert_design_history_record(record_id=rid, requirement_input=reqs, test_case_spec={"testcases": []})
+        assert main._load_design_history_record(rid)["requirement_meta"] == meta
+        main._upsert_design_history_record(record_id=rid, requirement_input=["另一条需求"])
+        assert main._load_design_history_record(rid)["requirement_meta"] == []
+    finally:
+        import shutil
+        shutil.rmtree(main._history_record_dir(rid), ignore_errors=True)

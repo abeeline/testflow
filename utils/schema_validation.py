@@ -1,4 +1,4 @@
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable
 
 try:
     from jsonschema import Draft202012Validator  # type: ignore
@@ -60,12 +60,3 @@ def validate_list_of_dict(items: Any, required_keys: Iterable[str], name: str):
         if not isinstance(item, dict):
             raise ValueError(f"{name}[{idx}] must be an object")
         require_keys(item, required_keys, f"{name}[{idx}]")
-
-
-def ensure_actions_in_vocabulary(testcases: List[Dict[str, Any]], action_vocab: List[str]):
-    allowed = set(action_vocab)
-    for tc in testcases:
-        for step in tc.get("steps", []):
-            action = step.get("action")
-            if action not in allowed:
-                raise ValueError(f"Unknown action '{action}' in tc_id={tc.get('tc_id')}")
